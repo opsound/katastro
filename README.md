@@ -6,7 +6,7 @@ Open or drop an SGF to restore its review and cached chart immediately. Missing 
 
 Click an empty board intersection to explore a legal variation, even during analysis. Variations autosave after each move and remain separate from the original game, which stays on the top row of the tree. Click a tree node to revisit it, or use Up/Down to switch variation rows at the same column. Navigation keeps the selected node in view. Export SGF saves all branches to another file; the source stays unchanged.
 
-The board shows up to five numbered AI suggestions, with the best in blue, and a dotted hollow ring for the next recorded move in its stone color. Early suggestions use a labeled neural-network policy preview until searched move evaluations are available. Colored stones beside player names identify Black and White.
+The board shows up to five AI suggestions, with the best in blue, and a dotted hollow ring for the next recorded move in its stone color. All use equal-size circles containing the signed point change from the current position, from the moving player's perspective: positive gains points and negative loses points. The played move uses its candidate estimate when available, otherwise the following position's evaluation; missing estimates show `--`. Early suggestions use a labeled neural-network policy preview until searched move evaluations are available. Colored stones beside player names identify Black and White.
 
 ## Run
 
@@ -44,7 +44,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
-The standard suite has 38 integration tests. Real-engine, corpus, and performance checks require local assets and run explicitly:
+The standard suite has 43 integration tests. Real-engine, corpus, and performance checks require local assets and run explicitly:
 
 ```sh
 export KATASTRO_TEST_ENGINE=/opt/homebrew/bin/katago

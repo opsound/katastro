@@ -112,3 +112,13 @@ The updated release benchmark passed three trials using the same private corpus 
 | 3 | Warm | 211 | 1.215 s | 3.854 s | 40 ms |
 
 These measurements include the new policy previews and deepest-only cache semantics. They demonstrate early provisional coverage and reuse of completed deep results; they do not establish a speedup over the historical baseline, whose cache policy differed. Final standard formatting, Clippy with warnings denied, and all 38 routine integration tests passed. The explicit real-engine tests passed (including 256-visit refinement and candidate round trips), and the native Open/Export sheet regression passed in 4.40 seconds.
+
+## Comparable point deltas on the board
+
+The user selected signed score change from the current position, from the moving player's perspective. Five additional integration tests bring the routine suite to 43 tests. Their initial failures showed different circle radii, rank numbers instead of point changes, and no label on the recorded move.
+
+AI candidates and the next recorded move now use one radius and shared numeric formatting. A Black move computes `resulting Black score - current Black score`; a White move reverses that sign. Missing estimates show `--`, and rounded zero displays `+0.0`. The best candidate remains blue. When that candidate was also played, the dotted ring identifies it and one label uses the same search estimate, avoiding a contradictory value from an older child search. A played move outside the candidate list uses the child-position evaluation. Labels update as analysis refines and derive from existing cached results when reopening offline.
+
+Tests exercise rendered text and geometry through real SGFs, UI input, and temporary SQLite stores. They cover Black and White signs, gains and losses, equal circle sizes, policy previews without fabricated scores, a played candidate with deliberately conflicting old child analysis, selecting that existing move without duplicate branches, refinement and offline cache restoration, and labels fitting a 19×19 board at the minimum window size. Seven temporary regressions produced behavioral failures: smaller candidate circles, omitting the current-score baseline, reversing White's sign, hiding the recorded label, drawing overlapping duplicate labels, turning missing estimates into zero, and disabling font fitting. Each was restored before final checks.
+
+Formatting, Clippy with warnings denied, and all 43 routine integration tests passed. The native Open/Export sheet check passed in 4.13 seconds. The engine protocol and cache schema did not change for this UI improvement.

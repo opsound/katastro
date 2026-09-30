@@ -523,3 +523,269 @@ fn both_charts_fit_at_the_default_window_size_with_suggestions() {
         );
     }
 }
+
+fn painted_text_in(h: &Harness<'_, State>, bounds: eframe::egui::Rect) -> Vec<String> {
+    h.output()
+        .shapes
+        .iter()
+        .filter_map(|shape| match &shape.shape {
+            eframe::egui::Shape::Text(text) if bounds.contains(text.pos) => {
+                Some(text.galley.text().to_owned())
+            }
+            _ => None,
+        })
+        .collect()
+}
+fn marker_radius(h: &Harness<'_, State>, bounds: eframe::egui::Rect, dotted: bool) -> f32 {
+    h.output()
+        .shapes
+        .iter()
+        .filter_map(|shape| match &shape.shape {
+            eframe::egui::Shape::Circle(circle)
+                if !dotted && bounds.contains(circle.center) && circle.fill.a() == 255 =>
+            {
+                Some(circle.radius)
+            }
+            eframe::egui::Shape::Path(path)
+                if dotted && !path.closed && path.points.iter().all(|p| bounds.contains(*p)) =>
+            {
+                path.points.first().map(|p| p.distance(bounds.center()))
+            }
+            _ => None,
+        })
+        .fold(0.0, f32::max)
+}
+#[test]
+fn ai_and_recorded_move_markers_have_matching_circles_and_pending_score_labels() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let mut state = state(temp.path());
+    let mut policy = suggestions();
+    for s in &mut policy {
+        s.score_lead = None;
+        s.winrate = None;
+        s.visits = 0;
+    }
+    state.snapshot.values.insert(
+        0,
+        katastro::Analysis {
+            visits: 1,
+            winrate: 0.5,
+            score_lead: 2.5,
+            suggestions: policy,
+        },
+    );
+    let h = Harness::builder()
+        .with_size(eframe::egui::vec2(1200.0, 860.0))
+        .build_ui_state(|ui, state: &mut State| state.render(ui), state);
+    let suggested = h.get_by_label("AI suggestion 1: D6").rect();
+    let played = h.get_by_label("Next recorded move: Black C7").rect();
+    assert!(
+        (marker_radius(&h, suggested, false) - marker_radius(&h, played, true)).abs() < 0.01,
+        "candidate and recorded move circles have different sizes"
+    );
+    for bounds in [suggested, played] {
+        assert!(
+            painted_text_in(&h, bounds).contains(&"--".to_string()),
+            "missing score must have a placeholder, not a rank or a fabricated zero"
+        );
+    }
+}
+
+fn evaluated_state(root: &Path, white: bool) -> State {
+    let mut state = imported_state(
+        root,
+        if white {
+            "(;SZ[9]PL[W];W[cc])"
+        } else {
+            "(;SZ[9];B[cc])"
+        },
+    );
+    let mut moves = suggestions();
+    moves[0].score_lead = Some(if white { 1.2 } else { 3.7 });
+    moves[1].score_lead = Some(if white { 4.0 } else { 1.0 });
+    state.snapshot.values.insert(
+        0,
+        katastro::Analysis {
+            visits: 256,
+            winrate: 0.6,
+            score_lead: 2.5,
+            suggestions: moves,
+        },
+    );
+    state.snapshot.values.insert(
+        1,
+        katastro::Analysis {
+            visits: 64,
+            winrate: 0.4,
+            score_lead: if white { 4.5 } else { 0.0 },
+            suggestions: vec![],
+        },
+    );
+    state
+}
+#[test]
+fn move_circles_compare_signed_score_changes_for_black_and_white() {
+    for white in [false, true] {
+        let temp = tempfile::TempDir::new().unwrap();
+        let h = Harness::builder()
+            .with_size(eframe::egui::vec2(1200.0, 860.0))
+            .build_ui_state(
+                |ui, state: &mut State| state.render(ui),
+                evaluated_state(temp.path(), white),
+            );
+        for (label, expected) in [
+            ("AI suggestion 1: D6", if white { "+1.3" } else { "+1.2" }),
+            ("AI suggestion 2: E5", "-1.5"),
+            (
+                if white {
+                    "Next recorded move: White C7"
+                } else {
+                    "Next recorded move: Black C7"
+                },
+                if white { "-2.0" } else { "-2.5" },
+            ),
+        ] {
+            let rect = h.get_by_label(label).rect();
+            assert_eq!(
+                painted_text_in(&h, rect),
+                vec![expected],
+                "{label} should show its point change from the mover's perspective"
+            );
+        }
+    }
+}
+#[test]
+fn a_played_ai_candidate_has_one_label_and_uses_the_same_search_estimate() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let mut state = imported_state(temp.path(), "(;SZ[9];B[dd])");
+    state.snapshot.values.insert(
+        0,
+        katastro::Analysis {
+            visits: 1024,
+            winrate: 0.6,
+            score_lead: 2.5,
+            suggestions: suggestions(),
+        },
+    );
+    // An older child search must not give a different label to the very same candidate.
+    state.snapshot.values.insert(
+        1,
+        katastro::Analysis {
+            visits: 64,
+            winrate: 0.5,
+            score_lead: -20.0,
+            suggestions: vec![],
+        },
+    );
+    let mut h = Harness::builder()
+        .with_size(eframe::egui::vec2(1200.0, 860.0))
+        .build_ui_state(|ui, state: &mut State| state.render(ui), state);
+    let suggested = h.get_by_label("AI suggestion 1: D6").rect();
+    let played = h.get_by_label("Next recorded move: Black D6").rect();
+    assert_eq!(
+        painted_text_in(&h, played),
+        vec!["+0.0"],
+        "the same move needs one consistent score label"
+    );
+    assert!(
+        has_circle(&h, suggested, |c| c.fill.b() > c.fill.r()
+            && c.fill.b() > c.fill.g()),
+        "the best move must remain blue when it was also played"
+    );
+    h.get_by_label("Play D6").click();
+    h.run();
+    assert_eq!(h.state().snapshot.document.as_ref().unwrap().selected, 1);
+    assert_eq!(h.state().snapshot.document.as_ref().unwrap().nodes.len(), 2);
+}
+#[test]
+fn recorded_delta_refines_and_survives_cache_reopen_without_an_engine() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let mut state = evaluated_state(temp.path(), false);
+    let profile = katastro::EngineProfile {
+        model_sha256: "model".into(),
+        engine_sha256: "engine".into(),
+        settings_digest: "black".into(),
+    };
+    for (node, value) in &state.snapshot.values {
+        let key = state.review.analysis_key(*node, &profile).unwrap();
+        state.review.store_analysis(&key, value).unwrap();
+    }
+    let mut h = Harness::builder()
+        .with_size(eframe::egui::vec2(1200.0, 860.0))
+        .build_ui_state(|ui, state: &mut State| state.render(ui), state);
+    let ring = h.get_by_label("Next recorded move: Black C7").rect();
+    assert_eq!(painted_text_in(&h, ring), vec!["-2.5"]);
+    h.state_mut()
+        .snapshot
+        .values
+        .get_mut(&1)
+        .unwrap()
+        .score_lead = 1.5;
+    h.state_mut().snapshot.values.get_mut(&1).unwrap().visits = 1024;
+    h.run();
+    assert_eq!(painted_text_in(&h, ring), vec!["-1.0"]);
+    let key = h.state().review.analysis_key(1, &profile).unwrap();
+    let value = h.state().snapshot.values[&1].clone();
+    h.state_mut().review.store_analysis(&key, &value).unwrap();
+    drop(h);
+    let mut reopened = imported_state(temp.path(), "(;SZ[9];B[cc])");
+    reopened.snapshot.values = reopened.review.cached_analysis(&profile).unwrap();
+    let h = Harness::builder()
+        .with_size(eframe::egui::vec2(1200.0, 860.0))
+        .build_ui_state(|ui, state: &mut State| state.render(ui), reopened);
+    let ring = h.get_by_label("Next recorded move: Black C7").rect();
+    assert_eq!(painted_text_in(&h, ring), vec!["-1.0"]);
+    assert_eq!(
+        painted_text_in(&h, h.get_by_label("AI suggestion 1: D6").rect()),
+        vec!["+1.2"]
+    );
+}
+
+#[test]
+fn delta_labels_fit_inside_equal_circles_on_a_19_by_19_board() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let mut state = imported_state(temp.path(), "(;SZ[19];B[cc])");
+    let mut moves = suggestions();
+    moves[0].score_lead = Some(100.5);
+    moves[1].score_lead = Some(-107.5);
+    state.snapshot.values.insert(
+        0,
+        katastro::Analysis {
+            visits: 256,
+            winrate: 0.5,
+            score_lead: 2.5,
+            suggestions: moves,
+        },
+    );
+    state.snapshot.values.insert(
+        1,
+        katastro::Analysis {
+            visits: 64,
+            winrate: 0.5,
+            score_lead: 0.0,
+            suggestions: vec![],
+        },
+    );
+    let h = Harness::builder()
+        .with_size(eframe::egui::vec2(900.0, 680.0))
+        .build_ui_state(|ui, state: &mut State| state.render(ui), state);
+    for (label, expected) in [
+        ("AI suggestion 1: D16", "+98.0"),
+        ("AI suggestion 2: E15", "-110.0"),
+        ("Next recorded move: Black C17", "-2.5"),
+    ] {
+        let bounds = h.get_by_label(label).rect();
+        assert_eq!(painted_text_in(&h, bounds), vec![expected]);
+        for shape in &h.output().shapes {
+            if let eframe::egui::Shape::Text(text) = &shape.shape
+                && bounds.contains(text.pos)
+            {
+                let text_rect = text.galley.rect.translate(text.pos.to_vec2());
+                assert!(
+                    bounds.contains_rect(text_rect),
+                    "score label spills outside its circle: {text_rect:?} {bounds:?}"
+                );
+            }
+        }
+    }
+}

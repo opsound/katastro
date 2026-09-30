@@ -357,8 +357,20 @@ pub fn render(ui: &mut egui::Ui, snapshot: &Snapshot) -> Vec<Action> {
                         doc.nodes[0].property("PW").unwrap_or("White"),
                     );
                 });
+                ui.label(
+                    RichText::new(format!(
+                        "Move labels: point change for {}",
+                        if board.next == Color::Black {
+                            "Black"
+                        } else {
+                            "White"
+                        }
+                    ))
+                    .size(11.0)
+                    .color(MUTED),
+                );
                 ui.add_space(9.0);
-                board_view(ui, doc, board, snapshot.values.get(&doc.selected), &mut out);
+                board_view(ui, doc, board, snapshot, &mut out);
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
                     for (label, value) in [
@@ -406,9 +418,18 @@ fn board_view(
     ui: &mut egui::Ui,
     doc: &Document,
     board: &crate::Board,
-    analysis: Option<&Analysis>,
+    snapshot: &Snapshot,
     out: &mut Vec<Action>,
 ) {
+    let analysis = snapshot.values.get(&doc.selected);
+    let recorded = next_recorded_move(doc);
+    // Prefer the move's estimate from this same search over an older child evaluation.
+    let recorded_score = recorded.and_then(|(id, played)| {
+        analysis
+            .and_then(|a| a.suggestions.iter().find(|s| s.point == played.point))
+            .and_then(|s| s.score_lead)
+            .or_else(|| snapshot.values.get(&id).map(|a| a.score_lead))
+    });
     let side = ui
         .available_width()
         .min((ui.available_height() - 56.0).max(150.0))
@@ -420,6 +441,7 @@ fn board_view(
     let start = rect.min + Vec2::splat(padding);
     let extent = side - 2.0 * padding;
     let gap = extent / (doc.size - 1) as f32;
+    let marker_radius = gap * 0.43;
     let grid = Stroke::new(1.0, Color32::from_rgb(108, 81, 48));
     for i in 0..doc.size {
         let offset = i as f32 * gap;
@@ -552,16 +574,21 @@ fn board_view(
             } else {
                 Color32::from_rgb(49, 121, 86)
             };
-            painter.circle_filled(center, gap * 0.24, color);
-            painter.text(
+            painter.circle_filled(center, marker_radius, color);
+            let score = suggestion.score_lead.or_else(|| {
+                recorded
+                    .filter(|(_, played)| played.point == Some(point))
+                    .and(recorded_score)
+            });
+            paint_move_delta(
+                painter,
                 center,
-                Align2::CENTER_CENTER,
-                (rank + 1).to_string(),
-                FontId::proportional((gap * 0.3).clamp(10.0, 16.0)),
+                marker_radius,
+                point_delta(Some(analysis), score, board.next),
                 Color32::WHITE,
             );
             ui.interact(
-                Rect::from_center_size(center, Vec2::splat(gap * 0.5)),
+                Rect::from_center_size(center, Vec2::splat(2.0 * marker_radius + 1.0)),
                 ui.id().with(("suggestion", rank)),
                 Sense::hover(),
             )
@@ -574,50 +601,55 @@ fn board_view(
             });
         }
     }
-    let mut next = doc.nodes[doc.selected].children.first().copied();
-    while let Some(id) = next {
-        if let Some(played) = doc.nodes[id].played {
-            if let Some(point) = played.point.filter(|p| board.stone(*p).is_none()) {
-                let center = start + Vec2::new(point.x as f32 * gap, point.y as f32 * gap);
-                let radius = gap * 0.43;
-                let color = if played.color == Color::Black {
-                    Color32::BLACK
-                } else {
-                    Color32::WHITE
-                };
-                for i in 0..24 {
-                    let points = (0..=3)
-                        .map(|j| {
-                            let angle = std::f32::consts::TAU * (i as f32 + j as f32 / 6.0) / 24.0;
-                            center + Vec2::angled(angle) * radius
-                        })
-                        .collect();
-                    painter.add(egui::Shape::line(points, Stroke::new(2.1, color)));
-                }
-                ui.interact(
-                    Rect::from_center_size(center, Vec2::splat(2.0 * radius + 1.0)),
-                    ui.id().with("next-recorded"),
-                    Sense::hover(),
-                )
-                .widget_info(|| {
-                    WidgetInfo::labeled(
-                        WidgetType::Other,
-                        true,
-                        format!(
-                            "Next recorded move: {} {}",
-                            if played.color == Color::Black {
-                                "Black"
-                            } else {
-                                "White"
-                            },
-                            point.gtp(doc.size)
-                        ),
-                    )
-                });
-            }
-            break;
+    if let Some((_, played)) = recorded
+        && let Some(point) = played.point.filter(|p| board.stone(*p).is_none())
+    {
+        let center = start + Vec2::new(point.x as f32 * gap, point.y as f32 * gap);
+        let color = if played.color == Color::Black {
+            Color32::BLACK
+        } else {
+            Color32::WHITE
+        };
+        for i in 0..24 {
+            let points = (0..=3)
+                .map(|j| {
+                    let angle = std::f32::consts::TAU * (i as f32 + j as f32 / 6.0) / 24.0;
+                    center + Vec2::angled(angle) * marker_radius
+                })
+                .collect();
+            painter.add(egui::Shape::line(points, Stroke::new(2.1, color)));
         }
-        next = doc.nodes[id].children.first().copied();
+        let already_labeled =
+            analysis.is_some_and(|a| a.suggestions.iter().take(5).any(|s| s.point == Some(point)));
+        if !already_labeled {
+            paint_move_delta(
+                painter,
+                center,
+                marker_radius,
+                point_delta(analysis, recorded_score, played.color),
+                Color32::from_rgb(44, 39, 32),
+            );
+        }
+        ui.interact(
+            Rect::from_center_size(center, Vec2::splat(2.0 * marker_radius + 1.0)),
+            ui.id().with("next-recorded"),
+            Sense::hover(),
+        )
+        .widget_info(|| {
+            WidgetInfo::labeled(
+                WidgetType::Other,
+                true,
+                format!(
+                    "Next recorded move: {} {}",
+                    if played.color == Color::Black {
+                        "Black"
+                    } else {
+                        "White"
+                    },
+                    point.gtp(doc.size)
+                ),
+            )
+        });
     }
     if let Some(point) = doc.nodes[doc.selected].played.and_then(|m| m.point) {
         let center = start + Vec2::new(point.x as f32 * gap, point.y as f32 * gap);
@@ -1018,4 +1050,48 @@ fn suggested_moves(
             },
         );
     });
+}
+
+fn next_recorded_move(doc: &Document) -> Option<(crate::NodeId, crate::Move)> {
+    let mut next = doc.nodes[doc.selected].children.first().copied();
+    while let Some(id) = next {
+        if let Some(played) = doc.nodes[id].played {
+            return Some((id, played));
+        }
+        next = doc.nodes[id].children.first().copied();
+    }
+    None
+}
+fn point_delta(
+    current: Option<&Analysis>,
+    resulting_score: Option<f64>,
+    color: Color,
+) -> Option<f64> {
+    let delta =
+        (resulting_score? - current?.score_lead) * if color == Color::Black { 1.0 } else { -1.0 };
+    Some(if delta.abs() < 0.05 { 0.0 } else { delta })
+}
+fn paint_move_delta(
+    painter: &egui::Painter,
+    center: Pos2,
+    radius: f32,
+    delta: Option<f64>,
+    color: Color32,
+) {
+    let label = delta.map(|v| format!("{v:+.1}")).unwrap_or("--".into());
+    let mut size = (radius * 0.8).clamp(7.0, 16.0);
+    let width = painter
+        .layout_no_wrap(label.clone(), FontId::proportional(size), color)
+        .size()
+        .x;
+    if width > radius * 1.7 {
+        size *= radius * 1.7 / width;
+    }
+    painter.text(
+        center,
+        Align2::CENTER_CENTER,
+        label,
+        FontId::proportional(size),
+        color,
+    );
 }
