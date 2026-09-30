@@ -162,6 +162,7 @@ fn original_game_chart_keeps_gaps_zero_values_and_its_line_when_a_branch_is_sele
     state.snapshot.values.insert(
         1,
         katastro::Analysis {
+            ownership: vec![],
             visits: 1,
             winrate: 0.0,
             score_lead: 0.0,
@@ -178,6 +179,7 @@ fn original_game_chart_keeps_gaps_zero_values_and_its_line_when_a_branch_is_sele
     state.snapshot.values.insert(
         branch,
         katastro::Analysis {
+            ownership: vec![],
             visits: 64,
             winrate: 0.9,
             score_lead: 99.0,
@@ -226,6 +228,7 @@ fn variation_state(root: &Path) -> State {
         state.snapshot.values.insert(
             id,
             katastro::Analysis {
+                ownership: vec![],
                 visits: 64,
                 score_lead,
                 winrate,
@@ -359,6 +362,7 @@ fn variation_charts_follow_nested_selection_and_restore_after_reopen() {
     state.snapshot.values.insert(
         8,
         katastro::Analysis {
+            ownership: vec![],
             visits: 64,
             score_lead: -4.0,
             winrate: 0.1,
@@ -368,6 +372,7 @@ fn variation_charts_follow_nested_selection_and_restore_after_reopen() {
     state.snapshot.values.insert(
         9,
         katastro::Analysis {
+            ownership: vec![],
             visits: 64,
             score_lead: -5.0,
             winrate: 0.0,
@@ -445,6 +450,7 @@ fn variation_chart_gaps_remain_disconnected_and_zero_results_refine_in_place() {
     h.state_mut().snapshot.values.insert(
         6,
         katastro::Analysis {
+            ownership: vec![],
             visits: 256,
             score_lead: 0.0,
             winrate: 0.0,
@@ -513,6 +519,7 @@ fn variation_charts_extend_through_a_branch_longer_than_the_original_game() {
         state.snapshot.values.insert(
             id,
             katastro::Analysis {
+                ownership: vec![],
                 visits: 64,
                 score_lead,
                 winrate: 0.0,
@@ -669,6 +676,7 @@ fn analysis_column_stays_fixed_when_playing_and_refining_a_variation() {
     state.snapshot.values.insert(
         0,
         katastro::Analysis {
+            ownership: vec![],
             visits: 64,
             score_lead: 2.5,
             winrate: 0.55,
@@ -693,6 +701,7 @@ fn analysis_column_stays_fixed_when_playing_and_refining_a_variation() {
         h.state_mut().snapshot.values.insert(
             selected,
             katastro::Analysis {
+                ownership: vec![],
                 visits,
                 score_lead: -12.5,
                 winrate: 0.0,
@@ -742,6 +751,7 @@ fn placing_a_stone_does_not_flood_the_board_when_full_policy_results_arrive() {
     state.snapshot.values.insert(
         0,
         katastro::Analysis {
+            ownership: vec![],
             visits: 256,
             winrate: 0.5,
             score_lead: 2.5,
@@ -907,6 +917,7 @@ fn hidden_policy_preview_does_not_hide_the_recorded_moves_point_delta() {
         state.snapshot.values.insert(
             1,
             katastro::Analysis {
+                ownership: vec![],
                 visits: 64,
                 winrate: 0.5,
                 score_lead: if white { 2.0 } else { 3.0 },
@@ -948,6 +959,7 @@ fn suggestions_are_ranked_blue_clickable_and_specific_to_the_position() {
     state.snapshot.values.insert(
         0,
         katastro::Analysis {
+            ownership: vec![],
             visits: 256,
             winrate: 0.6,
             score_lead: 2.5,
@@ -1032,6 +1044,7 @@ fn quality_state(root: &Path, white: bool) -> State {
     state.snapshot.values.insert(
         0,
         katastro::Analysis {
+            ownership: vec![],
             visits: 1024,
             winrate: 0.5,
             score_lead: sign * 2.0,
@@ -1269,6 +1282,7 @@ fn scarce_legal_choices_do_not_turn_bad_candidates_green_and_policy_best_is_neut
     state.snapshot.values.insert(
         0,
         katastro::Analysis {
+            ownership: vec![],
             visits: 256,
             winrate: 0.1,
             score_lead: 10.0,
@@ -1500,6 +1514,7 @@ fn both_charts_fit_at_the_default_window_size_with_suggestions() {
     state.snapshot.values.insert(
         0,
         katastro::Analysis {
+            ownership: vec![],
             visits: 256,
             winrate: 0.6,
             score_lead: 2.5,
@@ -1560,6 +1575,7 @@ fn ai_and_recorded_markers_keep_equal_circles_when_the_recorded_score_is_pending
     state.snapshot.values.insert(
         0,
         katastro::Analysis {
+            ownership: vec![],
             visits: 256,
             winrate: 0.5,
             score_lead: 2.5,
@@ -1598,6 +1614,7 @@ fn evaluated_state(root: &Path, white: bool) -> State {
     state.snapshot.values.insert(
         0,
         katastro::Analysis {
+            ownership: vec![],
             visits: 256,
             winrate: 0.6,
             score_lead: 2.5,
@@ -1607,6 +1624,7 @@ fn evaluated_state(root: &Path, white: bool) -> State {
     state.snapshot.values.insert(
         1,
         katastro::Analysis {
+            ownership: vec![],
             visits: 64,
             winrate: 0.4,
             score_lead: if white { 4.5 } else { 0.0 },
@@ -1653,6 +1671,7 @@ fn a_played_ai_candidate_has_one_label_and_uses_the_same_search_estimate() {
     state.snapshot.values.insert(
         0,
         katastro::Analysis {
+            ownership: vec![],
             visits: 1024,
             winrate: 0.6,
             score_lead: 2.5,
@@ -1663,6 +1682,7 @@ fn a_played_ai_candidate_has_one_label_and_uses_the_same_search_estimate() {
     state.snapshot.values.insert(
         1,
         katastro::Analysis {
+            ownership: vec![],
             visits: 64,
             winrate: 0.5,
             score_lead: -20.0,
@@ -1743,6 +1763,7 @@ fn delta_labels_fit_inside_equal_circles_on_a_19_by_19_board() {
     state.snapshot.values.insert(
         0,
         katastro::Analysis {
+            ownership: vec![],
             visits: 256,
             winrate: 0.5,
             score_lead: 2.5,
@@ -1752,6 +1773,7 @@ fn delta_labels_fit_inside_equal_circles_on_a_19_by_19_board() {
     state.snapshot.values.insert(
         1,
         katastro::Analysis {
+            ownership: vec![],
             visits: 64,
             winrate: 0.5,
             score_lead: 0.0,

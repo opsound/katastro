@@ -68,7 +68,7 @@ impl Scheduler {
             json!(targets.keys().copied().collect::<Vec<_>>()),
         );
         object.insert("priority".into(), json!(priority));
-        object.insert("includeOwnership".into(), json!(false));
+        object.insert("includeOwnership".into(), json!(visits > 1));
         object.insert("includePolicy".into(), json!(visits == 1));
         object.insert("analysisPVLen".into(), json!(1));
         if visits > 1 {
@@ -180,7 +180,17 @@ impl Scheduler {
             let root = reply
                 .get("rootInfo")
                 .ok_or("Engine reply has no evaluation")?;
+            let ownership = if let Some(value) = reply.get("ownership") {
+                let ownership: Vec<f64> = serde_json::from_value(value.clone())?;
+                if ownership.len() != self.doc.size * self.doc.size {
+                    return Err("Ownership does not match the board size".into());
+                }
+                ownership
+            } else {
+                Vec::new()
+            };
             let analysis = Analysis {
+                ownership,
                 visits: root["visits"].as_u64().ok_or("Invalid visit count")?,
                 winrate: root["winrate"].as_f64().ok_or("Invalid winrate")?,
                 score_lead: root["scoreLead"].as_f64().ok_or("Invalid score")?,

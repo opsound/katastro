@@ -138,6 +138,15 @@ fn live_scheduler_refines_to_256_and_round_trips_ranked_suggestions() {
                             .count()
                     );
                 }
+                if budget > 1 {
+                    let ownership: Vec<f64> =
+                        serde_json::from_value(reply["ownership"].clone()).unwrap();
+                    assert_eq!(ownership.len(), 81);
+                    assert_eq!(value.ownership, ownership);
+                    assert!(ownership.iter().all(|v| (-1.0..=1.0).contains(v)));
+                } else {
+                    assert!(value.ownership.is_empty());
+                }
                 if reply["isDuringSearch"] == false {
                     review.store_analysis(&target.key, &value).unwrap();
                 }

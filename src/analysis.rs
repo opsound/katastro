@@ -17,6 +17,9 @@ pub struct Analysis {
     pub score_lead: f64,
     #[serde(default)]
     pub suggestions: Vec<SuggestedMove>,
+    /// Row-major expected ownership, from Black's perspective. Empty in older results.
+    #[serde(default)]
+    pub ownership: Vec<f64>,
 }
 impl Analysis {
     pub fn validate(&self) -> Result<()> {
@@ -35,6 +38,13 @@ impl Analysis {
             {
                 return Err("Invalid suggested move evaluation".into());
             }
+        }
+        if self
+            .ownership
+            .iter()
+            .any(|v| !v.is_finite() || !(-1.0..=1.0).contains(v))
+        {
+            return Err("Invalid ownership estimate".into());
         }
         Ok(())
     }

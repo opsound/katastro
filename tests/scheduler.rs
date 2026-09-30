@@ -82,6 +82,7 @@ fn selecting_a_new_variation_interrupts_deep_work_and_ignores_stale_replies() {
         cached.insert(
             node,
             Analysis {
+                ownership: vec![],
                 visits: 8,
                 winrate: 0.5,
                 score_lead: 0.0,
@@ -271,4 +272,104 @@ fn one_visit_policy_preview_provides_legal_ranked_moves_before_search() {
             .iter()
             .all(|s| s.visits == 0 && s.winrate.is_none() && s.score_lead.is_none())
     );
+}
+
+#[test]
+fn ownership_refines_with_the_position_and_reopens_without_losing_deeper_results() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let source = temp.path().join("game.sgf");
+    std::fs::write(&source, b"(;SZ[9]AB[bb]AW[gg];B[cc])").unwrap();
+    let mut review = Review::new(&temp.path().join("reviews"), &temp.path().join("cache")).unwrap();
+    review.import(&source).unwrap();
+    let mut scheduler = Scheduler::new(
+        1,
+        review.document().unwrap().clone(),
+        profile(),
+        BTreeMap::new(),
+    );
+    let cheap = scheduler.next_request().unwrap().unwrap();
+    assert_eq!(cheap.visits, 1);
+    assert_eq!(
+        cheap.query["includeOwnership"], false,
+        "the initial chart pass must remain cheap"
+    );
+    for turn in [0, 1] {
+        scheduler.accept(&reply(&cheap.id, turn, 1, false)).unwrap();
+    }
+    for visits in [8, 64, 256] {
+        let request = scheduler.next_request().unwrap().unwrap();
+        assert_eq!(request.visits, visits);
+        assert_eq!(
+            request.query["includeOwnership"], true,
+            "refinement must request group estimates"
+        );
+        for turn in [0, 1] {
+            let mut value = reply(&request.id, turn, visits, false);
+            let mut ownership = vec![0.0; 81];
+            ownership[10] = if visits == 256 { -0.9 } else { 0.9 };
+            ownership[60] = -0.95;
+            value["ownership"] = json!(ownership);
+            let accepted = scheduler.accept(&value).unwrap();
+            assert_eq!(
+                accepted[0].1.ownership, ownership,
+                "ownership must reach the selected position, not be discarded"
+            );
+            review
+                .store_analysis(&accepted[0].0.key, &accepted[0].1)
+                .unwrap();
+        }
+        if visits == 8 {
+            assert!(review.cached_analysis(&profile()).unwrap().is_empty());
+        }
+    }
+    let expected = scheduler.values.clone();
+    let key = review.analysis_key(0, &profile()).unwrap();
+    let mut shallower = expected[&0].clone();
+    shallower.visits = 64;
+    shallower.ownership.fill(1.0);
+    review.store_analysis(&key, &shallower).unwrap();
+    drop(review);
+    let mut reopened =
+        Review::new(&temp.path().join("reviews"), &temp.path().join("cache")).unwrap();
+    reopened.import(&source).unwrap();
+    let cached = reopened.cached_analysis(&profile()).unwrap();
+    assert_eq!(
+        cached, expected,
+        "offline reopen must restore the deepest ownership and charts together"
+    );
+    let mut scheduler = Scheduler::new(2, reopened.document().unwrap().clone(), profile(), cached);
+    assert_eq!(
+        scheduler.next_request().unwrap().unwrap().visits,
+        1024,
+        "cached ownership must not trigger repeated cheap analysis"
+    );
+}
+
+#[test]
+fn malformed_ownership_cannot_replace_a_usable_position_evaluation() {
+    for ownership in [
+        json!([0.0]),
+        json!(vec![1.1; 81]),
+        json!(["bad"]),
+        serde_json::Value::Null,
+    ] {
+        let mut scheduler = Scheduler::new(1, doc(), profile(), BTreeMap::new());
+        let cheap = scheduler.next_request().unwrap().unwrap();
+        for turn in 0..4 {
+            scheduler.accept(&reply(&cheap.id, turn, 1, false)).unwrap();
+        }
+        let request = scheduler.next_request().unwrap().unwrap();
+        scheduler.accept(&reply(&request.id, 0, 4, true)).unwrap();
+        let usable = scheduler.values[&0].clone();
+        let mut invalid = reply(&request.id, 0, 8, false);
+        invalid["ownership"] = ownership;
+        assert!(
+            scheduler.accept(&invalid).is_err(),
+            "malformed ownership should be rejected, not displayed as group strength"
+        );
+        assert_eq!(
+            scheduler.values[&0], usable,
+            "bad ownership must leave the existing chart evaluation usable"
+        );
+    }
 }

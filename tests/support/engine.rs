@@ -10,16 +10,22 @@ fn emit(query: &Value) {
         .unwrap_or(vec![json!(0)]);
     for turn in turns.iter().rev() {
         let root = json!({"visits":query["maxVisits"].as_u64().unwrap_or(1),"winrate":0.5,"scoreLead":turn.as_u64().unwrap_or(0) as f64});
-        if query.get("reportDuringSearchEvery").is_some() {
-            println!(
-                "{}",
-                json!({"id":query["id"],"turnNumber":turn,"isDuringSearch":true,"rootInfo":root})
-            );
+        let mut result =
+            json!({"id":query["id"],"turnNumber":turn,"isDuringSearch":false,"rootInfo":root});
+        if query["includeOwnership"] == true {
+            let width = query["boardXSize"].as_u64().unwrap_or(9) as usize;
+            let height = query["boardYSize"].as_u64().unwrap_or(9) as usize;
+            let mut ownership = vec![0.0; width * height];
+            ownership[0] = 0.9;
+            ownership[width * height - 1] = -0.9;
+            result["ownership"] = json!(ownership);
         }
-        println!(
-            "{}",
-            json!({"id":query["id"],"turnNumber":turn,"isDuringSearch":false,"rootInfo":root})
-        );
+        if query.get("reportDuringSearchEvery").is_some() {
+            result["isDuringSearch"] = json!(true);
+            println!("{result}");
+        }
+        result["isDuringSearch"] = json!(false);
+        println!("{result}");
     }
     io::stdout().flush().unwrap();
 }

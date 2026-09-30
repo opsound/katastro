@@ -10,6 +10,7 @@ fn profile() -> EngineProfile {
 }
 fn sample(visits: u64) -> Analysis {
     Analysis {
+        ownership: vec![],
         visits,
         winrate: 0.0,
         score_lead: 0.0,
@@ -35,6 +36,7 @@ fn reopen_restores_partial_analysis_and_deeper_results_without_an_engine() {
         app.store_analysis(
             &key,
             &Analysis {
+                ownership: vec![],
                 visits: 5,
                 winrate: f64::NAN,
                 score_lead: 3.0,

@@ -239,3 +239,49 @@ fn pause_and_resume_preserve_transient_estimates_in_the_open_review() {
         "resuming discarded uncached chart estimates"
     );
 }
+
+#[test]
+fn group_ownership_crosses_engine_worker_snapshots_and_remains_available_offline() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let source = temp.path().join("game.sgf");
+    std::fs::write(&source, b"(;SZ[9]AB[bb]AW[gg];B[cc])").unwrap();
+    let reviews = temp.path().join("reviews");
+    let cache = temp.path().join("cache");
+    let client = Client::spawn(reviews.clone(), cache.clone(), config(temp.path()));
+    client
+        .send(Command::OpenAndAnalyze(source.clone()))
+        .unwrap();
+    let analyzed = until(&client, |s| {
+        s.values.len() == 2 && s.values.values().all(|v| v.visits >= 64)
+    });
+    assert!(
+        analyzed.values.values().all(|v| v.ownership.len() == 81),
+        "engine ownership must reach the board snapshot"
+    );
+    client.send(Command::Pause).unwrap();
+    until(&client, |s| !s.running && s.document.is_some());
+    client
+        .send(Command::Configure(EngineConfig {
+            executable: temp.path().join("missing"),
+            model: temp.path().join("missing-model"),
+        }))
+        .unwrap();
+    until(&client, |s| s.config.executable.ends_with("missing"));
+    drop(client);
+    let reopened = Client::spawn(
+        reviews,
+        cache,
+        EngineConfig {
+            executable: "missing".into(),
+            model: "missing".into(),
+        },
+    );
+    reopened.send(Command::Open(source)).unwrap();
+    let restored = until(&reopened, |s| s.document.is_some());
+    assert!(restored.values.values().all(|v| v.ownership.len() == 81));
+    assert_eq!(restored.coverage, (2, 2));
+    assert!(
+        !restored.running,
+        "cached group estimates must be usable with no engine"
+    );
+}
