@@ -2,7 +2,7 @@
 
 A native macOS Go review MVP in Rust, using egui/eframe, wgpu's Metal renderer, a persistent KataGo analysis process, and SQLite.
 
-Open or drop an SGF to restore its review and cached chart immediately. Missing positions get a one-visit evaluation before continuous refinement to 8, 64, 256, 1024 visits and beyond. The right column shows the current target and the selected position's actual visits. Points and winrate always use Black's perspective; missing values remain gaps. Click either chart to navigate the played game.
+Open or drop an SGF to restore its review and cached chart immediately. Missing positions get a one-visit evaluation before continuous refinement to 8, 64, 256, 1024 visits and beyond. The right column shows the current target and the selected position's actual visits. Points and winrate always use Black's perspective; missing values remain gaps. In a variation, both charts keep the shared game prefix visible, dim the original continuation after the fork, and highlight the active branch in gold through its saved continuation. Click either curve to select its position; returning to the original game restores its full curve.
 
 Click an empty board intersection to explore a legal variation, even during analysis. Variations autosave after each move and remain separate from the original game, which stays on the top row of the tree. Click a tree node to revisit it, or use Up/Down to switch variation rows at the same column. Navigation keeps the selected node in view. Export SGF saves all branches to another file; the source stays unchanged.
 
@@ -44,7 +44,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
-The standard suite has 43 integration tests. Real-engine, corpus, and performance checks require local assets and run explicitly:
+The standard suite has 48 integration tests. Real-engine, corpus, and performance checks require local assets and run explicitly:
 
 ```sh
 export KATASTRO_TEST_ENGINE=/opt/homebrew/bin/katago

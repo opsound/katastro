@@ -190,6 +190,369 @@ fn original_game_chart_keeps_gaps_zero_values_and_its_line_when_a_branch_is_sele
     );
 }
 
+const CHART_VARIATION: eframe::egui::Color32 = eframe::egui::Color32::from_rgb(255, 195, 105);
+fn game_chart_color(score: bool) -> eframe::egui::Color32 {
+    if score {
+        eframe::egui::Color32::from_rgb(95, 206, 175)
+    } else {
+        eframe::egui::Color32::from_rgb(126, 167, 244)
+    }
+}
+fn chart_label(score: bool) -> &'static str {
+    if score {
+        "Score lead chart"
+    } else {
+        "Winrate chart"
+    }
+}
+fn variation_state(root: &Path) -> State {
+    let mut state = imported_state(root, "(;SZ[9];B[cc];W[gg];B[cg];W[gc])");
+    state.review.select(1).unwrap();
+    for point in [Point::new(3, 3), Point::new(4, 4), Point::new(5, 5)] {
+        state.review.play(Some(point)).unwrap();
+    }
+    state.review.select(5).unwrap();
+    state.sync();
+    for (id, score_lead, winrate) in [
+        (0, 0.0, 0.2),
+        (1, 1.0, 0.3),
+        (2, 2.0, 0.4),
+        (3, 3.0, 0.5),
+        (4, 4.0, 0.6),
+        (5, -1.0, 0.25),
+        (6, -2.0, 0.15),
+        (7, -3.0, 0.05),
+    ] {
+        state.snapshot.values.insert(
+            id,
+            katastro::Analysis {
+                visits: 64,
+                score_lead,
+                winrate,
+                suggestions: vec![],
+            },
+        );
+    }
+    state
+}
+fn chart_lines(
+    h: &Harness<'_, State>,
+    score: bool,
+    color: eframe::egui::Color32,
+) -> Vec<Vec<eframe::egui::Pos2>> {
+    let bounds = h.get_by_label(chart_label(score)).rect();
+    h.output()
+        .shapes
+        .iter()
+        .filter_map(|shape| match &shape.shape {
+            eframe::egui::Shape::Path(path)
+                if !path.closed
+                    && path.stroke.color == eframe::egui::epaint::ColorMode::Solid(color)
+                    && path.points.iter().all(|point| bounds.contains(*point)) =>
+            {
+                Some(path.points.clone())
+            }
+            _ => None,
+        })
+        .collect()
+}
+fn chart_position(
+    prefix: &[eframe::egui::Pos2],
+    score: bool,
+    x: f32,
+    y: f32,
+) -> eframe::egui::Pos2 {
+    // The fixture's shared positions are (0,0),(1,1) points or (0,20),(1,30) percent.
+    let (baseline, step) = if score { (0.0, 1.0) } else { (20.0, 10.0) };
+    eframe::egui::pos2(
+        prefix[0].x + x * (prefix[1].x - prefix[0].x),
+        prefix[0].y + (y - baseline) / step * (prefix[1].y - prefix[0].y),
+    )
+}
+fn assert_chart_line(
+    h: &Harness<'_, State>,
+    score: bool,
+    color: eframe::egui::Color32,
+    expected: &[[f32; 2]],
+) {
+    let prefix = chart_lines(h, score, game_chart_color(score));
+    assert!(!prefix.is_empty(), "shared game prefix disappeared");
+    let lines = chart_lines(h, score, color);
+    assert_eq!(
+        lines.len(),
+        1,
+        "missing or extra curve in {}: {lines:?}",
+        chart_label(score)
+    );
+    assert_eq!(
+        lines[0].len(),
+        expected.len(),
+        "wrong continuation in {}",
+        chart_label(score)
+    );
+    for (actual, [x, y]) in lines[0].iter().zip(expected) {
+        let expected = chart_position(&prefix[0], score, *x, *y);
+        assert!(
+            actual.distance(expected) < 0.1,
+            "wrong assessment or move index: {actual:?} versus {expected:?}"
+        );
+    }
+}
+#[test]
+fn variation_charts_dim_only_the_original_future_and_highlight_the_saved_continuation() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let mut h = Harness::builder()
+        .with_size(eframe::egui::vec2(1200.0, 1100.0))
+        .build_ui_state(
+            |ui, state: &mut State| state.render(ui),
+            variation_state(temp.path()),
+        );
+    for score in [true, false] {
+        assert_eq!(
+            chart_lines(&h, score, game_chart_color(score))[0].len(),
+            2,
+            "the original future is still highlighted after the branch point"
+        );
+        assert_chart_line(
+            &h,
+            score,
+            game_chart_color(score).gamma_multiply(0.3),
+            if score {
+                &[[1.0, 1.0], [2.0, 2.0], [3.0, 3.0], [4.0, 4.0]]
+            } else {
+                &[[1.0, 30.0], [2.0, 40.0], [3.0, 50.0], [4.0, 60.0]]
+            },
+        );
+        assert_chart_line(
+            &h,
+            score,
+            CHART_VARIATION,
+            if score {
+                &[[1.0, 1.0], [2.0, -1.0], [3.0, -2.0], [4.0, -3.0]]
+            } else {
+                &[[1.0, 30.0], [2.0, 25.0], [3.0, 15.0], [4.0, 5.0]]
+            },
+        );
+        let prefix = chart_lines(&h, score, game_chart_color(score));
+        let selected = chart_position(&prefix[0], score, 2.0, if score { -1.0 } else { 25.0 });
+        assert!(
+            has_circle(&h, h.get_by_label(chart_label(score)).rect(), |c| c.fill
+                == eframe::egui::Color32::WHITE
+                && c.radius == 4.0
+                && c.center.distance(selected) < 0.1),
+            "selected variation has no marker on its own assessment"
+        );
+    }
+    if let Some(path) = std::env::var_os("KATASTRO_CHART_PREVIEW") {
+        h.run();
+        h.render().unwrap().save(path).unwrap();
+    }
+}
+#[test]
+fn variation_charts_follow_nested_selection_and_restore_after_reopen() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let mut state = variation_state(temp.path());
+    state.review.select(5).unwrap();
+    state.review.play(Some(Point::new(4, 3))).unwrap();
+    state.review.play(Some(Point::new(5, 3))).unwrap();
+    state.review.select(8).unwrap();
+    state.snapshot.values.insert(
+        8,
+        katastro::Analysis {
+            visits: 64,
+            score_lead: -4.0,
+            winrate: 0.1,
+            suggestions: vec![],
+        },
+    );
+    state.snapshot.values.insert(
+        9,
+        katastro::Analysis {
+            visits: 64,
+            score_lead: -5.0,
+            winrate: 0.0,
+            suggestions: vec![],
+        },
+    );
+    let values = state.snapshot.values.clone();
+    drop(state);
+    let mut reopened = imported_state(temp.path(), "(;SZ[9];B[cc];W[gg];B[cg];W[gc])");
+    reopened.snapshot.values = values;
+    assert_eq!(reopened.review.document().unwrap().selected, 8);
+    let mut h = Harness::builder()
+        .with_size(eframe::egui::vec2(1200.0, 1100.0))
+        .build_ui_state(|ui, state: &mut State| state.render(ui), reopened);
+    for score in [true, false] {
+        assert_chart_line(
+            &h,
+            score,
+            CHART_VARIATION,
+            if score {
+                &[[1.0, 1.0], [2.0, -1.0], [3.0, -4.0], [4.0, -5.0]]
+            } else {
+                &[[1.0, 30.0], [2.0, 25.0], [3.0, 10.0], [4.0, 0.0]]
+            },
+        );
+    }
+    h.get_by_label("Tree node 6").click();
+    h.run();
+    assert_chart_line(
+        &h,
+        true,
+        CHART_VARIATION,
+        &[[1.0, 1.0], [2.0, -1.0], [3.0, -2.0], [4.0, -3.0]],
+    );
+    h.get_by_label("Tree node 3").click();
+    h.run();
+    for score in [true, false] {
+        assert!(chart_lines(&h, score, CHART_VARIATION).is_empty());
+        assert!(chart_lines(&h, score, game_chart_color(score).gamma_multiply(0.3)).is_empty());
+        assert_eq!(
+            chart_lines(&h, score, game_chart_color(score))[0].len(),
+            5,
+            "returning to the played game must restore the full original curve"
+        );
+    }
+}
+#[test]
+fn variation_chart_gaps_remain_disconnected_and_zero_results_refine_in_place() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let mut state = variation_state(temp.path());
+    state.snapshot.values.remove(&6);
+    let mut h = Harness::builder()
+        .with_size(eframe::egui::vec2(1200.0, 1100.0))
+        .build_ui_state(|ui, state: &mut State| state.render(ui), state);
+    for score in [true, false] {
+        assert_chart_line(
+            &h,
+            score,
+            CHART_VARIATION,
+            if score {
+                &[[1.0, 1.0], [2.0, -1.0]]
+            } else {
+                &[[1.0, 30.0], [2.0, 25.0]]
+            },
+        );
+        let prefix = chart_lines(&h, score, game_chart_color(score));
+        let end = chart_position(&prefix[0], score, 4.0, if score { -3.0 } else { 5.0 });
+        assert!(
+            has_circle(&h, h.get_by_label(chart_label(score)).rect(), |c| c.fill
+                == CHART_VARIATION
+                && c.center.distance(end) < 0.1),
+            "an isolated evaluated branch position was hidden"
+        );
+    }
+    h.state_mut().snapshot.values.insert(
+        6,
+        katastro::Analysis {
+            visits: 256,
+            score_lead: 0.0,
+            winrate: 0.0,
+            suggestions: vec![],
+        },
+    );
+    h.run();
+    for score in [true, false] {
+        assert_chart_line(
+            &h,
+            score,
+            CHART_VARIATION,
+            if score {
+                &[[1.0, 1.0], [2.0, -1.0], [3.0, 0.0], [4.0, -3.0]]
+            } else {
+                &[[1.0, 30.0], [2.0, 25.0], [3.0, 0.0], [4.0, 5.0]]
+            },
+        );
+    }
+}
+fn click_at(h: &mut Harness<'_, State>, pos: eframe::egui::Pos2) {
+    h.event(eframe::egui::Event::PointerMoved(pos));
+    for pressed in [true, false] {
+        h.event(eframe::egui::Event::PointerButton {
+            pos,
+            button: eframe::egui::PointerButton::Primary,
+            pressed,
+            modifiers: eframe::egui::Modifiers::NONE,
+        });
+    }
+    h.run();
+}
+#[test]
+fn clicking_highlighted_and_dimmed_chart_curves_selects_the_corresponding_position() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let mut h = Harness::builder()
+        .with_size(eframe::egui::vec2(1200.0, 1100.0))
+        .build_ui_state(
+            |ui, state: &mut State| state.render(ui),
+            variation_state(temp.path()),
+        );
+    for score in [true, false] {
+        let prefix = chart_lines(&h, score, game_chart_color(score));
+        let variation = chart_position(&prefix[0], score, 3.0, if score { -2.0 } else { 15.0 });
+        click_at(&mut h, variation);
+        assert_eq!(
+            h.state().review.document().unwrap().selected,
+            6,
+            "clicking the highlighted assessment selected the original game instead"
+        );
+        let prefix = chart_lines(&h, score, game_chart_color(score));
+        let original = chart_position(&prefix[0], score, 3.0, if score { 3.0 } else { 50.0 });
+        click_at(&mut h, original);
+        assert_eq!(h.state().review.document().unwrap().selected, 3);
+        h.get_by_label("Tree node 5").click();
+        h.run();
+    }
+}
+#[test]
+fn variation_charts_extend_through_a_branch_longer_than_the_original_game() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let mut state = variation_state(temp.path());
+    state.review.select(7).unwrap();
+    for score_lead in [-4.0, -5.0, -6.0] {
+        let id = state.review.play(None).unwrap();
+        state.snapshot.values.insert(
+            id,
+            katastro::Analysis {
+                visits: 64,
+                score_lead,
+                winrate: 0.0,
+                suggestions: vec![],
+            },
+        );
+    }
+    state.review.select(5).unwrap();
+    state.sync();
+    let mut h = Harness::builder()
+        .with_size(eframe::egui::vec2(1200.0, 1100.0))
+        .build_ui_state(|ui, state: &mut State| state.render(ui), state);
+    assert_chart_line(
+        &h,
+        true,
+        CHART_VARIATION,
+        &[
+            [1.0, 1.0],
+            [2.0, -1.0],
+            [3.0, -2.0],
+            [4.0, -3.0],
+            [5.0, -4.0],
+            [6.0, -5.0],
+            [7.0, -6.0],
+        ],
+    );
+    let prefix = chart_lines(&h, true, game_chart_color(true));
+    let end = chart_position(&prefix[0], true, 7.0, -6.0);
+    assert!(
+        h.get_by_label(chart_label(true)).rect().contains(end),
+        "branch assessment was clipped to original length"
+    );
+    click_at(&mut h, end);
+    assert_eq!(
+        h.state().review.document().unwrap().selected,
+        10,
+        "the chart cannot navigate beyond the original game's final move"
+    );
+}
+
 #[test]
 fn horizontal_navigation_keeps_the_selected_timeline_node_in_view() {
     let temp = tempfile::TempDir::new().unwrap();
