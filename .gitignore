@@ -1,0 +1,13 @@
+/target/
+.DS_Store
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.log
+**/tests/snapshots/**/*.diff.png
+**/tests/snapshots/**/*.new.png
+
+# Private game corpus and large engine assets stay outside Git.
+/local/
+/models/
+/engines/
