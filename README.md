@@ -6,7 +6,7 @@ Open or drop an SGF to restore its review and cached chart immediately. Missing 
 
 Click an empty board intersection to explore a legal variation, even during analysis. Variations autosave after each move and remain separate from the original game, which stays on the top row of the tree. Click a tree node to revisit it, or use Up/Down to switch variation rows at the same column. Navigation keeps the selected node in view. Export SGF saves all branches to another file; the source stays unchanged.
 
-The board shows all returned AI candidates, with the best searched recommendation in blue, and a dotted hollow ring for the next recorded move in its stone color. Other candidate colors reflect point loss against the best recommendation, from the moving player's perspective: green within 0.5 points, blending through yellow at 1.5, orange at 3, and red at 6 or more. Alternatives below 25 visits are subdued. Unscored policy previews are gray, with a blue outline identifying the leading preview. The sidebar includes a color legend and a fixed-height, scrollable list of every candidate, including Pass.
+The board shows all returned AI candidates with point estimates, with the best searched recommendation in blue, and a dotted hollow ring for the next recorded move in its stone color. Other candidate colors reflect point loss against the best recommendation, from the moving player's perspective: green within 0.5 points, blending through yellow at 1.5, orange at 3, and red at 6 or more. Alternatives below 25 visits are subdued. Unscored policy previews remain gray in the sidebar; they stay off the board until point estimates arrive, avoiding a board full of gray markers after placing a stone. The sidebar includes a color legend and a fixed-height, scrollable list of every candidate, including Pass.
 
 All board markers use equal-size circles containing the signed point change from the current position, from the moving player's perspective: positive gains points and negative loses points. Colors compare alternatives; numbers compare against the current position. The played move uses its candidate estimate when available, otherwise the following position's evaluation; missing estimates show `--`. Colored stones beside player names identify Black and White.
 
@@ -46,7 +46,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
-The standard suite has 53 integration tests. Real-engine, corpus, and performance checks require local assets and run explicitly:
+The standard suite has 55 integration tests. Real-engine, corpus, and performance checks require local assets and run explicitly:
 
 ```sh
 export KATASTRO_TEST_ENGINE=/opt/homebrew/bin/katago

@@ -716,6 +716,224 @@ fn suggestions() -> Vec<katastro::SuggestedMove> {
         })
         .collect()
 }
+fn policy_reply(
+    scheduler: &mut katastro::scheduler::Scheduler,
+    occupied: Option<Point>,
+    size: usize,
+) {
+    let request = scheduler.next_request().unwrap().unwrap();
+    assert_eq!(request.visits, 1);
+    let mut policy = vec![1.0 / (size * size + 1) as f64; size * size + 1];
+    if let Some(point) = occupied {
+        policy[point.y * size + point.x] = -1.0;
+    }
+    scheduler
+        .accept(&serde_json::json!({
+            "id":request.id, "turnNumber":request.targets.keys().next().unwrap(),
+            "isDuringSearch":false, "rootInfo":{"visits":1,"winrate":0.5,"scoreLead":2.5},
+            "moveInfos":[], "policy":policy,
+        }))
+        .unwrap();
+}
+#[test]
+fn placing_a_stone_does_not_flood_the_board_when_full_policy_results_arrive() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let mut state = imported_state(temp.path(), "(;SZ[19];B[cc];W[gg])");
+    state.snapshot.values.insert(
+        0,
+        katastro::Analysis {
+            visits: 256,
+            winrate: 0.5,
+            score_lead: 2.5,
+            suggestions: suggestions(),
+        },
+    );
+    let mut h = Harness::builder()
+        .with_max_steps(120)
+        .with_size(eframe::egui::vec2(1200.0, 1100.0))
+        .build_ui_state(|ui, state: &mut State| state.render(ui), state);
+    assert!(h.query_by_label("AI suggestion 1: D16").is_some());
+    h.get_by_label("Play D16").click();
+    h.run();
+    let branch = h.state().review.document().unwrap().selected;
+    assert!(
+        h.query_by_label("AI suggestion 1: D16").is_none(),
+        "the parent overlay leaked into the new position"
+    );
+    let profile = katastro::EngineProfile {
+        model_sha256: "model".into(),
+        engine_sha256: "engine".into(),
+        settings_digest: "black".into(),
+    };
+    let mut scheduler = katastro::scheduler::Scheduler::new(
+        1,
+        h.state().review.document().unwrap().clone(),
+        profile.clone(),
+        h.state().snapshot.values.clone(),
+    );
+    scheduler.select(h.state().review.document().unwrap().clone());
+    policy_reply(&mut scheduler, Some(Point::new(3, 3)), 19);
+    assert_eq!(
+        scheduler.values[&branch].suggestions.len(),
+        361,
+        "the early result must retain every legal preview, including Pass"
+    );
+    h.state_mut().snapshot.values = scheduler.values.clone();
+    h.step();
+    let viewport = h.get_by_label("AI candidate list").rect();
+    assert!(
+        painted_text_in(&h, viewport)
+            .iter()
+            .any(|text| text.contains("Policy preview")),
+        "early previews vanished from the sidebar"
+    );
+    assert!(
+        h.query_by_label("50.0%").is_some(),
+        "hiding previews discarded the early position evaluation"
+    );
+    for y in 0..19 {
+        for x in 0..19 {
+            let point = Point::new(x, y);
+            if point == Point::new(3, 3) {
+                continue;
+            }
+            let bounds = h.get_by_label(&format!("Play {}", point.gtp(19))).rect();
+            assert!(
+                !has_circle(&h, bounds, |c| c.fill.a() > 0
+                    && c.radius > bounds.width() * 0.3),
+                "a policy-only stone flashed at {}",
+                point.gtp(19)
+            );
+        }
+    }
+    assert_eq!(
+        h.state()
+            .snapshot
+            .board
+            .as_ref()
+            .unwrap()
+            .stone(Point::new(3, 3)),
+        Some(Color::Black)
+    );
+    h.event(eframe::egui::Event::PointerMoved(viewport.center()));
+    h.event(eframe::egui::Event::MouseWheel {
+        unit: eframe::egui::MouseWheelUnit::Point,
+        delta: eframe::egui::vec2(0.0, -20_000.0),
+        phase: eframe::egui::TouchPhase::Move,
+        modifiers: eframe::egui::Modifiers::NONE,
+    });
+    h.run();
+    assert!(
+        viewport.contains_rect(h.get_by_label("361  Pass").rect()),
+        "the full policy list stopped being reachable in the sidebar"
+    );
+    // As soon as searched move scores arrive, every scored candidate appears,
+    // including low-visit estimates and candidates after the fifth.
+    let search = scheduler.next_request().unwrap().unwrap();
+    let points = [
+        Point::new(0, 18),
+        Point::new(1, 18),
+        Point::new(2, 18),
+        Point::new(4, 4),
+        Point::new(4, 18),
+        Point::new(5, 18),
+        Point::new(6, 18),
+    ];
+    let moves: Vec<_> = points.iter().enumerate().map(|(rank,point)|serde_json::json!({
+        "move":point.gtp(19),"order":rank,"visits":if rank == 6 {0}else{1},"winrate":0.5,"scoreLead":1.0,
+    })).collect();
+    scheduler
+        .accept(
+            &serde_json::json!({"id":search.id,"turnNumber":1,"isDuringSearch":true,
+        "rootInfo":{"visits":8,"winrate":0.5,"scoreLead":2.5},"moveInfos":moves}),
+        )
+        .unwrap();
+    h.state_mut().snapshot.values = scheduler.values.clone();
+    h.run();
+    for (rank, point) in points.iter().enumerate() {
+        assert!(
+            h.query_by_label(&format!("AI suggestion {}: {}", rank + 1, point.gtp(19)))
+                .is_some(),
+            "hiding policy previews hid a searched move too"
+        );
+    }
+    h.get_by_label("Play G1").click();
+    h.run();
+    assert_eq!(
+        h.state()
+            .snapshot
+            .board
+            .as_ref()
+            .unwrap()
+            .stone(Point::new(6, 18)),
+        Some(Color::White)
+    );
+    let selected = h.state().review.document().unwrap().selected;
+    drop(h);
+    assert_eq!(
+        imported_state(temp.path(), "(;SZ[19];B[cc];W[gg])")
+            .review
+            .document()
+            .unwrap()
+            .selected,
+        selected
+    );
+}
+#[test]
+fn hidden_policy_preview_does_not_hide_the_recorded_moves_point_delta() {
+    for white in [false, true] {
+        let temp = tempfile::TempDir::new().unwrap();
+        let mut state = imported_state(
+            temp.path(),
+            if white {
+                "(;SZ[9]PL[W];W[dd])"
+            } else {
+                "(;SZ[9];B[dd])"
+            },
+        );
+        let profile = katastro::EngineProfile {
+            model_sha256: "model".into(),
+            engine_sha256: "engine".into(),
+            settings_digest: "black".into(),
+        };
+        let mut scheduler = katastro::scheduler::Scheduler::new(
+            1,
+            state.review.document().unwrap().clone(),
+            profile,
+            Default::default(),
+        );
+        policy_reply(&mut scheduler, None, 9);
+        state.snapshot.values = scheduler.values;
+        state.snapshot.values.insert(
+            1,
+            katastro::Analysis {
+                visits: 64,
+                winrate: 0.5,
+                score_lead: if white { 2.0 } else { 3.0 },
+                suggestions: vec![],
+            },
+        );
+        let h = Harness::builder()
+            .with_size(eframe::egui::vec2(1200.0, 1100.0))
+            .build_ui_state(|ui, state: &mut State| state.render(ui), state);
+        let label = if white {
+            "Next recorded move: White D6"
+        } else {
+            "Next recorded move: Black D6"
+        };
+        let bounds = h.get_by_label(label).rect();
+        assert!(
+            !has_circle(&h, bounds, |c| c.fill.a() > 0
+                && c.radius > bounds.width() * 0.3),
+            "an unscored preview filled the recorded move's hollow marker"
+        );
+        assert_eq!(
+            painted_text_in(&h, bounds),
+            vec!["+0.5"],
+            "a hidden preview suppressed the recorded move's child-based label"
+        );
+    }
+}
 fn has_circle(
     h: &Harness<'_, State>,
     rect: eframe::egui::Rect,
@@ -842,8 +1060,23 @@ fn candidate_fill(h: &Harness<'_, State>, label: &str) -> eframe::egui::Color32 
         })
         .expect("the candidate is not drawn as a filled circle")
 }
+fn candidate_button_color(h: &Harness<'_, State>, label: &str) -> eframe::egui::Color32 {
+    let bounds = h.get_by_label(label).rect();
+    h.output()
+        .shapes
+        .iter()
+        .find_map(|shape| match &shape.shape {
+            eframe::egui::Shape::Text(text)
+                if bounds.contains(text.pos) && text.galley.text() == label =>
+            {
+                Some(text.galley.job.sections[0].format.color)
+            }
+            _ => None,
+        })
+        .expect("candidate button text was not painted")
+}
 #[test]
-fn all_candidates_are_visible_on_board_and_a_later_played_candidate_has_one_delta() {
+fn all_scored_candidates_are_visible_on_board_and_a_later_played_candidate_has_one_delta() {
     let temp = tempfile::TempDir::new().unwrap();
     let mut h = Harness::builder()
         .with_size(eframe::egui::vec2(1200.0, 1100.0))
@@ -852,6 +1085,13 @@ fn all_candidates_are_visible_on_board_and_a_later_played_candidate_has_one_delt
             quality_state(temp.path(), false),
         );
     for (rank, column) in "ABCDEFGHJ".chars().enumerate() {
+        if rank == 7 {
+            assert!(
+                h.query_by_label("AI suggestion 8: H7").is_none(),
+                "an unscored preview should stay in the sidebar"
+            );
+            continue;
+        }
         assert!(
             h.query_by_label(&format!("AI suggestion {}: {column}7", rank + 1))
                 .is_some(),
@@ -964,6 +1204,7 @@ fn candidate_gradient_uses_mover_relative_loss_not_rank_or_root_delta() {
 fn low_visit_candidates_are_subdued_and_unknown_scores_are_neutral_until_refined() {
     let temp = tempfile::TempDir::new().unwrap();
     let mut h = Harness::builder()
+        .with_max_steps(60)
         .with_size(eframe::egui::vec2(1200.0, 1100.0))
         .build_ui_state(
             |ui, state: &mut State| state.render(ui),
@@ -982,7 +1223,17 @@ fn low_visit_candidates_are_subdued_and_unknown_scores_are_neutral_until_refined
         weak_bad.r() > weak_bad.g() && weak_bad.r() > weak_bad.b(),
         "uncertainty must not turn bad moves green"
     );
-    let unknown = candidate_fill(&h, "AI suggestion 8: H7");
+    assert!(h.query_by_label("AI suggestion 8: H7").is_none());
+    let viewport = h.get_by_label("AI candidate list").rect();
+    h.event(eframe::egui::Event::PointerMoved(viewport.center()));
+    h.event(eframe::egui::Event::MouseWheel {
+        unit: eframe::egui::MouseWheelUnit::Point,
+        delta: eframe::egui::vec2(0.0, -400.0),
+        phase: eframe::egui::TouchPhase::Move,
+        modifiers: eframe::egui::Modifiers::NONE,
+    });
+    h.run();
+    let unknown = candidate_button_color(&h, "8  H7");
     assert_eq!(
         unknown.r(),
         unknown.g(),
@@ -1088,15 +1339,12 @@ fn scarce_legal_choices_do_not_turn_bad_candidates_green_and_policy_best_is_neut
     moves[0].score_lead = None;
     moves[0].winrate = None;
     h.run();
-    let unknown = candidate_fill(&h, "AI suggestion 1: B1");
+    let unknown = candidate_button_color(&h, "1  B1");
     assert_eq!(unknown.r(), unknown.g());
     assert_eq!(unknown.g(), unknown.b());
-    let bounds = h.get_by_label("AI suggestion 1: B1").rect();
     assert!(
-        has_circle(&h, bounds, |c| c.fill == eframe::egui::Color32::TRANSPARENT
-            && c.stroke.color == eframe::egui::Color32::from_rgb(65, 145, 255)
-            && c.radius > bounds.width() * 0.3),
-        "the leading policy preview lost its blue outline"
+        h.query_by_label("AI suggestion 1: B1").is_none(),
+        "even the leading unscored preview should stay off the board"
     );
 }
 #[test]
@@ -1306,22 +1554,16 @@ fn marker_radius(h: &Harness<'_, State>, bounds: eframe::egui::Rect, dotted: boo
         .fold(0.0, f32::max)
 }
 #[test]
-fn ai_and_recorded_move_markers_have_matching_circles_and_pending_score_labels() {
+fn ai_and_recorded_markers_keep_equal_circles_when_the_recorded_score_is_pending() {
     let temp = tempfile::TempDir::new().unwrap();
     let mut state = state(temp.path());
-    let mut policy = suggestions();
-    for s in &mut policy {
-        s.score_lead = None;
-        s.winrate = None;
-        s.visits = 0;
-    }
     state.snapshot.values.insert(
         0,
         katastro::Analysis {
-            visits: 1,
+            visits: 256,
             winrate: 0.5,
             score_lead: 2.5,
-            suggestions: policy,
+            suggestions: suggestions(),
         },
     );
     let h = Harness::builder()
@@ -1333,9 +1575,9 @@ fn ai_and_recorded_move_markers_have_matching_circles_and_pending_score_labels()
         (marker_radius(&h, suggested, false) - marker_radius(&h, played, true)).abs() < 0.01,
         "candidate and recorded move circles have different sizes"
     );
-    for bounds in [suggested, played] {
+    for (bounds, expected) in [(suggested, "+0.0"), (played, "--")] {
         assert!(
-            painted_text_in(&h, bounds).contains(&"--".to_string()),
+            painted_text_in(&h, bounds).contains(&expected.to_string()),
             "missing score must have a placeholder, not a rank or a fabricated zero"
         );
     }

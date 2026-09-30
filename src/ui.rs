@@ -575,7 +575,7 @@ fn board_view(
     }
     if let Some(analysis) = analysis {
         for (rank, suggestion) in analysis.suggestions.iter().enumerate() {
-            let Some(point) = suggestion.point else {
+            let Some(point) = suggestion.point.filter(|_| suggestion.score_lead.is_some()) else {
                 continue;
             };
             if point.x >= doc.size || point.y >= doc.size || board.stone(point).is_some() {
@@ -584,19 +584,11 @@ fn board_view(
             let center = start + Vec2::new(point.x as f32 * gap, point.y as f32 * gap);
             let color = suggestion_color(analysis, rank, board.next);
             painter.circle_filled(center, marker_radius, color);
-            if rank == 0 && suggestion.score_lead.is_none() {
-                painter.circle_stroke(center, marker_radius, Stroke::new(1.5, SUGGESTION_BLUE));
-            }
-            let score = suggestion.score_lead.or_else(|| {
-                recorded
-                    .filter(|(_, played)| played.point == Some(point))
-                    .and(recorded_score)
-            });
             paint_move_delta(
                 painter,
                 center,
                 marker_radius,
-                point_delta(Some(analysis), score, board.next),
+                point_delta(Some(analysis), suggestion.score_lead, board.next),
                 if color.a() < 255
                     || u32::from(color.r()) * 299
                         + u32::from(color.g()) * 587
@@ -640,8 +632,11 @@ fn board_view(
                 .collect();
             painter.add(egui::Shape::line(points, Stroke::new(2.1, color)));
         }
-        let already_labeled =
-            analysis.is_some_and(|a| a.suggestions.iter().any(|s| s.point == Some(point)));
+        let already_labeled = analysis.is_some_and(|a| {
+            a.suggestions
+                .iter()
+                .any(|s| s.point == Some(point) && s.score_lead.is_some())
+        });
         if !already_labeled {
             paint_move_delta(
                 painter,
@@ -1134,7 +1129,7 @@ fn suggestion_legend(ui: &mut egui::Ui) {
         "blending through yellow at 1.5, orange at 3, and red at 6 or more. ",
         "Gray means no score estimate. Alternatives below 25 visits are subdued; ",
         "visits measure search effort. Circle labels remain point changes from ",
-        "the current position. A blue outline identifies the leading policy preview before search."
+        "the current position. Unscored previews stay in this list until point estimates arrive."
     ));
 }
 
