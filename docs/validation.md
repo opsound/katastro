@@ -4,7 +4,7 @@ Validated on 2026-09-30 with Rust 1.98.1, an Apple M4 Max, and macOS 26.6.2. Sou
 
 ## Behavioral test evidence
 
-The initial implementation of each slice was a minimal interface that allowed its integration tests to run and fail on missing behavior before production implementation. The portable suite contains 21 integration tests:
+The initial implementation of each slice was a minimal interface that allowed its integration tests to run and fail on missing behavior before production implementation. The standard suite contains 24 integration tests:
 
 | Slice | Observed red failure | Passing behavior |
 | --- | --- | --- |
@@ -65,3 +65,15 @@ KATASTRO_UI_PREVIEW="$PWD/local/ui-preview.png" cargo test --test desktop
 ```
 
 The test fixtures contain synthetic game data. Package validation runs automatically on macOS with desktop features enabled. The three real-engine/corpus/performance tests are ignored by default because their local asset prerequisites are explicit.
+
+## Native file-dialog crash regression
+
+The original desktop tests imported their SGF through the startup argument; they did not invoke the operating-system picker. They therefore missed a crash in `rfd::FileDialog::pick_file`: its AppKit `runModal` reentered winit during an active render callback, which aborted with `tried to handle event while another event is currently being handled`.
+
+All four file-picking paths now use `rfd::AsyncFileDialog` with the application's native window as parent. The UI retains a pending future and polls it without blocking. Its waker requests a repaint when selection or cancellation completes. Only one sheet can be outstanding. Open/Export selections become worker commands; engine/model selections become editable settings. Canceling leaves the current review intact.
+
+Three integration tests use actual toolbar/settings clicks and controlled delayed dialog completions to verify SGF import, cancellation, continued worker/UI progress, duplicate-sheet prevention, variation export without changing the original, and persisted engine settings. The initial deferred Open test failed because its completion was discarded; retaining and polling the future made it pass.
+
+An additional explicit native test runs a real eframe/AppKit window in a subprocess, opens and cancels Open twice and Export once, then reopens the saved review to verify preservation. It operates only on its own AppKit windows and needs no system accessibility permission. File-selection delivery is tested through controlled dialog results; the native test verifies real sheet presentation/cancellation and process survival. Restoring the synchronous native picker makes the test fail: the render callback blocks in the modal panel and the process cannot complete its sheet/cancellation sequence. The test terminates that subprocess on timeout. The user's original crash log independently records the winit reentrancy panic. The async implementation was restored and the native check rerun before delivery.
+
+Run `cargo test --test native_dialogs -- --ignored --nocapture` in a graphical macOS session. This fourth prerequisite-dependent test stays explicit so routine test runs do not display operating-system dialogs.

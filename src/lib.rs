@@ -1,6 +1,8 @@
 pub mod analysis;
 #[cfg(feature = "desktop")]
 pub mod desktop;
+#[cfg(feature = "desktop")]
+pub mod dialogs;
 pub mod engine;
 pub mod game;
 pub mod review;

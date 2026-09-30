@@ -1501,6 +1501,7 @@ dependencies = [
  "egui_kittest",
  "egui_plot",
  "encoding_rs",
+ "objc2 0.6.4",
  "rfd",
  "rusqlite",
  "serde",

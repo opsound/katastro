@@ -41,7 +41,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
-The portable suite has 21 integration tests. Three additional checks require local assets and run explicitly:
+The standard suite has 24 integration tests. Three additional checks require local assets and run explicitly:
 
 ```sh
 export KATASTRO_TEST_ENGINE=/opt/homebrew/bin/katago
@@ -50,6 +50,12 @@ export KATASTRO_SGF_DIR="$HOME/Downloads"
 cargo test --release --test engine live_katago -- --ignored --nocapture
 cargo test --release --test corpus -- --ignored --nocapture
 cargo test --release --test performance -- --ignored --nocapture
+```
+
+A separate regression test opens and cancels real macOS Open and Export sheets, verifies that the review survives, and detects event-loop crashes. It requires a graphical macOS session:
+
+```sh
+cargo test --test native_dialogs -- --ignored --nocapture
 ```
 
 The MVP supports single-game, square SGFs from 2×2 through 19×19, captures, ko/superko, passes, handicap setup, imported branches, comments, and common text encodings. Missing rules default visibly to Chinese. Midgame setup edits remain viewable but their subsequent analysis is unavailable rather than inventing history. Automatic refinement currently stops at 64 visits; configurable deeper budgets, ownership maps, candidate moves, editing game properties, and SGF collections are future work.
