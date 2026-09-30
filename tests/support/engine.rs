@@ -1,0 +1,61 @@
+use serde_json::{Value, json};
+use std::io::{self, BufRead, Write};
+fn emit(query: &Value) {
+    let turns = query["analyzeTurns"]
+        .as_array()
+        .cloned()
+        .unwrap_or(vec![json!(0)]);
+    for turn in turns.iter().rev() {
+        let root = json!({"visits":query["maxVisits"].as_u64().unwrap_or(1),"winrate":0.5,"scoreLead":turn.as_u64().unwrap_or(0) as f64});
+        if query.get("reportDuringSearchEvery").is_some() {
+            println!(
+                "{}",
+                json!({"id":query["id"],"turnNumber":turn,"isDuringSearch":true,"rootInfo":root})
+            );
+        }
+        println!(
+            "{}",
+            json!({"id":query["id"],"turnNumber":turn,"isDuringSearch":false,"rootInfo":root})
+        );
+    }
+    io::stdout().flush().unwrap();
+}
+fn main() {
+    eprintln!("test engine ready");
+    let args: Vec<_> = std::env::args_os().collect();
+    let model = args
+        .windows(2)
+        .find(|pair| pair[0] == "-model")
+        .map(|pair| std::fs::read(&pair[1]).unwrap());
+    let invalid_evaluation = model.as_deref() == Some(b"bad-evaluation");
+    let mut held = Vec::new();
+    for line in io::stdin().lock().lines() {
+        let query: Value = serde_json::from_str(&line.unwrap()).unwrap();
+        match query["action"].as_str() {
+            Some("hold") => {
+                held.push(query["query"].clone());
+                println!("{}", json!({"id":query["id"],"action":"held"}));
+            }
+            Some("release") => {
+                for q in held.drain(..) {
+                    emit(&q);
+                }
+            }
+            Some("terminate") | Some("terminate_all") => {
+                println!("{query}");
+            }
+            Some("crash") => std::process::exit(7),
+            Some("malformed") => println!("invalid engine output"),
+            Some("query_version") => println!(
+                "{}",
+                json!({"id":query["id"],"version":"fake-test-only","action":"query_version"})
+            ),
+            _ if invalid_evaluation => println!(
+                "{}",
+                json!({"id":query["id"],"turnNumber":0,"isDuringSearch":false,"rootInfo":{"visits":0,"winrate":0.5,"scoreLead":0.0}})
+            ),
+            _ => emit(&query),
+        }
+        io::stdout().flush().unwrap();
+    }
+}

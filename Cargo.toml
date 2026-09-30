@@ -1,0 +1,36 @@
+[package]
+name = "katastro"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+
+[features]
+default = ["desktop"]
+desktop = ["dep:eframe", "dep:egui_plot", "dep:rfd"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+sha2 = "0.10"
+sgf-parse = "4.2.8"
+encoding_rs = "0.8"
+eframe = { version = "=0.36.2", optional = true, default-features = false, features = ["accesskit", "default_fonts", "wgpu"] }
+egui_plot = { version = "=0.37.0", optional = true }
+rfd = { version = "0.17", optional = true }
+
+[dev-dependencies]
+tempfile = "3"
+egui_kittest = { version = "=0.36.2", features = ["eframe", "wgpu"] }
+
+[[bin]]
+name = "katastro"
+path = "src/main.rs"
+required-features = ["desktop"]
+
+[profile.release]
+lto = "thin"
+
+[[bin]]
+name = "katastro-test-engine"
+path = "tests/support/engine.rs"

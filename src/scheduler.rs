@@ -1,0 +1,247 @@
+use crate::{Analysis, Document, EngineProfile, NodeId, Result, digest};
+use serde_json::{Value, json};
+use std::collections::{BTreeMap, BTreeSet};
+#[derive(Clone, Debug)]
+pub struct Target {
+    pub node: NodeId,
+    pub key: String,
+}
+#[derive(Clone, Debug)]
+pub struct Request {
+    pub id: String,
+    pub query: Value,
+    pub targets: BTreeMap<usize, Vec<Target>>,
+    pub visits: u64,
+}
+pub struct Scheduler {
+    pub values: BTreeMap<NodeId, Analysis>,
+    doc: Document,
+    profile: EngineProfile,
+    generation: u64,
+    sequence: u64,
+    inflight: BTreeMap<String, Request>,
+    failed: BTreeSet<NodeId>,
+    interactive: Option<NodeId>,
+}
+impl Scheduler {
+    pub fn new(
+        generation: u64,
+        doc: Document,
+        profile: EngineProfile,
+        values: BTreeMap<NodeId, Analysis>,
+    ) -> Self {
+        Self {
+            values,
+            doc,
+            profile,
+            generation,
+            sequence: 0,
+            inflight: BTreeMap::new(),
+            failed: BTreeSet::new(),
+            interactive: None,
+        }
+    }
+    fn request(&mut self, nodes: &[NodeId], visits: u64, priority: i64) -> Result<Request> {
+        let last = *nodes.last().ok_or("Empty analysis request")?;
+        let position = self.doc.position(last)?;
+        let mut targets: BTreeMap<usize, Vec<Target>> = BTreeMap::new();
+        for node in nodes {
+            let pos = self.doc.position(*node)?;
+            let key = digest(&serde_json::to_vec(&(1, &self.profile, &pos))?);
+            targets
+                .entry(pos.moves.len())
+                .or_default()
+                .push(Target { node: *node, key });
+        }
+        self.sequence += 1;
+        let id = format!("{}-{}", self.generation, self.sequence);
+        let mut query = serde_json::to_value(position)?;
+        let object = query.as_object_mut().ok_or("Invalid position")?;
+        object.insert("id".into(), json!(id));
+        object.insert("maxVisits".into(), json!(visits));
+        object.insert(
+            "analyzeTurns".into(),
+            json!(targets.keys().copied().collect::<Vec<_>>()),
+        );
+        object.insert("priority".into(), json!(priority));
+        object.insert("includeOwnership".into(), json!(false));
+        object.insert("includePolicy".into(), json!(false));
+        object.insert("analysisPVLen".into(), json!(1));
+        if visits > 1 {
+            object.insert("reportDuringSearchEvery".into(), json!(0.2));
+        }
+        let request = Request {
+            id,
+            query,
+            targets,
+            visits,
+        };
+        self.inflight.insert(request.id.clone(), request.clone());
+        Ok(request)
+    }
+    pub fn next_request(&mut self) -> Result<Option<Request>> {
+        if self.inflight.len() >= 2 {
+            return Ok(None);
+        }
+        if let Some(node) = self.interactive.take() {
+            let current = self.values.get(&node).map_or(0, |v| v.visits);
+            if current < 64
+                && !self
+                    .inflight
+                    .values()
+                    .any(|r| r.targets.values().flatten().any(|t| t.node == node))
+            {
+                return self
+                    .request(&[node], if current == 0 { 1 } else { 64 }, 100)
+                    .map(Some);
+            }
+        }
+        if !self.inflight.is_empty() {
+            return Ok(None);
+        }
+        let missing: Vec<_> = self
+            .doc
+            .mainline
+            .iter()
+            .copied()
+            .filter(|id| !self.values.contains_key(id) && !self.failed.contains(id))
+            .collect();
+        if !missing.is_empty() {
+            return self.request(&missing, 1, 0).map(Some);
+        }
+        for visits in [8, 64] {
+            let nodes: Vec<_> = self
+                .doc
+                .mainline
+                .iter()
+                .copied()
+                .filter(|id| {
+                    !self.failed.contains(id)
+                        && self.values.get(id).is_some_and(|v| v.visits < visits)
+                })
+                .take(8)
+                .collect();
+            if !nodes.is_empty() {
+                return self.request(&nodes, visits, -10).map(Some);
+            }
+        }
+        Ok(None)
+    }
+    pub fn accept(&mut self, reply: &Value) -> Result<Vec<(Target, Analysis)>> {
+        let Some(id) = reply.get("id").and_then(Value::as_str) else {
+            return Err("Engine reply has no request ID".into());
+        };
+        if reply.get("action").is_some() || reply.get("warning").is_some() {
+            return Ok(Vec::new());
+        }
+        let Some(request) = self.inflight.get_mut(id) else {
+            return Ok(Vec::new());
+        };
+        if let Some(error) = reply.get("error") {
+            for target in request.targets.values().flatten() {
+                self.failed.insert(target.node);
+            }
+            self.inflight.remove(id);
+            return Err(format!("KataGo: {error}").into());
+        }
+        let turn = reply
+            .get("turnNumber")
+            .and_then(Value::as_u64)
+            .ok_or("Engine reply has no turn number")? as usize;
+        let Some(targets) = request.targets.get(&turn).cloned() else {
+            return Ok(Vec::new());
+        };
+        let final_reply = reply.get("isDuringSearch").and_then(Value::as_bool) == Some(false);
+        let result = if reply.get("noResults").and_then(Value::as_bool) == Some(true) {
+            None
+        } else {
+            let root = reply
+                .get("rootInfo")
+                .ok_or("Engine reply has no evaluation")?;
+            let analysis = Analysis {
+                visits: root["visits"].as_u64().ok_or("Invalid visit count")?,
+                winrate: root["winrate"].as_f64().ok_or("Invalid winrate")?,
+                score_lead: root["scoreLead"].as_f64().ok_or("Invalid score")?,
+            };
+            analysis.validate()?;
+            Some(analysis)
+        };
+        let mut accepted = Vec::new();
+        if let Some(value) = result {
+            for target in &targets {
+                if self
+                    .values
+                    .get(&target.node)
+                    .is_none_or(|old| value.visits >= old.visits)
+                {
+                    self.values.insert(target.node, value.clone());
+                    accepted.push((target.clone(), value.clone()));
+                }
+            }
+        } else if final_reply {
+            for target in &targets {
+                self.failed.insert(target.node);
+            }
+        }
+        if final_reply {
+            if !self.doc.mainline.contains(&self.doc.selected)
+                && targets.iter().any(|t| t.node == self.doc.selected)
+                && self
+                    .values
+                    .get(&self.doc.selected)
+                    .is_some_and(|v| v.visits < 64)
+            {
+                self.interactive = Some(self.doc.selected);
+            }
+            request.targets.remove(&turn);
+            if request.targets.is_empty() {
+                self.inflight.remove(id);
+            }
+        }
+        Ok(accepted)
+    }
+    pub fn select(&mut self, doc: Document) -> Vec<String> {
+        let canceled: Vec<_> = self
+            .inflight
+            .values()
+            .filter(|r| r.visits > 1)
+            .map(|r| r.id.clone())
+            .collect();
+        for id in &canceled {
+            self.inflight.remove(id);
+        }
+        self.interactive = Some(doc.selected);
+        self.doc = doc;
+        canceled
+    }
+    pub fn pending(&self) -> usize {
+        self.inflight.len()
+    }
+    pub fn request_ids(&self) -> Vec<String> {
+        self.inflight.keys().cloned().collect()
+    }
+    pub fn coverage(&self) -> (usize, usize) {
+        (
+            self.doc
+                .mainline
+                .iter()
+                .filter(|id| self.values.contains_key(id))
+                .count(),
+            self.doc.mainline.len(),
+        )
+    }
+    pub fn is_complete(&self) -> bool {
+        self.inflight.is_empty()
+            && self.interactive.is_none()
+            && self.doc.mainline.iter().all(|id| {
+                self.failed.contains(id) || self.values.get(id).is_some_and(|v| v.visits >= 64)
+            })
+    }
+    pub fn unsupported(&mut self) {
+        for id in &self.doc.mainline {
+            if self.doc.position(*id).is_err() {
+                self.failed.insert(*id);
+            }
+        }
+    }
+}

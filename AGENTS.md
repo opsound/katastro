@@ -4,7 +4,7 @@
 
 Build a native macOS Go review application in Rust. Compiled Rust with GPU-rendered controls is acceptable. Keep the original SGF main line on the top row of a tree that grows from left to right. User moves create persistent variations without replacing the played game. Analysis must be reusable across reopen and progressively refined after a fast initial chart pass.
 
-The initial stack recommendation and design are documented in `docs/research.md` and `docs/design.md`. These are proposed implementation choices, not evidence of completed app features.
+The framework research and architecture are documented in `docs/research.md` and `docs/design.md`. Completed MVP behavior and test evidence are recorded in `docs/validation.md`; architectural proposals alone are not evidence of completed features.
 
 ## Mandatory test driven development
 

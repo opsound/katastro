@@ -1,6 +1,8 @@
 # Architecture and integration test plan
 
-Implement a framework-independent Rust application layer behind an egui/eframe shell. It owns the SGF document, Go rules, original main line, user variations, analysis scheduler, and persistence. The GUI translates input into application commands and renders returned state. This is a proposed design; the listed tests and features are not implemented yet.
+The MVP implements a framework-independent Rust application layer behind an egui/eframe shell. It owns the SGF document, Go rules, original main line, user variations, analysis scheduler, and persistence. The GUI translates input into application commands and renders returned state. The sections below retain the architecture and acceptance plan; [validation.md](validation.md) records what was delivered and measured.
+
+The current implementation stops automatic refinement at 64 visits, keys saved documents by semantic content without a path-alias table, and discards replies to canceled requests after invalidating their IDs. Cancellation acknowledgments never count as analysis results. Setup edits after the root remain reviewable, but analysis after them is unavailable. Selected-variation evaluations appear in the detail panel; the original game's chart stays fixed. Native open/export dialogs, keyboard shortcuts, drag-and-drop, and a locally signed `.app` bundle are implemented. AppKit menus, Finder SGF association, higher search budgets, and UI frame-time measurements remain future work.
 
 ## Components
 
