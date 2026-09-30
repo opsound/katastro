@@ -302,7 +302,6 @@ fn parse_suggestions(reply: &Value, size: usize) -> Result<Vec<SuggestedMove>> {
         ranked.sort_by(|a, b| b.1.total_cmp(&a.1));
         return Ok(ranked
             .into_iter()
-            .take(5)
             .map(|(i, _)| SuggestedMove {
                 point: if i == size * size {
                     None
@@ -320,7 +319,6 @@ fn parse_suggestions(reply: &Value, size: usize) -> Result<Vec<SuggestedMove>> {
     ranked.sort_by_key(|m| m["order"].as_u64().unwrap_or(u64::MAX));
     ranked
         .into_iter()
-        .take(5)
         .map(|m| {
             Ok(SuggestedMove {
                 point: Point::from_gtp(

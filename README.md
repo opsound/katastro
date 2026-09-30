@@ -6,7 +6,9 @@ Open or drop an SGF to restore its review and cached chart immediately. Missing 
 
 Click an empty board intersection to explore a legal variation, even during analysis. Variations autosave after each move and remain separate from the original game, which stays on the top row of the tree. Click a tree node to revisit it, or use Up/Down to switch variation rows at the same column. Navigation keeps the selected node in view. Export SGF saves all branches to another file; the source stays unchanged.
 
-The board shows up to five AI suggestions, with the best in blue, and a dotted hollow ring for the next recorded move in its stone color. All use equal-size circles containing the signed point change from the current position, from the moving player's perspective: positive gains points and negative loses points. The played move uses its candidate estimate when available, otherwise the following position's evaluation; missing estimates show `--`. Early suggestions use a labeled neural-network policy preview until searched move evaluations are available. Colored stones beside player names identify Black and White.
+The board shows all returned AI candidates, with the best searched recommendation in blue, and a dotted hollow ring for the next recorded move in its stone color. Other candidate colors reflect point loss against the best recommendation, from the moving player's perspective: green within 0.5 points, blending through yellow at 1.5, orange at 3, and red at 6 or more. Alternatives below 25 visits are subdued. Unscored policy previews are gray, with a blue outline identifying the leading preview. The sidebar includes a color legend and a fixed-height, scrollable list of every candidate, including Pass.
+
+All board markers use equal-size circles containing the signed point change from the current position, from the moving player's perspective: positive gains points and negative loses points. Colors compare alternatives; numbers compare against the current position. The played move uses its candidate estimate when available, otherwise the following position's evaluation; missing estimates show `--`. Colored stones beside player names identify Black and White.
 
 ## Run
 
@@ -32,7 +34,7 @@ The bundle is for local use and has an ad hoc signature. It does not bundle Kata
 | Space | Analyze / pause |
 | Cmd+O / Cmd+S | Open / export SGF |
 
-Reviews and engine settings live in `~/Library/Application Support/Katastro/reviews.sqlite`. Analysis lives separately in `~/Library/Caches/Katastro/analysis.sqlite`; deleting this cache does not delete variations. `KATASTRO_DATA_DIR` and `KATASTRO_CACHE_DIR` override these directories for isolated runs. Only completed results with at least 64 actual visits are persisted; each compatible position keeps its deepest result, including ranked suggestions. Cheaper and unfinished streamed estimates remain in memory. Older cheap cache rows are removed on startup, while saved reviews and eligible deeper rows are preserved. Cache compatibility includes game history, rules, komi, setup, side to move, model and executable checksums, and engine settings.
+Reviews and engine settings live in `~/Library/Application Support/Katastro/reviews.sqlite`. Analysis lives separately in `~/Library/Caches/Katastro/analysis.sqlite`; deleting this cache does not delete variations. `KATASTRO_DATA_DIR` and `KATASTRO_CACHE_DIR` override these directories for isolated runs. Only completed results with at least 64 actual visits are persisted; each compatible position keeps its deepest result, including all returned ranked suggestions. Cheaper and unfinished streamed estimates remain in memory. Older cheap cache rows are removed on startup, while saved reviews and eligible deeper rows are preserved. Existing results that stored only five candidates remain usable and acquire the full list as they refine. Cache compatibility includes game history, rules, komi, setup, side to move, model and executable checksums, and engine settings.
 
 ## Development and validation
 
@@ -44,7 +46,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
-The standard suite has 48 integration tests. Real-engine, corpus, and performance checks require local assets and run explicitly:
+The standard suite has 53 integration tests. Real-engine, corpus, and performance checks require local assets and run explicitly:
 
 ```sh
 export KATASTRO_TEST_ENGINE=/opt/homebrew/bin/katago

@@ -122,6 +122,22 @@ fn live_scheduler_refines_to_256_and_round_trips_ranked_suggestions() {
         while scheduler.pending() > 0 {
             let reply = response(&engine);
             for (target, value) in scheduler.accept(&reply).unwrap() {
+                let searched = reply["moveInfos"].as_array().map_or(0, Vec::len);
+                if searched > 0 {
+                    assert_eq!(
+                        value.suggestions.len(),
+                        searched,
+                        "the real engine's candidate list was truncated"
+                    );
+                } else if let Some(policy) = reply["policy"].as_array() {
+                    assert_eq!(
+                        value.suggestions.len(),
+                        policy
+                            .iter()
+                            .filter(|p| p.as_f64().is_some_and(|p| p >= 0.0))
+                            .count()
+                    );
+                }
                 if reply["isDuringSearch"] == false {
                     review.store_analysis(&target.key, &value).unwrap();
                 }
@@ -131,7 +147,15 @@ fn live_scheduler_refines_to_256_and_round_trips_ranked_suggestions() {
         assert!(scheduler.values.values().all(|v| !v.suggestions.is_empty()));
         assert!(!scheduler.is_complete());
     }
-    assert!(scheduler.values.values().all(|v| v.suggestions.len() == 5));
+    assert!(
+        scheduler.values.values().any(|v| v.suggestions.len() > 5),
+        "the real test must exercise candidates beyond five"
+    );
+    let counts: Vec<_> = scheduler
+        .values
+        .values()
+        .map(|v| v.suggestions.len())
+        .collect();
     drop(review);
     let mut reopened =
         Review::new(&temp.path().join("reviews"), &temp.path().join("cache")).unwrap();
@@ -141,6 +165,6 @@ fn live_scheduler_refines_to_256_and_round_trips_ranked_suggestions() {
         scheduler.values
     );
     println!(
-        "Real KataGo: three positions refined to 256 visits, five ranked suggestions per position, exact cached round trip"
+        "Real KataGo: three positions refined to 256 visits, complete candidate counts {counts:?}, exact cached round trip"
     );
 }

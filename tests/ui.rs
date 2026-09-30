@@ -776,6 +776,393 @@ fn suggestions_are_ranked_blue_clickable_and_specific_to_the_position() {
         "playing a suggestion should reuse the recorded variation"
     );
 }
+
+fn quality_state(root: &Path, white: bool) -> State {
+    let mut state = imported_state(
+        root,
+        if white {
+            "(;SZ[9]PL[W];W[ec])"
+        } else {
+            "(;SZ[9];B[ec])"
+        },
+    );
+    // Deliberately different root and best scores: colors compare alternatives,
+    // while the existing numeric labels compare against the current position.
+    let sign = if white { -1.0 } else { 1.0 };
+    let losses = [0.0, 0.25, 1.0, 2.0, 8.0, 0.25, 8.0, 0.0, 0.5];
+    let mut moves: Vec<_> = losses
+        .into_iter()
+        .enumerate()
+        .map(|(x, loss)| katastro::SuggestedMove {
+            point: Some(Point::new(x, 2)),
+            visits: 32,
+            winrate: Some(0.5),
+            score_lead: Some(sign * (10.0 - loss)),
+        })
+        .collect();
+    moves[5].visits = 1;
+    moves[6].visits = 1;
+    moves[7].score_lead = None;
+    moves[7].winrate = None;
+    moves[7].visits = 0;
+    moves.push(katastro::SuggestedMove {
+        point: None,
+        visits: 32,
+        winrate: Some(0.4),
+        score_lead: Some(sign * -2.0),
+    });
+    state.snapshot.values.insert(
+        0,
+        katastro::Analysis {
+            visits: 1024,
+            winrate: 0.5,
+            score_lead: sign * 2.0,
+            suggestions: moves,
+        },
+    );
+    state
+}
+fn candidate_fill(h: &Harness<'_, State>, label: &str) -> eframe::egui::Color32 {
+    let rect = h
+        .query_by_label(label)
+        .expect("candidate marker is missing")
+        .rect();
+    h.output()
+        .shapes
+        .iter()
+        .find_map(|shape| match &shape.shape {
+            eframe::egui::Shape::Circle(c)
+                if c.center.distance(rect.center()) < 0.1
+                    && c.radius > rect.width() * 0.3
+                    && c.fill.a() > 0 =>
+            {
+                Some(c.fill)
+            }
+            _ => None,
+        })
+        .expect("the candidate is not drawn as a filled circle")
+}
+#[test]
+fn all_candidates_are_visible_on_board_and_a_later_played_candidate_has_one_delta() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let mut h = Harness::builder()
+        .with_size(eframe::egui::vec2(1200.0, 1100.0))
+        .build_ui_state(
+            |ui, state: &mut State| state.render(ui),
+            quality_state(temp.path(), false),
+        );
+    for (rank, column) in "ABCDEFGHJ".chars().enumerate() {
+        assert!(
+            h.query_by_label(&format!("AI suggestion {}: {column}7", rank + 1))
+                .is_some(),
+            "the engine's candidate beyond rank five was dropped"
+        );
+    }
+    let played = h.get_by_label("Next recorded move: Black E7").rect();
+    assert_eq!(
+        painted_text_in(&h, played),
+        vec!["+0.0"],
+        "the played fifth candidate needs one label"
+    );
+    if let Some(path) = std::env::var_os("KATASTRO_CANDIDATE_PREVIEW") {
+        h.run();
+        h.render().unwrap().save(path).unwrap();
+    }
+    // Move the played candidate beyond the previous five-move cap.
+    h.state_mut()
+        .snapshot
+        .values
+        .get_mut(&0)
+        .unwrap()
+        .suggestions
+        .swap(4, 8);
+    h.run();
+    assert!(h.query_by_label("AI suggestion 9: E7").is_some());
+    assert_eq!(
+        painted_text_in(&h, played),
+        vec!["+0.0"],
+        "candidate/played overlap drew duplicate values"
+    );
+    h.get_by_label("Play H7").click();
+    h.run();
+    let id = h.state().review.document().unwrap().selected;
+    assert_eq!(
+        h.state()
+            .snapshot
+            .board
+            .as_ref()
+            .unwrap()
+            .stone(Point::new(7, 2)),
+        Some(Color::Black)
+    );
+    drop(h);
+    let reopened = quality_state(temp.path(), false);
+    assert_eq!(reopened.review.document().unwrap().selected, id);
+    assert_eq!(reopened.review.document().unwrap().nodes.len(), 3);
+}
+#[test]
+fn candidate_gradient_uses_mover_relative_loss_not_rank_or_root_delta() {
+    for white in [false, true] {
+        let temp = tempfile::TempDir::new().unwrap();
+        let mut h = Harness::builder()
+            .with_size(eframe::egui::vec2(1200.0, 1100.0))
+            .build_ui_state(
+                |ui, state: &mut State| state.render(ui),
+                quality_state(temp.path(), white),
+            );
+        let best = candidate_fill(&h, "AI suggestion 1: A7");
+        assert!(best.b() > best.r() && best.b() > best.g());
+        let good = candidate_fill(&h, "AI suggestion 2: B7");
+        assert!(
+            good.g() > good.r() && good.g() > good.b(),
+            "a near-equal alternative should be green"
+        );
+        let yellow = candidate_fill(&h, "AI suggestion 3: C7");
+        let orange = candidate_fill(&h, "AI suggestion 4: D7");
+        let bad = candidate_fill(&h, "AI suggestion 5: E7");
+        assert_ne!(yellow, good, "a full point loss is still painted green");
+        assert_ne!(
+            orange, yellow,
+            "different losses have identical rank-only colors"
+        );
+        assert!(yellow.r() > yellow.b() && yellow.g() > yellow.b());
+        assert!(orange.r() > orange.g() && orange.g() > orange.b());
+        assert!(
+            u16::from(bad.r()) > u16::from(bad.g()) * 2
+                && u16::from(bad.r()) > u16::from(bad.b()) * 2,
+            "an eight-point blunder is not red"
+        );
+        assert_eq!(
+            painted_text_in(&h, h.get_by_label("AI suggestion 5: E7").rect()),
+            vec!["+0.0"],
+            "colors must improve without changing the requested current-position delta"
+        );
+        h.state_mut()
+            .snapshot
+            .values
+            .get_mut(&0)
+            .unwrap()
+            .suggestions[2]
+            .score_lead = Some(if white { -8.99 } else { 8.99 });
+        h.run();
+        let adjusted = candidate_fill(&h, "AI suggestion 3: C7");
+        assert_ne!(
+            adjusted, yellow,
+            "the gradient does not respond to a small assessment refinement"
+        );
+        assert!(
+            adjusted
+                .to_array()
+                .iter()
+                .zip(yellow.to_array())
+                .all(|(a, b)| a.abs_diff(b) < 5),
+            "a tiny refinement caused a large color jump"
+        );
+    }
+}
+#[test]
+fn low_visit_candidates_are_subdued_and_unknown_scores_are_neutral_until_refined() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let mut h = Harness::builder()
+        .with_size(eframe::egui::vec2(1200.0, 1100.0))
+        .build_ui_state(
+            |ui, state: &mut State| state.render(ui),
+            quality_state(temp.path(), false),
+        );
+    let reliable_good = candidate_fill(&h, "AI suggestion 2: B7");
+    let weak_good = candidate_fill(&h, "AI suggestion 6: F7");
+    let reliable_bad = candidate_fill(&h, "AI suggestion 5: E7");
+    let weak_bad = candidate_fill(&h, "AI suggestion 7: G7");
+    assert!(
+        weak_good.a() < reliable_good.a(),
+        "one visit has the same emphasis as a searched alternative"
+    );
+    assert!(weak_bad.a() < reliable_bad.a());
+    assert!(
+        weak_bad.r() > weak_bad.g() && weak_bad.r() > weak_bad.b(),
+        "uncertainty must not turn bad moves green"
+    );
+    let unknown = candidate_fill(&h, "AI suggestion 8: H7");
+    assert_eq!(
+        unknown.r(),
+        unknown.g(),
+        "a policy preview is claiming evaluated strength"
+    );
+    assert_eq!(unknown.g(), unknown.b());
+    h.state_mut()
+        .snapshot
+        .values
+        .get_mut(&0)
+        .unwrap()
+        .suggestions[7]
+        .score_lead = Some(-2.0);
+    h.state_mut()
+        .snapshot
+        .values
+        .get_mut(&0)
+        .unwrap()
+        .suggestions[7]
+        .visits = 32;
+    h.run();
+    let refined = candidate_fill(&h, "AI suggestion 8: H7");
+    assert!(u16::from(refined.r()) > u16::from(refined.g()) * 2);
+    assert_eq!(
+        painted_text_in(&h, h.get_by_label("AI suggestion 8: H7").rect()),
+        vec!["-4.0"]
+    );
+}
+#[test]
+fn scarce_legal_choices_do_not_turn_bad_candidates_green_and_policy_best_is_neutral() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let mut state = imported_state(temp.path(), "(;SZ[2]AB[aa][ab]AW[ba]PL[W])");
+    state.snapshot.values.insert(
+        0,
+        katastro::Analysis {
+            visits: 256,
+            winrate: 0.1,
+            score_lead: 10.0,
+            suggestions: vec![
+                katastro::SuggestedMove {
+                    point: Some(Point::new(1, 1)),
+                    visits: 32,
+                    score_lead: Some(10.0),
+                    winrate: Some(0.1),
+                },
+                katastro::SuggestedMove {
+                    point: None,
+                    visits: 32,
+                    score_lead: Some(20.0),
+                    winrate: Some(0.01),
+                },
+            ],
+        },
+    );
+    let mut h = Harness::builder()
+        .with_size(eframe::egui::vec2(1200.0, 1100.0))
+        .build_ui_state(|ui, state: &mut State| state.render(ui), state);
+    let pass = h.get_by_label("2  Pass");
+    let bounds = pass.rect();
+    let pass_text = h
+        .output()
+        .shapes
+        .iter()
+        .find_map(|s| match &s.shape {
+            eframe::egui::Shape::Text(t)
+                if bounds.contains(t.pos) && t.galley.text() == "2  Pass" =>
+            {
+                Some(t.galley.job.sections[0].format.color)
+            }
+            _ => None,
+        })
+        .unwrap();
+    assert!(
+        u16::from(pass_text.r()) > u16::from(pass_text.g()) * 2,
+        "the poor alternative to the only board move was not colored by strength"
+    );
+    h.get_by_label("2  Pass").click();
+    h.run();
+    assert!(
+        h.state()
+            .review
+            .document()
+            .unwrap()
+            .nodes
+            .last()
+            .unwrap()
+            .played
+            .unwrap()
+            .point
+            .is_none()
+    );
+    h.get_by_label("Previous move").click();
+    h.run();
+    let moves = &mut h
+        .state_mut()
+        .snapshot
+        .values
+        .get_mut(&0)
+        .unwrap()
+        .suggestions;
+    moves.truncate(1);
+    moves[0].visits = 0;
+    moves[0].score_lead = None;
+    moves[0].winrate = None;
+    h.run();
+    let unknown = candidate_fill(&h, "AI suggestion 1: B1");
+    assert_eq!(unknown.r(), unknown.g());
+    assert_eq!(unknown.g(), unknown.b());
+    let bounds = h.get_by_label("AI suggestion 1: B1").rect();
+    assert!(
+        has_circle(&h, bounds, |c| c.fill == eframe::egui::Color32::TRANSPARENT
+            && c.stroke.color == eframe::egui::Color32::from_rgb(65, 145, 255)
+            && c.radius > bounds.width() * 0.3),
+        "the leading policy preview lost its blue outline"
+    );
+}
+#[test]
+fn uncapped_candidate_sidebar_scrolls_without_moving_charts_and_creates_persistent_moves() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let mut state = quality_state(temp.path(), false);
+    state
+        .snapshot
+        .values
+        .get_mut(&0)
+        .unwrap()
+        .suggestions
+        .extend((0..9).map(|x| katastro::SuggestedMove {
+            point: Some(Point::new(x, 4)),
+            visits: 32,
+            winrate: Some(0.5),
+            score_lead: Some(9.75),
+        }));
+    let mut h = Harness::builder()
+        .with_max_steps(60)
+        .with_size(eframe::egui::vec2(1200.0, 1100.0))
+        .build_ui_state(|ui, state: &mut State| state.render(ui), state);
+    let score = h.get_by_label("Score lead chart").rect();
+    let winrate = h.get_by_label("Winrate chart").rect();
+    let viewport = h
+        .query_by_label("AI candidate list")
+        .expect("all-candidate list is absent")
+        .rect();
+    assert!(viewport.height() <= 148.0);
+    h.event(eframe::egui::Event::PointerMoved(viewport.center()));
+    h.event(eframe::egui::Event::MouseWheel {
+        unit: eframe::egui::MouseWheelUnit::Point,
+        delta: eframe::egui::vec2(0.0, -2000.0),
+        phase: eframe::egui::TouchPhase::Move,
+        modifiers: eframe::egui::Modifiers::NONE,
+    });
+    h.run();
+    assert_eq!(h.get_by_label("Score lead chart").rect(), score);
+    assert_eq!(h.get_by_label("Winrate chart").rect(), winrate);
+    let last = h.get_by_label("19  J5");
+    assert!(
+        viewport.contains_rect(last.rect()),
+        "later candidates were not reachable in the list"
+    );
+    last.click();
+    h.run();
+    assert_eq!(
+        h.state()
+            .snapshot
+            .board
+            .as_ref()
+            .unwrap()
+            .stone(Point::new(8, 4)),
+        Some(Color::Black)
+    );
+    let selected = h.state().review.document().unwrap().selected;
+    drop(h);
+    assert_eq!(
+        quality_state(temp.path(), false)
+            .review
+            .document()
+            .unwrap()
+            .selected,
+        selected
+    );
+}
 #[test]
 fn next_move_is_a_hollow_dotted_ring_with_the_recorded_stone_color() {
     let temp = tempfile::TempDir::new().unwrap();

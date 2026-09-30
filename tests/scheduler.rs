@@ -210,7 +210,7 @@ fn engine_candidate_ranking_coordinates_and_cache_survive_reopen() {
         {"move":"Q4","order":5,"visits":2,"winrate":0.3,"scoreLead":-2.0}
     ]);
     let accepted = scheduler.accept(&value).unwrap();
-    assert_eq!(scheduler.values[&0].suggestions.len(), 5);
+    assert_eq!(scheduler.values[&0].suggestions.len(), 6);
     assert_eq!(
         scheduler.values[&0].suggestions[0].point,
         Some(Point::new(8, 3))
@@ -220,6 +220,10 @@ fn engine_candidate_ranking_coordinates_and_cache_survive_reopen() {
         Some(Point::new(18, 18))
     );
     assert_eq!(scheduler.values[&0].suggestions[2].point, None);
+    assert_eq!(
+        scheduler.values[&0].suggestions[5].point,
+        Some(Point::new(15, 15))
+    );
     for (target, value) in accepted {
         review.store_analysis(&target.key, &value).unwrap();
     }
@@ -246,14 +250,22 @@ fn one_visit_policy_preview_provides_legal_ranked_moves_before_search() {
     policy[3 * 9 + 3] = 0.6;
     policy[4 * 9 + 4] = 0.2;
     policy[81] = 0.1;
+    for (index, probability) in [(0, 0.04), (1, 0.03), (2, 0.02), (3, 0.01), (4, 0.0)] {
+        policy[index] = probability;
+    }
     value["moveInfos"] = json!([]);
     value["policy"] = json!(policy);
     scheduler.accept(&value).unwrap();
     let suggestions = &scheduler.values[&0].suggestions;
-    assert_eq!(suggestions.len(), 3);
+    assert_eq!(
+        suggestions.len(),
+        8,
+        "legal policy previews must not be truncated to five"
+    );
     assert_eq!(suggestions[0].point, Some(Point::new(3, 3)));
     assert_eq!(suggestions[1].point, Some(Point::new(4, 4)));
     assert_eq!(suggestions[2].point, None);
+    assert_eq!(suggestions[7].point, Some(Point::new(4, 0)));
     assert!(
         suggestions
             .iter()

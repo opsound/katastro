@@ -16,6 +16,12 @@ pub enum Action {
 }
 const ACCENT: Color32 = Color32::from_rgb(95, 206, 175);
 const SUGGESTION_BLUE: Color32 = Color32::from_rgb(65, 145, 255);
+const MOVE_LOSS_COLORS: [(f64, Color32); 4] = [
+    (0.5, Color32::from_rgb(49, 121, 86)),
+    (1.5, Color32::from_rgb(219, 194, 71)),
+    (3.0, Color32::from_rgb(231, 139, 56)),
+    (6.0, Color32::from_rgb(208, 66, 62)),
+];
 const MUTED: Color32 = Color32::from_rgb(143, 153, 164);
 const CHART_VARIATION: Color32 = Color32::from_rgb(255, 195, 105);
 fn command(out: &mut Vec<Action>, value: Command) {
@@ -292,7 +298,13 @@ pub fn render(ui: &mut egui::Ui, snapshot: &Snapshot) -> Vec<Action> {
                                 .color(MUTED),
                         );
                         ui.add_space(12.0);
-                        suggested_moves(ui, snapshot.values.get(&selected), doc.size, &mut out);
+                        suggested_moves(
+                            ui,
+                            snapshot.values.get(&selected),
+                            doc.size,
+                            snapshot.board.as_ref().map_or(Color::Black, |b| b.next),
+                            &mut out,
+                        );
                         ui.add_space(16.0);
                         ui.separator();
                         ui.add_space(8.0);
@@ -562,7 +574,7 @@ fn board_view(
         }
     }
     if let Some(analysis) = analysis {
-        for (rank, suggestion) in analysis.suggestions.iter().take(5).enumerate() {
+        for (rank, suggestion) in analysis.suggestions.iter().enumerate() {
             let Some(point) = suggestion.point else {
                 continue;
             };
@@ -570,12 +582,11 @@ fn board_view(
                 continue;
             }
             let center = start + Vec2::new(point.x as f32 * gap, point.y as f32 * gap);
-            let color = if rank == 0 {
-                SUGGESTION_BLUE
-            } else {
-                Color32::from_rgb(49, 121, 86)
-            };
+            let color = suggestion_color(analysis, rank, board.next);
             painter.circle_filled(center, marker_radius, color);
+            if rank == 0 && suggestion.score_lead.is_none() {
+                painter.circle_stroke(center, marker_radius, Stroke::new(1.5, SUGGESTION_BLUE));
+            }
             let score = suggestion.score_lead.or_else(|| {
                 recorded
                     .filter(|(_, played)| played.point == Some(point))
@@ -586,7 +597,16 @@ fn board_view(
                 center,
                 marker_radius,
                 point_delta(Some(analysis), score, board.next),
-                Color32::WHITE,
+                if color.a() < 255
+                    || u32::from(color.r()) * 299
+                        + u32::from(color.g()) * 587
+                        + u32::from(color.b()) * 114
+                        > 150_000
+                {
+                    Color32::from_rgb(44, 39, 32)
+                } else {
+                    Color32::WHITE
+                },
             );
             ui.interact(
                 Rect::from_center_size(center, Vec2::splat(2.0 * marker_radius + 1.0)),
@@ -621,7 +641,7 @@ fn board_view(
             painter.add(egui::Shape::line(points, Stroke::new(2.1, color)));
         }
         let already_labeled =
-            analysis.is_some_and(|a| a.suggestions.iter().take(5).any(|s| s.point == Some(point)));
+            analysis.is_some_and(|a| a.suggestions.iter().any(|s| s.point == Some(point)));
         if !already_labeled {
             paint_move_delta(
                 painter,
@@ -1046,6 +1066,7 @@ fn suggested_moves(
     ui: &mut egui::Ui,
     analysis: Option<&Analysis>,
     size: usize,
+    player: Color,
     out: &mut Vec<Action>,
 ) {
     ui.scope(|ui| {
@@ -1061,56 +1082,134 @@ fn suggested_moves(
                         .strong()
                         .color(MUTED),
                 );
-                for rank in 0..5 {
-                    ui.horizontal(|ui| {
-                        let suggested = analysis.and_then(|v| v.suggestions.get(rank));
-                        let color = if rank == 0 { SUGGESTION_BLUE } else { MUTED };
-                        let label = suggested
-                            .map(|s| s.point.map(|p| p.gtp(size)).unwrap_or("Pass".into()))
-                            .unwrap_or("--".into());
-                        if ui
-                            .add_enabled(
-                                suggested.is_some(),
-                                egui::Button::new(
-                                    RichText::new(format!("{}  {label}", rank + 1)).color(color),
-                                )
-                                .min_size(Vec2::new(63.0, 18.0)),
-                            )
-                            .clicked()
-                            && let Some(s) = suggested
-                        {
-                            command(out, Command::Play(s.point));
+                suggestion_legend(ui);
+                let count = analysis.map_or(0, |a| a.suggestions.len());
+                let row_height = ui.spacing().interact_size.y;
+                let list = egui::ScrollArea::vertical()
+                    .id_salt("ai-candidates")
+                    .max_height(100.0)
+                    .min_scrolled_height(100.0)
+                    .auto_shrink([false, false])
+                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
+                    .show_rows(ui, row_height, count.max(1), |ui, rows| {
+                        for rank in rows {
+                            suggestion_row(ui, analysis, size, player, rank, out);
                         }
-                        ui.add(
-                            egui::Label::new(
-                                RichText::new(
-                                    suggested
-                                        .map(|s| match (s.score_lead, s.winrate) {
-                                            (Some(score), Some(winrate)) => format!(
-                                                "{score:+.1} pt   {:.1}% Black   {} visits",
-                                                winrate * 100.0,
-                                                s.visits
-                                            ),
-                                            _ => "Policy preview · no search yet".into(),
-                                        })
-                                        .unwrap_or_else(|| {
-                                            if rank == 0 {
-                                                "Awaiting suggestions".into()
-                                            } else {
-                                                String::new()
-                                            }
-                                        }),
-                                )
-                                .size(11.0)
-                                .color(MUTED),
-                            )
-                            .truncate(),
-                        );
                     });
+                // Keep wheel gestures in the list when they reach its first or last row.
+                if ui.rect_contains_pointer(list.inner_rect) {
+                    ui.input_mut(|input| input.smooth_scroll_delta.y = 0.0);
                 }
+                ui.interact(
+                    list.inner_rect,
+                    ui.id().with("ai-candidate-list"),
+                    Sense::hover(),
+                )
+                .widget_info(|| WidgetInfo::labeled(WidgetType::Other, true, "AI candidate list"));
             },
         );
     });
+}
+
+fn suggestion_legend(ui: &mut egui::Ui) {
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("Loss vs best:").size(10.0).color(MUTED));
+        ui.colored_label(SUGGESTION_BLUE, RichText::new("best").size(10.0));
+        for (loss, color) in MOVE_LOSS_COLORS {
+            ui.colored_label(
+                color,
+                RichText::new(if loss == 6.0 {
+                    "6+".into()
+                } else {
+                    loss.to_string()
+                })
+                .size(10.0),
+            );
+        }
+        ui.colored_label(Color32::GRAY, RichText::new("?").size(10.0));
+    })
+    .response
+    .on_hover_text(concat!(
+        "Color compares against the best evaluated move: green within 0.5 points, ",
+        "blending through yellow at 1.5, orange at 3, and red at 6 or more. ",
+        "Gray means no score estimate. Alternatives below 25 visits are subdued; ",
+        "visits measure search effort. Circle labels remain point changes from ",
+        "the current position. A blue outline identifies the leading policy preview before search."
+    ));
+}
+
+fn suggestion_row(
+    ui: &mut egui::Ui,
+    analysis: Option<&Analysis>,
+    size: usize,
+    player: Color,
+    rank: usize,
+    out: &mut Vec<Action>,
+) {
+    let suggested = analysis.and_then(|a| a.suggestions.get(rank));
+    let color = analysis
+        .filter(|_| suggested.is_some())
+        .map_or(MUTED, |a| suggestion_color(a, rank, player));
+    let label = suggested
+        .map(|s| s.point.map(|p| p.gtp(size)).unwrap_or("Pass".into()))
+        .unwrap_or("--".into());
+    ui.horizontal(|ui| {
+        if ui
+            .add_enabled(
+                suggested.is_some(),
+                egui::Button::new(RichText::new(format!("{}  {label}", rank + 1)).color(color))
+                    .min_size(Vec2::new(63.0, 18.0)),
+            )
+            .clicked()
+            && let Some(s) = suggested
+        {
+            command(out, Command::Play(s.point));
+        }
+        let detail = suggested
+            .map(|s| match (s.score_lead, s.winrate) {
+                (Some(score), Some(winrate)) => format!(
+                    "{score:+.1} pt   {:.1}% Black   {} visits",
+                    winrate * 100.0,
+                    s.visits
+                ),
+                _ => "Policy preview · no search yet".into(),
+            })
+            .unwrap_or_else(|| "Awaiting suggestions".into());
+        ui.add(egui::Label::new(RichText::new(detail).size(11.0).color(MUTED)).truncate());
+    });
+}
+
+fn suggestion_color(analysis: &Analysis, rank: usize, player: Color) -> Color32 {
+    let suggestion = &analysis.suggestions[rank];
+    let color = match (
+        suggestion.score_lead,
+        analysis.suggestions.first().and_then(|s| s.score_lead),
+    ) {
+        (Some(_), Some(_)) if rank == 0 => SUGGESTION_BLUE,
+        (Some(score), Some(best)) => {
+            let loss = ((best - score) * if player == Color::Black { 1.0 } else { -1.0 }).max(0.0);
+            let stops = MOVE_LOSS_COLORS;
+            if loss <= stops[0].0 {
+                stops[0].1
+            } else {
+                stops
+                    .windows(2)
+                    .find(|pair| loss <= pair[1].0)
+                    .map_or(stops[3].1, |pair| {
+                        pair[0].1.lerp_to_gamma(
+                            pair[1].1,
+                            ((loss - pair[0].0) / (pair[1].0 - pair[0].0)) as f32,
+                        )
+                    })
+            }
+        }
+        _ => Color32::GRAY,
+    };
+    if rank > 0 && suggestion.visits < 25 {
+        color.gamma_multiply(0.45)
+    } else {
+        color
+    }
 }
 
 fn next_recorded_move(doc: &Document) -> Option<(crate::NodeId, crate::Move)> {
