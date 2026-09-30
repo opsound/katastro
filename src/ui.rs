@@ -15,14 +15,25 @@ pub enum Action {
     Settings,
 }
 const ACCENT: Color32 = Color32::from_rgb(95, 206, 175);
+const SUGGESTION_BLUE: Color32 = Color32::from_rgb(65, 145, 255);
 const MUTED: Color32 = Color32::from_rgb(143, 153, 164);
 fn command(out: &mut Vec<Action>, value: Command) {
     out.push(Action::Review(value));
 }
 pub fn render(ui: &mut egui::Ui, snapshot: &Snapshot) -> Vec<Action> {
     let mut out = Vec::new();
-    if !ui.ctx().egui_wants_keyboard_input() {
+    if !ui.ctx().text_edit_focused() {
         ui.input_mut(|input| {
+            for (key, down) in [(egui::Key::ArrowUp, false), (egui::Key::ArrowDown, true)] {
+                if input.consume_key(egui::Modifiers::NONE, key)
+                    && let Some(node) = snapshot
+                        .document
+                        .as_ref()
+                        .and_then(|doc| doc.vertical_neighbor(down))
+                {
+                    command(&mut out, Command::Select(node));
+                }
+            }
             for (key, value) in [
                 (egui::Key::ArrowLeft, Command::Step(false)),
                 (egui::Key::ArrowRight, Command::Step(true)),
@@ -62,7 +73,13 @@ pub fn render(ui: &mut egui::Ui, snapshot: &Snapshot) -> Vec<Action> {
         )
         .show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.label(RichText::new("◉").size(24.0).color(ACCENT));
+                let (logo, response) = ui.allocate_exact_size(Vec2::splat(24.0), Sense::hover());
+                ui.painter()
+                    .circle_stroke(logo.center(), 9.0, Stroke::new(1.5, ACCENT));
+                ui.painter().circle_filled(logo.center(), 3.5, ACCENT);
+                response.widget_info(|| {
+                    WidgetInfo::labeled(WidgetType::Other, true, "Katastro emblem")
+                });
                 ui.label(RichText::new("KATASTRO").strong().size(19.0));
                 ui.add_space(14.0);
                 if let Some(source) = &snapshot.source {
@@ -124,7 +141,7 @@ pub fn render(ui: &mut egui::Ui, snapshot: &Snapshot) -> Vec<Action> {
                         .size(11.0),
                     );
                 });
-                tree(ui, doc, &mut out);
+                tree(ui, doc, &snapshot.source, &mut out);
             });
         egui::Panel::right("analysis")
             .resizable(true)
@@ -136,146 +153,187 @@ pub fn render(ui: &mut egui::Ui, snapshot: &Snapshot) -> Vec<Action> {
                     .inner_margin(20),
             )
             .show(ui, |ui| {
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.heading("Game analysis");
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui
-                                .button(if snapshot.running { "Pause" } else { "Analyze" })
-                                .clicked()
-                            {
-                                command(
-                                    &mut out,
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.heading("Game analysis");
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui
+                                        .button(if snapshot.running { "Pause" } else { "Analyze" })
+                                        .clicked()
+                                    {
+                                        command(
+                                            &mut out,
+                                            if snapshot.running {
+                                                Command::Pause
+                                            } else {
+                                                Command::Start
+                                            },
+                                        );
+                                    }
+                                },
+                            );
+                        });
+                        ui.label(RichText::new("Black's perspective").color(MUTED).size(12.0));
+                        ui.label(
+                            RichText::new(match snapshot.analysis_target {
+                                Some(target) => format!(
+                                    "{} {target} visits per position",
                                     if snapshot.running {
-                                        Command::Pause
+                                        "Refining:"
                                     } else {
-                                        Command::Start
-                                    },
-                                );
-                            }
-                        });
-                    });
-                    ui.label(RichText::new("Black's perspective").color(MUTED).size(12.0));
-                    ui.add_space(12.0);
-                    let selected = doc.selected;
-                    if let Some(value) = snapshot.values.get(&selected) {
-                        ui.columns(2, |columns| {
-                            columns[0].label(
-                                RichText::new(format!("{:+.1}", value.score_lead))
-                                    .size(31.0)
-                                    .color(ACCENT),
-                            );
-                            columns[0].label(
-                                RichText::new("points · Black lead").color(MUTED).size(11.0),
-                            );
-                            columns[1].label(
-                                RichText::new(format!("{:.1}%", value.winrate * 100.0)).size(31.0),
-                            );
-                            columns[1]
-                                .label(RichText::new("Black winrate").color(MUTED).size(11.0));
-                        });
-                        ui.add_space(6.0);
-                        ui.label(
-                            RichText::new(format!(
-                                "{} visits · {}",
-                                value.visits,
-                                if value.visits < 64 {
-                                    "provisional"
-                                } else {
-                                    "refined estimate"
+                                        "Paused: target"
+                                    }
+                                ),
+                                None => {
+                                    if snapshot.running {
+                                        "Preparing analysis".into()
+                                    } else {
+                                        "Analysis paused".into()
+                                    }
                                 }
-                            ))
-                            .color(MUTED)
-                            .size(11.0),
-                        );
-                    } else {
-                        ui.label(RichText::new("Awaiting analysis").size(24.0));
-                        ui.label(
-                            RichText::new("Explore the board while the chart fills.").color(MUTED),
-                        );
-                    }
-                    ui.add_space(12.0);
-                    ui.add(
-                        egui::ProgressBar::new(if snapshot.coverage.1 == 0 {
-                            0.0
-                        } else {
-                            snapshot.coverage.0 as f32 / snapshot.coverage.1 as f32
-                        })
-                        .fill(ACCENT)
-                        .text(format!(
-                            "{} / {} played positions",
-                            snapshot.coverage.0, snapshot.coverage.1
-                        )),
-                    );
-                    ui.add_space(14.0);
-                    ui.label(
-                        RichText::new("SCORE LEAD · POINTS")
-                            .size(11.0)
-                            .color(MUTED)
-                            .strong(),
-                    );
-                    chart(ui, snapshot, true, &mut out);
-                    ui.add_space(8.0);
-                    ui.label(
-                        RichText::new("WINRATE · BLACK %")
-                            .size(11.0)
-                            .color(MUTED)
-                            .strong(),
-                    );
-                    chart(ui, snapshot, false, &mut out);
-                    ui.label(
-                        RichText::new("Click either chart to navigate the played game.")
+                            })
                             .size(11.0)
                             .color(MUTED),
-                    );
-                    ui.add_space(16.0);
-                    ui.separator();
-                    ui.add_space(8.0);
-                    if let Some(board) = &snapshot.board {
-                        ui.label(
-                            RichText::new(format!(
-                                "Move {} · {} to play",
-                                board.move_number,
-                                if board.next == Color::Black {
-                                    "Black"
-                                } else {
-                                    "White"
-                                }
-                            ))
-                            .strong(),
                         );
+                        ui.add_space(12.0);
+                        let selected = doc.selected;
+                        ui.allocate_ui_with_layout(
+                            Vec2::new(ui.available_width(), 96.0),
+                            egui::Layout::top_down(egui::Align::Min),
+                            |ui| {
+                                let value = snapshot.values.get(&selected);
+                                ui.columns(2, |columns| {
+                                    columns[0].label(
+                                        RichText::new(
+                                            value
+                                                .map(|v| format!("{:+.1}", v.score_lead))
+                                                .unwrap_or("--".into()),
+                                        )
+                                        .size(31.0)
+                                        .color(ACCENT),
+                                    );
+                                    columns[0].label(
+                                        RichText::new("points · Black lead")
+                                            .color(MUTED)
+                                            .size(11.0),
+                                    );
+                                    columns[1].label(
+                                        RichText::new(
+                                            value
+                                                .map(|v| format!("{:.1}%", v.winrate * 100.0))
+                                                .unwrap_or("--".into()),
+                                        )
+                                        .size(31.0),
+                                    );
+                                    columns[1].label(
+                                        RichText::new("Black winrate").color(MUTED).size(11.0),
+                                    );
+                                });
+                                ui.add_space(6.0);
+                                ui.label(
+                                    RichText::new(
+                                        value
+                                            .map(|value| {
+                                                format!(
+                                                    "{} visits · {}",
+                                                    value.visits,
+                                                    if value.visits < 64 {
+                                                        "provisional"
+                                                    } else {
+                                                        "refined estimate"
+                                                    }
+                                                )
+                                            })
+                                            .unwrap_or("Awaiting analysis".into()),
+                                    )
+                                    .color(MUTED)
+                                    .size(11.0),
+                                );
+                            },
+                        );
+                        ui.add_space(12.0);
+                        ui.add(
+                            egui::ProgressBar::new(if snapshot.coverage.1 == 0 {
+                                0.0
+                            } else {
+                                snapshot.coverage.0 as f32 / snapshot.coverage.1 as f32
+                            })
+                            .fill(ACCENT)
+                            .text(format!(
+                                "{} / {} played positions",
+                                snapshot.coverage.0, snapshot.coverage.1
+                            )),
+                        );
+                        ui.add_space(14.0);
+                        ui.label(
+                            RichText::new("SCORE LEAD · POINTS")
+                                .size(11.0)
+                                .color(MUTED)
+                                .strong(),
+                        );
+                        chart(ui, snapshot, true, &mut out);
+                        ui.add_space(8.0);
+                        ui.label(
+                            RichText::new("WINRATE · BLACK %")
+                                .size(11.0)
+                                .color(MUTED)
+                                .strong(),
+                        );
+                        chart(ui, snapshot, false, &mut out);
+                        ui.label(
+                            RichText::new("Click either chart to navigate the played game.")
+                                .size(11.0)
+                                .color(MUTED),
+                        );
+                        ui.add_space(12.0);
+                        suggested_moves(ui, snapshot.values.get(&selected), doc.size, &mut out);
+                        ui.add_space(16.0);
+                        ui.separator();
+                        ui.add_space(8.0);
+                        if let Some(board) = &snapshot.board {
+                            ui.label(
+                                RichText::new(format!(
+                                    "Move {} · {} to play",
+                                    board.move_number,
+                                    if board.next == Color::Black {
+                                        "Black"
+                                    } else {
+                                        "White"
+                                    }
+                                ))
+                                .strong(),
+                            );
+                            ui.label(format!(
+                                "Captures  ● {}   ○ {}",
+                                board.captures[0], board.captures[1]
+                            ));
+                        }
                         ui.label(format!(
-                            "Captures  ● {}   ○ {}",
-                            board.captures[0], board.captures[1]
+                            "{}×{} · {} rules · komi {}",
+                            doc.size, doc.size, doc.rules, doc.komi
                         ));
-                    }
-                    ui.label(format!(
-                        "{}×{} · {} rules · komi {}",
-                        doc.size, doc.size, doc.rules, doc.komi
-                    ));
-                    if doc.nodes[0].property("RU").is_none() {
-                        ui.label(
-                            RichText::new("SGF omits rules; Chinese rules assumed.")
-                                .color(Color32::from_rgb(221, 184, 108))
-                                .size(11.0),
-                        );
-                    }
-                    if !doc.mainline.contains(&doc.selected) {
-                        ui.colored_label(ACCENT, "Exploring a saved variation");
-                    }
-                    if let Some(comment) = doc.nodes[selected].property("C") {
-                        ui.add_space(10.0);
-                        ui.label(comment);
-                    }
-                    ui.add_space(15.0);
-                    ui.label(
-                        RichText::new(
-                            "← → navigate    P pass    Space pause\n⌘O open    ⌘S export",
-                        )
-                        .size(11.0)
-                        .color(MUTED),
-                    );
-                });
+                        if doc.nodes[0].property("RU").is_none() {
+                            ui.label(
+                                RichText::new("SGF omits rules; Chinese rules assumed.")
+                                    .color(Color32::from_rgb(221, 184, 108))
+                                    .size(11.0),
+                            );
+                        }
+                        if !doc.mainline.contains(&doc.selected) {
+                            ui.colored_label(ACCENT, "Exploring a saved variation");
+                        }
+                        if let Some(comment) = doc.nodes[selected].property("C") {
+                            ui.add_space(10.0);
+                            ui.label(comment);
+                        }
+                        ui.add_space(15.0);
+                        navigation_legend(ui);
+                    });
             });
     }
     egui::CentralPanel::default()
@@ -287,16 +345,20 @@ pub fn render(ui: &mut egui::Ui, snapshot: &Snapshot) -> Vec<Action> {
         .show(ui, |ui| {
             if let (Some(doc), Some(board)) = (&snapshot.document, &snapshot.board) {
                 ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new(doc.nodes[0].property("PB").unwrap_or("Black")).strong(),
+                    player(
+                        ui,
+                        Color::Black,
+                        doc.nodes[0].property("PB").unwrap_or("Black"),
                     );
                     ui.label(RichText::new("vs").color(MUTED));
-                    ui.label(
-                        RichText::new(doc.nodes[0].property("PW").unwrap_or("White")).strong(),
+                    player(
+                        ui,
+                        Color::White,
+                        doc.nodes[0].property("PW").unwrap_or("White"),
                     );
                 });
                 ui.add_space(9.0);
-                board_view(ui, doc, board, &mut out);
+                board_view(ui, doc, board, snapshot.values.get(&doc.selected), &mut out);
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
                     for (label, value) in [
@@ -340,7 +402,13 @@ pub fn render(ui: &mut egui::Ui, snapshot: &Snapshot) -> Vec<Action> {
         });
     out
 }
-fn board_view(ui: &mut egui::Ui, doc: &Document, board: &crate::Board, out: &mut Vec<Action>) {
+fn board_view(
+    ui: &mut egui::Ui,
+    doc: &Document,
+    board: &crate::Board,
+    analysis: Option<&Analysis>,
+    out: &mut Vec<Action>,
+) {
     let side = ui
         .available_width()
         .min((ui.available_height() - 56.0).max(150.0))
@@ -470,6 +538,87 @@ fn board_view(ui: &mut egui::Ui, doc: &Document, board: &crate::Board, out: &mut
             }
         }
     }
+    if let Some(analysis) = analysis {
+        for (rank, suggestion) in analysis.suggestions.iter().take(5).enumerate() {
+            let Some(point) = suggestion.point else {
+                continue;
+            };
+            if point.x >= doc.size || point.y >= doc.size || board.stone(point).is_some() {
+                continue;
+            }
+            let center = start + Vec2::new(point.x as f32 * gap, point.y as f32 * gap);
+            let color = if rank == 0 {
+                SUGGESTION_BLUE
+            } else {
+                Color32::from_rgb(49, 121, 86)
+            };
+            painter.circle_filled(center, gap * 0.24, color);
+            painter.text(
+                center,
+                Align2::CENTER_CENTER,
+                (rank + 1).to_string(),
+                FontId::proportional((gap * 0.3).clamp(10.0, 16.0)),
+                Color32::WHITE,
+            );
+            ui.interact(
+                Rect::from_center_size(center, Vec2::splat(gap * 0.5)),
+                ui.id().with(("suggestion", rank)),
+                Sense::hover(),
+            )
+            .widget_info(|| {
+                WidgetInfo::labeled(
+                    WidgetType::Other,
+                    true,
+                    format!("AI suggestion {}: {}", rank + 1, point.gtp(doc.size)),
+                )
+            });
+        }
+    }
+    let mut next = doc.nodes[doc.selected].children.first().copied();
+    while let Some(id) = next {
+        if let Some(played) = doc.nodes[id].played {
+            if let Some(point) = played.point.filter(|p| board.stone(*p).is_none()) {
+                let center = start + Vec2::new(point.x as f32 * gap, point.y as f32 * gap);
+                let radius = gap * 0.43;
+                let color = if played.color == Color::Black {
+                    Color32::BLACK
+                } else {
+                    Color32::WHITE
+                };
+                for i in 0..24 {
+                    let points = (0..=3)
+                        .map(|j| {
+                            let angle = std::f32::consts::TAU * (i as f32 + j as f32 / 6.0) / 24.0;
+                            center + Vec2::angled(angle) * radius
+                        })
+                        .collect();
+                    painter.add(egui::Shape::line(points, Stroke::new(2.1, color)));
+                }
+                ui.interact(
+                    Rect::from_center_size(center, Vec2::splat(2.0 * radius + 1.0)),
+                    ui.id().with("next-recorded"),
+                    Sense::hover(),
+                )
+                .widget_info(|| {
+                    WidgetInfo::labeled(
+                        WidgetType::Other,
+                        true,
+                        format!(
+                            "Next recorded move: {} {}",
+                            if played.color == Color::Black {
+                                "Black"
+                            } else {
+                                "White"
+                            },
+                            point.gtp(doc.size)
+                        ),
+                    )
+                });
+            }
+            break;
+        }
+        next = doc.nodes[id].children.first().copied();
+    }
     if let Some(point) = doc.nodes[doc.selected].played.and_then(|m| m.point) {
         let center = start + Vec2::new(point.x as f32 * gap, point.y as f32 * gap);
         painter.circle_stroke(
@@ -486,11 +635,26 @@ fn board_view(ui: &mut egui::Ui, doc: &Document, board: &crate::Board, out: &mut
         );
     }
 }
-fn tree(ui: &mut egui::Ui, doc: &Document, out: &mut Vec<Action>) {
+fn tree(
+    ui: &mut egui::Ui,
+    doc: &Document,
+    source: &Option<std::path::PathBuf>,
+    out: &mut Vec<Action>,
+) {
     let layout = doc.layout();
     let max_col = layout.iter().map(|p| p.column).max().unwrap_or(0);
     let max_row = layout.iter().map(|p| p.row).max().unwrap_or(0);
-    egui::ScrollArea::both()
+    let focus = (source.clone(), doc.selected);
+    let id = ui.id().with("tree-selection");
+    let follow = ui.data_mut(|data| {
+        let changed = data
+            .get_temp::<(Option<std::path::PathBuf>, usize)>(id)
+            .as_ref()
+            != Some(&focus);
+        data.insert_temp(id, focus);
+        changed
+    });
+    let output = egui::ScrollArea::both()
         .id_salt("variation-scroll")
         .auto_shrink([false, false])
         .show(ui, |ui| {
@@ -508,6 +672,13 @@ fn tree(ui: &mut egui::Ui, doc: &Document, out: &mut Vec<Action>) {
                         24.0 + layout[id].row as f32 * 40.0,
                     )
             };
+            if follow {
+                ui.scroll_to_rect_animation(
+                    Rect::from_center_size(position(doc.selected), Vec2::splat(40.0)),
+                    None,
+                    egui::style::ScrollAnimation::none(),
+                );
+            }
             let painter = ui.painter();
             for p in &layout {
                 if let Some(parent) = doc.nodes[p.id].parent {
@@ -580,6 +751,12 @@ fn tree(ui: &mut egui::Ui, doc: &Document, out: &mut Vec<Action>) {
                 });
             }
         });
+    ui.interact(
+        output.inner_rect,
+        ui.id().with("timeline-viewport"),
+        Sense::hover(),
+    )
+    .widget_info(|| WidgetInfo::labeled(WidgetType::Other, true, "Timeline viewport"));
 }
 pub fn chart_points(snapshot: &Snapshot, score: bool) -> Vec<Option<[f64; 2]>> {
     snapshot
@@ -672,10 +849,173 @@ fn chart(ui: &mut egui::Ui, snapshot: &Snapshot, score: bool, out: &mut Vec<Acti
         }
         plot_ui.pointer_coordinate()
     });
+    response.response.widget_info(|| {
+        WidgetInfo::labeled(
+            WidgetType::Other,
+            true,
+            if score {
+                "Score lead chart"
+            } else {
+                "Winrate chart"
+            },
+        )
+    });
     if response.response.clicked()
         && let Some(point) = response.inner
     {
         let index = (point.x.round().max(0.0) as usize).min(doc.mainline.len() - 1);
         command(out, Command::Select(doc.mainline[index]));
     }
+}
+
+fn player(ui: &mut egui::Ui, color: Color, name: &str) {
+    let response = ui
+        .horizontal(|ui| {
+            let (rect, _) = ui.allocate_exact_size(Vec2::splat(18.0), Sense::hover());
+            ui.painter().circle_filled(
+                rect.center(),
+                7.0,
+                if color == Color::Black {
+                    Color32::from_rgb(25, 27, 30)
+                } else {
+                    Color32::from_rgb(248, 247, 242)
+                },
+            );
+            ui.painter().circle_stroke(
+                rect.center(),
+                7.0,
+                Stroke::new(1.0, Color32::from_rgb(128, 133, 139)),
+            );
+            ui.label(RichText::new(name).strong());
+        })
+        .response;
+    response.widget_info(|| {
+        WidgetInfo::labeled(
+            WidgetType::Other,
+            true,
+            format!(
+                "{} player: {name}",
+                if color == Color::Black {
+                    "Black"
+                } else {
+                    "White"
+                }
+            ),
+        )
+    });
+}
+fn navigation_legend(ui: &mut egui::Ui) {
+    for vertical in [false, true] {
+        ui.horizontal(|ui| {
+            let (rect, response) = ui.allocate_exact_size(Vec2::new(40.0, 18.0), Sense::hover());
+            for (i, direction) in [-1.0, 1.0].iter().enumerate() {
+                let center = rect.min + Vec2::new(10.0 + i as f32 * 20.0, 9.0);
+                let vector = if vertical {
+                    Vec2::new(0.0, *direction * 10.0)
+                } else {
+                    Vec2::new(*direction * 12.0, 0.0)
+                };
+                ui.painter()
+                    .arrow(center - vector / 2.0, vector, Stroke::new(1.4, MUTED));
+            }
+            response.widget_info(|| {
+                WidgetInfo::labeled(
+                    WidgetType::Other,
+                    true,
+                    if vertical {
+                        "Up / Down variation arrows"
+                    } else {
+                        "Left / Right navigation arrows"
+                    },
+                )
+            });
+            ui.label(
+                RichText::new(if vertical {
+                    "Up / Down: variations"
+                } else {
+                    "Left / Right: navigate moves"
+                })
+                .size(11.0)
+                .color(MUTED),
+            );
+        });
+    }
+    ui.label(
+        RichText::new(
+            "P: pass   Space: pause
+Cmd+O: open   Cmd+S: export",
+        )
+        .size(11.0)
+        .color(MUTED),
+    );
+}
+fn suggested_moves(
+    ui: &mut egui::Ui,
+    analysis: Option<&Analysis>,
+    size: usize,
+    out: &mut Vec<Action>,
+) {
+    ui.scope(|ui| {
+        ui.spacing_mut().button_padding = Vec2::new(7.0, 2.0);
+        ui.spacing_mut().item_spacing.y = 4.0;
+        ui.allocate_ui_with_layout(
+            Vec2::new(ui.available_width(), 147.0),
+            egui::Layout::top_down(egui::Align::Min),
+            |ui| {
+                ui.label(
+                    RichText::new("AI SUGGESTED MOVES")
+                        .size(11.0)
+                        .strong()
+                        .color(MUTED),
+                );
+                for rank in 0..5 {
+                    ui.horizontal(|ui| {
+                        let suggested = analysis.and_then(|v| v.suggestions.get(rank));
+                        let color = if rank == 0 { SUGGESTION_BLUE } else { MUTED };
+                        let label = suggested
+                            .map(|s| s.point.map(|p| p.gtp(size)).unwrap_or("Pass".into()))
+                            .unwrap_or("--".into());
+                        if ui
+                            .add_enabled(
+                                suggested.is_some(),
+                                egui::Button::new(
+                                    RichText::new(format!("{}  {label}", rank + 1)).color(color),
+                                )
+                                .min_size(Vec2::new(63.0, 18.0)),
+                            )
+                            .clicked()
+                            && let Some(s) = suggested
+                        {
+                            command(out, Command::Play(s.point));
+                        }
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(
+                                    suggested
+                                        .map(|s| match (s.score_lead, s.winrate) {
+                                            (Some(score), Some(winrate)) => format!(
+                                                "{score:+.1} pt   {:.1}% Black   {} visits",
+                                                winrate * 100.0,
+                                                s.visits
+                                            ),
+                                            _ => "Policy preview · no search yet".into(),
+                                        })
+                                        .unwrap_or_else(|| {
+                                            if rank == 0 {
+                                                "Awaiting suggestions".into()
+                                            } else {
+                                                String::new()
+                                            }
+                                        }),
+                                )
+                                .size(11.0)
+                                .color(MUTED),
+                            )
+                            .truncate(),
+                        );
+                    });
+                }
+            },
+        );
+    });
 }

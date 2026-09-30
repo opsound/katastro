@@ -26,6 +26,10 @@ impl Review {
         let cache = connection(cache)?;
         reviews.execute_batch("CREATE TABLE IF NOT EXISTS documents (id TEXT PRIMARY KEY, document TEXT NOT NULL); CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL); PRAGMA user_version=1;")?;
         cache.execute_batch("CREATE TABLE IF NOT EXISTS analysis (key TEXT PRIMARY KEY, visits INTEGER NOT NULL, result TEXT NOT NULL); PRAGMA user_version=1;")?;
+        cache.execute(
+            "DELETE FROM analysis WHERE visits < ?1",
+            [crate::analysis::MIN_CACHE_VISITS as i64],
+        )?;
         Ok(Self {
             reviews,
             cache,

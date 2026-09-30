@@ -2,11 +2,21 @@ use crate::{Document, NodeId, Result, Review, digest};
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+pub const MIN_CACHE_VISITS: u64 = 64;
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SuggestedMove {
+    pub point: Option<crate::Point>,
+    pub visits: u64,
+    pub winrate: Option<f64>,
+    pub score_lead: Option<f64>,
+}
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Analysis {
     pub visits: u64,
     pub winrate: f64,
     pub score_lead: f64,
+    #[serde(default)]
+    pub suggestions: Vec<SuggestedMove>,
 }
 impl Analysis {
     pub fn validate(&self) -> Result<()> {
@@ -16,6 +26,15 @@ impl Analysis {
             || !self.score_lead.is_finite()
         {
             return Err("Invalid analysis result".into());
+        }
+        for suggestion in &self.suggestions {
+            if suggestion
+                .winrate
+                .is_some_and(|v| !v.is_finite() || !(0.0..=1.0).contains(&v))
+                || suggestion.score_lead.is_some_and(|v| !v.is_finite())
+            {
+                return Err("Invalid suggested move evaluation".into());
+            }
         }
         Ok(())
     }
@@ -116,6 +135,9 @@ impl Review {
     }
     pub fn store_analysis(&mut self, key: &str, analysis: &Analysis) -> Result<()> {
         analysis.validate()?;
+        if analysis.visits < MIN_CACHE_VISITS {
+            return Ok(());
+        }
         self.cache.execute("INSERT INTO analysis(key,visits,result) VALUES (?1,?2,?3) ON CONFLICT(key) DO UPDATE SET visits=excluded.visits,result=excluded.result WHERE excluded.visits >= analysis.visits",params![key,i64::try_from(analysis.visits)?,serde_json::to_string(analysis)?])?;
         Ok(())
     }

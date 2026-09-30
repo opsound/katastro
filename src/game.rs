@@ -49,6 +49,24 @@ impl Point {
             size - self.y
         )
     }
+    pub fn from_gtp(text: &str, size: usize) -> Result<Option<Self>> {
+        if text.eq_ignore_ascii_case("pass") {
+            return Ok(None);
+        }
+        let bytes = text.as_bytes();
+        let x = bytes.first().and_then(|letter| {
+            b"ABCDEFGHJKLMNOPQRST"
+                .iter()
+                .position(|c| *c == letter.to_ascii_uppercase())
+        });
+        let y = text.get(1..).and_then(|s| s.parse::<usize>().ok());
+        match (x, y) {
+            (Some(x), Some(row)) if x < size && (1..=size).contains(&row) => {
+                Ok(Some(Self::new(x, size - row)))
+            }
+            _ => Err(format!("Invalid GTP coordinate: {text}").into()),
+        }
+    }
     fn parse(text: &str, size: usize) -> Result<Option<Self>> {
         if text.is_empty() || (text == "tt" && size <= 19) {
             return Ok(None);
@@ -439,6 +457,22 @@ impl Document {
             )
         }
         node(self, 0).serialize()
+    }
+    pub fn vertical_neighbor(&self, down: bool) -> Option<NodeId> {
+        let layout = self.layout();
+        let current = &layout[self.selected];
+        layout
+            .iter()
+            .filter(|p| {
+                p.column == current.column
+                    && if down {
+                        p.row > current.row
+                    } else {
+                        p.row < current.row
+                    }
+            })
+            .min_by_key(|p| p.row.abs_diff(current.row))
+            .map(|p| p.id)
     }
     pub fn layout(&self) -> Vec<NodePosition> {
         let mut positions = vec![

@@ -88,3 +88,59 @@ fn live_katago_protocol_returns_real_estimates_when_explicitly_configured() {
     turns.sort();
     assert_eq!(turns, vec![0, 1, 2]);
 }
+
+#[test]
+#[ignore = "Requires explicit local KataGo executable and model; run with --ignored"]
+fn live_scheduler_refines_to_256_and_round_trips_ranked_suggestions() {
+    use katastro::{Document, Review, scheduler::Scheduler};
+    let config = EngineConfig {
+        executable: std::env::var_os("KATASTRO_TEST_ENGINE")
+            .expect("KATASTRO_TEST_ENGINE")
+            .into(),
+        model: std::env::var_os("KATASTRO_TEST_MODEL")
+            .expect("KATASTRO_TEST_MODEL")
+            .into(),
+    };
+    let temp = tempfile::TempDir::new().unwrap();
+    let source = temp.path().join("game.sgf");
+    let sgf = b"(;SZ[9];B[df];W[fd])";
+    std::fs::write(&source, sgf).unwrap();
+    let profile = Engine::profile(&config).unwrap();
+    let mut engine = Engine::spawn(&config).unwrap();
+    let mut scheduler = Scheduler::new(
+        1,
+        Document::parse(sgf).unwrap(),
+        profile.clone(),
+        Default::default(),
+    );
+    let mut review = Review::new(&temp.path().join("reviews"), &temp.path().join("cache")).unwrap();
+    review.import(&source).unwrap();
+    for budget in [1, 8, 64, 256] {
+        let request = scheduler.next_request().unwrap().unwrap();
+        assert_eq!(request.visits, budget);
+        engine.send(&request.query).unwrap();
+        while scheduler.pending() > 0 {
+            let reply = response(&engine);
+            for (target, value) in scheduler.accept(&reply).unwrap() {
+                if reply["isDuringSearch"] == false {
+                    review.store_analysis(&target.key, &value).unwrap();
+                }
+            }
+        }
+        assert!(scheduler.values.values().all(|v| v.visits >= budget));
+        assert!(scheduler.values.values().all(|v| !v.suggestions.is_empty()));
+        assert!(!scheduler.is_complete());
+    }
+    assert!(scheduler.values.values().all(|v| v.suggestions.len() == 5));
+    drop(review);
+    let mut reopened =
+        Review::new(&temp.path().join("reviews"), &temp.path().join("cache")).unwrap();
+    reopened.import(&source).unwrap();
+    assert_eq!(
+        reopened.cached_analysis(&profile).unwrap(),
+        scheduler.values
+    );
+    println!(
+        "Real KataGo: three positions refined to 256 visits, five ranked suggestions per position, exact cached round trip"
+    );
+}

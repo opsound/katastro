@@ -4,7 +4,7 @@ Validated on 2026-09-30 with Rust 1.98.1, an Apple M4 Max, and macOS 26.6.2. Sou
 
 ## Behavioral test evidence
 
-The initial implementation of each slice was a minimal interface that allowed its integration tests to run and fail on missing behavior before production implementation. The standard suite contains 24 integration tests:
+The initial implementation of each slice was a minimal interface that allowed its integration tests to run and fail on missing behavior before production implementation. The original MVP and file-dialog repair established 24 integration tests. The subsequent review improvements bring the routine suite to 38 tests; their evidence appears below:
 
 | Slice | Observed red failure | Passing behavior |
 | --- | --- | --- |
@@ -42,7 +42,9 @@ The native desktop binary and the packaged `.app`, launched through macOS Launch
 
 ## Application latency
 
-`tests/performance.rs` measures the release worker through real import, scheduling, engine I/O, cache writes, and snapshot delivery. Each trial creates fresh databases and a new engine, evaluates a 25-move game, then a 210-move game on the same warm process. Refinement is paused after chart coverage. Reopening uses the read-only Open command to measure persisted-cache restoration independently of a new search.
+The original `tests/performance.rs` measurements below used the previous policy that cached one-visit results. They are historical evidence, not measurements of the new deepest-only cache policy. The test now finishes a selected deep run before reopening and verifies the persisted subset, rather than expecting all cheap chart points on disk.
+
+The benchmark measures the release worker through real import, scheduling, engine I/O, cache writes, and snapshot delivery. Each trial creates fresh databases and a new engine, evaluates a 25-move game, then a 210-move game on the same warm process. Refinement is paused after chart coverage. Reopening uses the read-only Open command to measure persisted-cache restoration independently of a new search.
 
 | Trial | Engine state | Played positions including root | First estimate | Complete chart | Cached reopen |
 | --- | --- | --- | --- | --- | --- |
@@ -77,3 +79,36 @@ Three integration tests use actual toolbar/settings clicks and controlled delaye
 An additional explicit native test runs a real eframe/AppKit window in a subprocess, opens and cancels Open twice and Export once, then reopens the saved review to verify preservation. It operates only on its own AppKit windows and needs no system accessibility permission. File-selection delivery is tested through controlled dialog results; the native test verifies real sheet presentation/cancellation and process survival. Restoring the synchronous native picker makes the test fail: the render callback blocks in the modal panel and the process cannot complete its sheet/cancellation sequence. The test terminates that subprocess on timeout. The user's original crash log independently records the winit reentrancy panic. The async implementation was restored and the native check rerun before delivery.
 
 Run `cargo test --test native_dialogs -- --ignored --nocapture` in a graphical macOS session. This fourth prerequisite-dependent test stays explicit so routine test runs do not display operating-system dialogs.
+
+## Navigation, board guidance, and continuous refinement
+
+The integration tests reproduced missing behavior before the fixes: a selected move 80 columns along a long SGF disappeared from the timeline; Down left selection unchanged; pending analysis moved the score heading upward by 28 pixels; refinement stopped at 64 visits; one-visit estimates and unfinished streamed runs were cached; and candidate, next-move, and player-color markers were absent. A rendering check also found that the new candidate list cut off the winrate chart at the default window height, and a test reproduced that before moving the list below both charts. The emblem and navigation arrows now use painted geometry, avoiding missing font glyphs.
+
+The current checks exercise real review commands and temporary SQLite stores, actual UI clicks/keys and rendered shapes, and a controlled engine subprocess:
+
+- Left/Right keeps the full selected highlight inside the timeline viewport; tree-button focus does not disable navigation. Up/Down selects the nearest variation at the same column, skips empty lanes, respects boundaries, and persists selection.
+- Pending, provisional, and deeper selected evaluations keep chart bounds fixed, including when candidate results arrive. Both charts fit at the default 1200×860 window size. Scrollbar space and detail slots are reserved.
+- Original-game and variation positions continue through 256, 1024, and 4096-visit targets in the scheduler test. The worker remains running and reports its current target; Pause retains that target for display. A held subprocess stream proves that unfinished deep estimates remain visible while being absent from the cache.
+- Completed results below 64 visits are transient. Deeper eligible results replace shallower rows; late shallower results do not downgrade them. Startup removes obsolete cheap rows, preserves deep legacy JSON without candidate fields, and restores saved user variations. Pausing/resuming an open review preserves its in-memory estimates.
+- Engine candidates follow KataGo's `order`, including skipped-I GTP coordinates, board corners, and passing. The top five survive a deep cache round trip. One-visit requests include policy, and legal policy previews contain no invented per-move score or winrate.
+- The best suggestion is visibly blue; board and suggestion-button clicks create/select the expected persistent variation, and parent suggestions disappear on a child with no analysis. Next-move preview consists of separate unfilled arcs in Black/White, follows the original first continuation even after adding a branch, and disappears at a leaf.
+- Colored stones beside named players, the right-column depth label, the painted emblem, and visible painted navigation arrows are asserted from actual UI geometry and state changes.
+
+Sixteen targeted mutations each produced a behavioral test failure before restoration: disabling timeline follow, collapsing the pending detail slot, suppressing vertical navigation, capping budgets at 64, allowing cheap caching, removing the deepest-result SQL guard, caching partial replies, reversing candidate order, disabling policy output, changing blue to orange, removing the dotted ring, making legend arrows invisible, giving Black a White stone, clearing the worker target, placing candidates above charts, and discarding transient values on resume. The player-color mutation initially survived because a transparent circle outline satisfied the Black-fill assertion; requiring an opaque fill made that same mutation fail. Mutation output is kept in ignored local logs; every implementation was restored before final checks.
+
+The real-engine test uses a synthetic 9×9 game and the local Metal KataGo/model, runs all three positions through 1, 8, 64, and 256 visits, verifies early policy suggestions, confirms five searched candidates at 256 visits, and reopens SQLite to compare the complete cached evaluations and candidate lists. It complements the subprocess fixture with actual protocol compatibility. Rendered board guidance was also inspected using `KATASTRO_BOARD_PREVIEW="$PWD/local/board-markers.png" cargo test --test ui suggestions_are_ranked`.
+
+### Current latency check
+
+The updated release benchmark passed three trials using the same private corpus and local engine/model. Each cache reopen restored exactly the two completed deep positions present in that trial, rather than the full provisional chart. All cached results had at least 64 actual visits.
+
+| Trial | Engine state | Positions | First estimate | Full provisional chart | Deep-cache reopen |
+| --- | --- | --- | --- | --- | --- |
+| 1 | Cold | 26 | 1.442 s | 2.556 s | 1 ms |
+| 1 | Warm | 211 | 1.212 s | 1.809 s | 41 ms |
+| 2 | Cold | 26 | 1.424 s | 3.552 s | 1 ms |
+| 2 | Warm | 211 | 180 ms | 724 ms | 41 ms |
+| 3 | Cold | 26 | 1.473 s | 2.620 s | 1 ms |
+| 3 | Warm | 211 | 1.215 s | 3.854 s | 40 ms |
+
+These measurements include the new policy previews and deepest-only cache semantics. They demonstrate early provisional coverage and reuse of completed deep results; they do not establish a speedup over the historical baseline, whose cache policy differed. Final standard formatting, Clippy with warnings denied, and all 38 routine integration tests passed. The explicit real-engine tests passed (including 256-visit refinement and candidate round trips), and the native Open/Export sheet regression passed in 4.40 seconds.

@@ -1,6 +1,9 @@
 use serde_json::{Value, json};
 use std::io::{self, BufRead, Write};
 fn emit(query: &Value) {
+    if query["maxVisits"].as_u64().is_some_and(|v| v >= 16384) {
+        return;
+    }
     let turns = query["analyzeTurns"]
         .as_array()
         .cloned()
@@ -28,6 +31,7 @@ fn main() {
         .find(|pair| pair[0] == "-model")
         .map(|pair| std::fs::read(&pair[1]).unwrap());
     let invalid_evaluation = model.as_deref() == Some(b"bad-evaluation");
+    let hold_final = model.as_deref() == Some(b"hold-final");
     let mut held = Vec::new();
     for line in io::stdin().lock().lines() {
         let query: Value = serde_json::from_str(&line.unwrap()).unwrap();
@@ -53,6 +57,10 @@ fn main() {
             _ if invalid_evaluation => println!(
                 "{}",
                 json!({"id":query["id"],"turnNumber":0,"isDuringSearch":false,"rootInfo":{"visits":0,"winrate":0.5,"scoreLead":0.0}})
+            ),
+            _ if hold_final && query["maxVisits"].as_u64().is_some_and(|v| v >= 64) => println!(
+                "{}",
+                json!({"id":query["id"],"turnNumber":0,"isDuringSearch":true,"rootInfo":{"visits":64,"winrate":0.6,"scoreLead":2.5}})
             ),
             _ => emit(&query),
         }

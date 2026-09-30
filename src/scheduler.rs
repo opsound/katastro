@@ -1,4 +1,4 @@
-use crate::{Analysis, Document, EngineProfile, NodeId, Result, digest};
+use crate::{Analysis, Document, EngineProfile, NodeId, Point, Result, SuggestedMove, digest};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 #[derive(Clone, Debug)]
@@ -30,6 +30,10 @@ impl Scheduler {
         profile: EngineProfile,
         values: BTreeMap<NodeId, Analysis>,
     ) -> Self {
+        let interactive = values
+            .get(&doc.selected)
+            .filter(|v| v.visits >= 64)
+            .map(|_| doc.selected);
         Self {
             values,
             doc,
@@ -38,7 +42,7 @@ impl Scheduler {
             sequence: 0,
             inflight: BTreeMap::new(),
             failed: BTreeSet::new(),
-            interactive: None,
+            interactive,
         }
     }
     fn request(&mut self, nodes: &[NodeId], visits: u64, priority: i64) -> Result<Request> {
@@ -65,7 +69,7 @@ impl Scheduler {
         );
         object.insert("priority".into(), json!(priority));
         object.insert("includeOwnership".into(), json!(false));
-        object.insert("includePolicy".into(), json!(false));
+        object.insert("includePolicy".into(), json!(visits == 1));
         object.insert("analysisPVLen".into(), json!(1));
         if visits > 1 {
             object.insert("reportDuringSearchEvery".into(), json!(0.2));
@@ -85,14 +89,24 @@ impl Scheduler {
         }
         if let Some(node) = self.interactive.take() {
             let current = self.values.get(&node).map_or(0, |v| v.visits);
-            if current < 64
+            if !self.failed.contains(&node)
                 && !self
                     .inflight
                     .values()
                     .any(|r| r.targets.values().flatten().any(|t| t.node == node))
             {
                 return self
-                    .request(&[node], if current == 0 { 1 } else { 64 }, 100)
+                    .request(
+                        &[node],
+                        if current == 0 {
+                            1
+                        } else if current < 64 {
+                            64
+                        } else {
+                            budgets().find(|v| *v > current).unwrap_or(i64::MAX as u64)
+                        },
+                        100,
+                    )
                     .map(Some);
             }
         }
@@ -109,7 +123,7 @@ impl Scheduler {
         if !missing.is_empty() {
             return self.request(&missing, 1, 0).map(Some);
         }
-        for visits in [8, 64] {
+        for visits in budgets() {
             let nodes: Vec<_> = self
                 .doc
                 .mainline
@@ -117,12 +131,20 @@ impl Scheduler {
                 .copied()
                 .filter(|id| {
                     !self.failed.contains(id)
-                        && self.values.get(id).is_some_and(|v| v.visits < visits)
+                        && self.values.get(id).map_or(0, |v| v.visits) < visits
                 })
                 .take(8)
                 .collect();
             if !nodes.is_empty() {
                 return self.request(&nodes, visits, -10).map(Some);
+            }
+            if let Some(node) = (0..self.doc.nodes.len()).find(|id| {
+                !self.doc.mainline.contains(id)
+                    && !self.failed.contains(id)
+                    && self.values.get(id).map_or(0, |v| v.visits) < visits
+            }) {
+                // A sibling branch must have its own history in the engine query.
+                return self.request(&[node], visits, -10).map(Some);
             }
         }
         Ok(None)
@@ -162,6 +184,7 @@ impl Scheduler {
                 visits: root["visits"].as_u64().ok_or("Invalid visit count")?,
                 winrate: root["winrate"].as_f64().ok_or("Invalid winrate")?,
                 score_lead: root["scoreLead"].as_f64().ok_or("Invalid score")?,
+                suggestions: parse_suggestions(reply, self.doc.size)?,
             };
             analysis.validate()?;
             Some(analysis)
@@ -233,15 +256,93 @@ impl Scheduler {
     pub fn is_complete(&self) -> bool {
         self.inflight.is_empty()
             && self.interactive.is_none()
-            && self.doc.mainline.iter().all(|id| {
-                self.failed.contains(id) || self.values.get(id).is_some_and(|v| v.visits >= 64)
+            && (0..self.doc.nodes.len()).all(|id| {
+                self.failed.contains(&id)
+                    || self
+                        .values
+                        .get(&id)
+                        .is_some_and(|v| v.visits >= i64::MAX as u64)
             })
     }
     pub fn unsupported(&mut self) {
-        for id in &self.doc.mainline {
-            if self.doc.position(*id).is_err() {
-                self.failed.insert(*id);
+        for id in 0..self.doc.nodes.len() {
+            if self.doc.position(id).is_err() {
+                self.failed.insert(id);
             }
         }
     }
+}
+
+fn budgets() -> impl Iterator<Item = u64> {
+    [1, 8]
+        .into_iter()
+        .chain(std::iter::successors(Some(64u64), |v| {
+            v.checked_mul(4).filter(|v| *v <= i64::MAX as u64)
+        }))
+}
+fn parse_suggestions(reply: &Value, size: usize) -> Result<Vec<SuggestedMove>> {
+    let moves = reply.get("moveInfos").and_then(Value::as_array);
+    if moves.is_none_or(|moves| moves.is_empty()) {
+        let Some(policy) = reply.get("policy").and_then(Value::as_array) else {
+            return Ok(Vec::new());
+        };
+        if policy.len() != size * size + 1 {
+            return Err("Invalid policy dimensions".into());
+        }
+        let mut ranked: Vec<_> = policy
+            .iter()
+            .enumerate()
+            .filter_map(|(i, value)| {
+                value
+                    .as_f64()
+                    .filter(|v| v.is_finite() && *v >= 0.0)
+                    .map(|p| (i, p))
+            })
+            .collect();
+        ranked.sort_by(|a, b| b.1.total_cmp(&a.1));
+        return Ok(ranked
+            .into_iter()
+            .take(5)
+            .map(|(i, _)| SuggestedMove {
+                point: if i == size * size {
+                    None
+                } else {
+                    Some(Point::new(i % size, i / size))
+                },
+                visits: 0,
+                winrate: None,
+                score_lead: None,
+            })
+            .collect());
+    }
+    let moves = moves.unwrap();
+    let mut ranked: Vec<_> = moves.iter().collect();
+    ranked.sort_by_key(|m| m["order"].as_u64().unwrap_or(u64::MAX));
+    ranked
+        .into_iter()
+        .take(5)
+        .map(|m| {
+            Ok(SuggestedMove {
+                point: Point::from_gtp(
+                    m["move"]
+                        .as_str()
+                        .ok_or("Suggested move has no coordinate")?,
+                    size,
+                )?,
+                visits: m["visits"]
+                    .as_u64()
+                    .ok_or("Suggested move has no visit count")?,
+                winrate: Some(
+                    m["winrate"]
+                        .as_f64()
+                        .ok_or("Suggested move has no winrate")?,
+                ),
+                score_lead: Some(
+                    m["scoreLead"]
+                        .as_f64()
+                        .ok_or("Suggested move has no score")?,
+                ),
+            })
+        })
+        .collect()
 }

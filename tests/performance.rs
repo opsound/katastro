@@ -1,5 +1,5 @@
 use katastro::{
-    Document,
+    Document, Review,
     engine::EngineConfig,
     worker::{Client, Command, Snapshot},
 };
@@ -73,22 +73,37 @@ fn live_worker_chart_and_cached_reopen_measurements() {
                 until(&client, |s| s.coverage == (*positions, *positions))
             };
             let chart_elapsed = start.elapsed();
+            // Cheap chart values remain transient; finish one selected deep run before checking cache reuse.
+            let mut reader =
+                Review::new(&temp.path().join("reviews"), &temp.path().join("cache")).unwrap();
+            reader.import(path).unwrap();
+            let profile = katastro::engine::Engine::profile(&config).unwrap();
+            let selected = *covered.document.as_ref().unwrap().mainline.last().unwrap();
+            client.send(Command::Select(selected)).unwrap();
+            until(&client, |_| {
+                reader
+                    .cached_analysis(&profile)
+                    .unwrap()
+                    .get(&selected)
+                    .is_some_and(|v| v.visits >= 64)
+            });
             client.send(Command::Pause).unwrap();
             until(&client, |s| !s.running);
+            let saved = reader.cached_analysis(&profile).unwrap();
+            assert!(saved.values().all(|v| v.visits >= 64));
             let reopen = Instant::now();
             client.send(Command::Open(path.clone())).unwrap();
-            let restored = until(&client, |s| s.document.is_some() && !s.running);
+            let restored = until(&client, |s| s.status.starts_with("Review ready"));
             let reopen_elapsed = reopen.elapsed();
-            assert_eq!(restored.coverage, (*positions, *positions));
-            for (node, value) in &covered.values {
-                assert!(restored.values[node].visits >= value.visits);
-            }
+            assert_eq!(restored.values, saved);
+            assert!(restored.values.contains_key(&selected));
             println!(
-                "trial={trial} {} positions={positions} first={:.3}s full_chart={:.3}s cached_reopen={:.3}s",
+                "trial={trial} {} positions={positions} first={:.3}s full_chart={:.3}s deep_cached_reopen={:.3}s cached_positions={}",
                 if index == 0 { "cold" } else { "warm" },
                 first_elapsed.as_secs_f64(),
                 chart_elapsed.as_secs_f64(),
-                reopen_elapsed.as_secs_f64()
+                reopen_elapsed.as_secs_f64(),
+                restored.values.len()
             );
         }
     }

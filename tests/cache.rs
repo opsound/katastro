@@ -13,6 +13,7 @@ fn sample(visits: u64) -> Analysis {
         visits,
         winrate: 0.0,
         score_lead: 0.0,
+        suggestions: vec![],
     }
 }
 #[test]
@@ -36,7 +37,8 @@ fn reopen_restores_partial_analysis_and_deeper_results_without_an_engine() {
             &Analysis {
                 visits: 5,
                 winrate: f64::NAN,
-                score_lead: 3.0
+                score_lead: 3.0,
+                suggestions: vec![],
             }
         )
         .is_err()
@@ -102,7 +104,8 @@ fn clearing_analysis_does_not_erase_variations_and_comments_do_not_change_analys
     .unwrap();
     app.import(&source).unwrap();
     let key = app.analysis_key(1, &profile()).unwrap();
-    app.store_analysis(&key, &sample(1)).unwrap();
+    app.store_analysis(&key, &sample(64)).unwrap();
+    assert_eq!(app.cached_analysis(&profile()).unwrap().len(), 1);
     app.select(1).unwrap();
     app.play(Some(Point::new(3, 3))).unwrap();
     app.clear_analysis().unwrap();
@@ -122,5 +125,58 @@ fn clearing_analysis_does_not_erase_variations_and_comments_do_not_change_analys
         app.document().unwrap().nodes.len(),
         3,
         "metadata edits must not discard saved variations"
+    );
+}
+
+#[test]
+fn cheap_results_are_transient_and_only_deepest_eligible_results_are_saved() {
+    let temp = TempDir::new().unwrap();
+    let source = temp.path().join("game.sgf");
+    fs::write(&source, "(;SZ[9];B[cc];W[gg])").unwrap();
+    let reviews = temp.path().join("reviews");
+    let cache = temp.path().join("cache");
+    let mut app = Review::new(&reviews, &cache).unwrap();
+    app.import(&source).unwrap();
+    for visits in [1, 8] {
+        let key = app.analysis_key(0, &profile()).unwrap();
+        app.store_analysis(&key, &sample(visits)).unwrap();
+        assert!(
+            app.cached_analysis(&profile()).unwrap().is_empty(),
+            "cheap estimates leaked to disk"
+        );
+    }
+    let key = app.analysis_key(1, &profile()).unwrap();
+    for visits in [64, 1024, 256, 64] {
+        app.store_analysis(&key, &sample(visits)).unwrap();
+    }
+    app.select(1).unwrap();
+    let branch = app.play(Some(Point::new(3, 3))).unwrap();
+    drop(app);
+    // Simulate an older installation containing an obsolete one-visit row.
+    let conn = rusqlite::Connection::open(&cache).unwrap();
+    conn.execute(
+        "INSERT INTO analysis(key,visits,result) VALUES ('legacy-cheap',1,?1)",
+        [serde_json::to_string(&sample(1)).unwrap()],
+    )
+    .unwrap();
+    // Older deep rows had no candidate field; they still supply a chart estimate.
+    conn.execute(
+        "UPDATE analysis SET result=?1 WHERE visits=1024",
+        [r#"{"visits":1024,"winrate":0.0,"score_lead":0.0}"#],
+    )
+    .unwrap();
+    drop(conn);
+    let mut reopened = Review::new(&reviews, &cache).unwrap();
+    reopened.import(&source).unwrap();
+    assert_eq!(reopened.document().unwrap().selected, branch);
+    assert_eq!(
+        reopened.cached_analysis(&profile()).unwrap()[&1].visits,
+        1024
+    );
+    let conn = rusqlite::Connection::open(&cache).unwrap();
+    assert_eq!(
+        conn.query_row("SELECT COUNT(*) FROM analysis", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        1
     );
 }

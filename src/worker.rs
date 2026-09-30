@@ -39,6 +39,7 @@ pub struct Snapshot {
     pub diagnostic: Option<String>,
     pub running: bool,
     pub coverage: (usize, usize),
+    pub analysis_target: Option<u64>,
 }
 impl Snapshot {
     pub fn empty(config: EngineConfig) -> Self {
@@ -53,6 +54,7 @@ impl Snapshot {
             diagnostic: None,
             running: false,
             coverage: (0, 0),
+            analysis_target: None,
         }
     }
 }
@@ -167,7 +169,17 @@ impl Worker {
     fn start(&mut self) -> Result<()> {
         let doc = self.review.document().cloned().ok_or("Open an SGF first")?;
         let profile = Engine::profile(&self.state.config)?;
-        let values = self.review.cached_analysis(&profile)?;
+        let mut values = self.review.cached_analysis(&profile)?;
+        if self.review.last_profile()?.as_ref() == Some(&profile) {
+            for (node, value) in &self.state.values {
+                if values
+                    .get(node)
+                    .is_none_or(|old| value.visits >= old.visits)
+                {
+                    values.insert(*node, value.clone());
+                }
+            }
+        }
         if self.engine.is_none() {
             self.engine = Some(Engine::spawn(&self.state.config)?);
         }
@@ -212,6 +224,7 @@ impl Worker {
                 } else {
                     BTreeMap::new()
                 };
+                self.state.analysis_target = None;
                 self.state.status = "Review ready · saved variations restored".into();
             }
             Command::Select(id) => {
@@ -329,7 +342,10 @@ impl Worker {
                         if let Some(scheduler) = self.scheduler.as_mut() {
                             match scheduler.accept(&reply) {
                                 Ok(results) => {
-                                    for (target, value) in results {
+                                    for (target, value) in results
+                                        .into_iter()
+                                        .filter(|_| reply["isDuringSearch"] == false)
+                                    {
                                         if let Err(error) =
                                             self.review.store_analysis(&target.key, &value)
                                         {
@@ -370,6 +386,20 @@ impl Worker {
                 let planned = self.scheduler.as_mut().map(Scheduler::next_request);
                 match planned {
                     Some(Ok(Some(request))) => {
+                        self.state.analysis_target = Some(request.visits);
+                        self.state.status = format!(
+                            "Refining · target {} visits per position · variations autosave",
+                            request.visits
+                        );
+                        if self
+                            .review
+                            .document()
+                            .is_some_and(|d| d.mainline.iter().any(|id| d.position(*id).is_err()))
+                        {
+                            self.state
+                                .status
+                                .push_str(" · analysis unavailable after setup changes");
+                        }
                         if let Some(engine) = self.engine.as_mut()
                             && let Err(error) = engine.send(&request.query)
                         {
@@ -390,7 +420,7 @@ impl Worker {
                     self.state.running = false;
                     let (covered, total) = self.scheduler.as_ref().unwrap().coverage();
                     self.state.status = if covered == total {
-                        "Analysis complete · 64 visits per played position".into()
+                        "Analysis finished · maximum search effort reached".into()
                     } else {
                         format!(
                             "Analysis finished · {covered} / {total} played positions evaluated; analysis unavailable after setup changes or engine errors"
