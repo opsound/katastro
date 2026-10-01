@@ -204,3 +204,75 @@ fn handicap_setup_has_stable_identity_across_reopen_and_compressed_lists_expand(
     assert_eq!(board.cells.iter().filter(|c| c.is_some()).count(), 4);
     assert_eq!(board.next, Color::White);
 }
+
+#[cfg(unix)]
+#[test]
+fn exporting_to_a_source_alias_preserves_the_original_sgf() {
+    let temp = TempDir::new().unwrap();
+    let source = fixture(temp.path(), "(;SZ[9];B[cc])");
+    let original = fs::read(&source).unwrap();
+    let mut app = review(temp.path());
+    app.import(&source).unwrap();
+    let branch = app.play(Some(Point::new(3, 3))).unwrap();
+    let hard = temp.path().join("hard-link.sgf");
+    let symbolic = temp.path().join("symbolic-link.sgf");
+    fs::hard_link(&source, &hard).unwrap();
+    std::os::unix::fs::symlink(&source, &symbolic).unwrap();
+    for alias in [hard, symbolic, source.clone()] {
+        let result = app.export(&alias);
+        assert_eq!(
+            fs::read(&source).unwrap(),
+            original,
+            "exporting to an alias must not overwrite the original SGF"
+        );
+        assert!(result.is_err(), "export must reject aliases of its source");
+    }
+    let exported = temp.path().join("review.sgf");
+    app.export(&exported).unwrap();
+    let mut reopened = review(&temp.path().join("exported"));
+    reopened.import(&exported).unwrap();
+    let doc = reopened.document().unwrap();
+    assert_eq!(doc.nodes.len(), 3);
+    assert_eq!(
+        doc.board(branch).unwrap().stone(Point::new(3, 3)),
+        Some(Color::Black)
+    );
+    assert_eq!(fs::read(&source).unwrap(), original);
+}
+
+#[test]
+fn new_zealand_superko_distinguishes_the_next_player_and_persists_legal_suicide() {
+    let temp = TempDir::new().unwrap();
+    let source = fixture(
+        temp.path(),
+        "(;SZ[5]RU[New Zealand]AW[ab][ba][bc][ca][cc][db]PL[B];B[bb];W[])",
+    );
+    let mut app = review(temp.path());
+    app.import(&source).unwrap();
+    let mainline = app.document().unwrap().mainline.clone();
+    app.select(2).unwrap();
+    // Removing this two-stone chain restores the root's stones, but White is
+    // now to play. NZ uses situational superko, so this position is legal.
+    let removed = app
+        .play(Some(Point::new(2, 1)))
+        .expect("NZ permits a repeated stone arrangement with a different next player");
+    let board = app.document().unwrap().board(removed).unwrap();
+    assert_eq!(board.cells, app.document().unwrap().board(0).unwrap().cells);
+    assert_eq!(board.next, Color::White);
+    assert_eq!(board.captures, [0, 2]);
+    let pass = app.play(None).unwrap();
+    let before = serde_json::to_value(app.document()).unwrap();
+    assert!(
+        app.play(Some(Point::new(1, 1))).is_err(),
+        "repeating both the stones and the next player must still be rejected"
+    );
+    assert_eq!(serde_json::to_value(app.document()).unwrap(), before);
+    drop(app);
+    let mut reopened = review(temp.path());
+    reopened.import(&source).unwrap();
+    let doc = reopened.document().unwrap();
+    assert_eq!(doc.mainline, mainline);
+    assert_eq!(doc.selected, pass);
+    assert_eq!(doc.board(removed).unwrap().captures, [0, 2]);
+    assert_eq!(doc.board(pass).unwrap().next, Color::Black);
+}

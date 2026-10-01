@@ -1,4 +1,4 @@
-use crate::{Analysis, Document, EngineProfile, NodeId, Point, Result, SuggestedMove, digest};
+use crate::{Analysis, Document, EngineProfile, NodeId, Point, Result, SuggestedMove};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 #[derive(Clone, Debug)]
@@ -51,7 +51,7 @@ impl Scheduler {
         let mut targets: BTreeMap<usize, Vec<Target>> = BTreeMap::new();
         for node in nodes {
             let pos = self.doc.position(*node)?;
-            let key = digest(&serde_json::to_vec(&(1, &self.profile, &pos))?);
+            let key = pos.analysis_key(&self.profile)?;
             targets
                 .entry(pos.moves.len())
                 .or_default()

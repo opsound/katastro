@@ -8,7 +8,10 @@ use serde_json::json;
 use std::{
     collections::BTreeMap,
     path::PathBuf,
-    sync::mpsc::{self, Receiver, Sender},
+    sync::{
+        Arc,
+        mpsc::{self, Receiver, Sender},
+    },
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
@@ -71,7 +74,7 @@ impl Client {
         reviews: PathBuf,
         cache: PathBuf,
         config: EngineConfig,
-        wake: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
+        wake: Option<Arc<dyn Fn() + Send + Sync>>,
     ) -> Self {
         let (commands, rx) = mpsc::channel();
         let (tx, snapshots) = mpsc::channel();
@@ -81,7 +84,7 @@ impl Client {
                 let mut state = Snapshot::empty(config);
                 state.error = Some(error.to_string());
                 state.status = "Could not open local storage".into();
-                let _ = tx.send(state);
+                send_snapshot(&state, &tx, &wake);
             }
         });
         Self {
@@ -103,6 +106,16 @@ impl Drop for Client {
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
+    }
+}
+fn send_snapshot(
+    state: &Snapshot,
+    tx: &Sender<Snapshot>,
+    wake: &Option<Arc<dyn Fn() + Send + Sync>>,
+) {
+    let _ = tx.send(state.clone());
+    if let Some(wake) = wake {
+        wake();
     }
 }
 struct Worker {
@@ -134,7 +147,7 @@ impl Worker {
             generation: 0,
         })
     }
-    fn publish(&mut self, tx: &Sender<Snapshot>) {
+    fn publish(&mut self, tx: &Sender<Snapshot>, wake: &Option<Arc<dyn Fn() + Send + Sync>>) {
         self.state.document = self.review.document().cloned();
         self.state.source = self.review.source().map(PathBuf::from);
         self.state.board = self
@@ -153,7 +166,7 @@ impl Worker {
                 doc.mainline.len(),
             );
         }
-        let _ = tx.send(self.state.clone());
+        send_snapshot(&self.state, tx, wake);
     }
     fn pause(&mut self) {
         if let Some(scheduler) = self.scheduler.take() {
@@ -208,11 +221,7 @@ impl Worker {
     fn command(&mut self, command: Command) -> Result<()> {
         self.state.error = None;
         match command {
-            Command::OpenAndAnalyze(path) => {
-                self.command(Command::Open(path))?;
-                self.start()?;
-            }
-            Command::Open(path) => {
+            Command::Open(path) | Command::OpenAndAnalyze(path) => {
                 // Validate import before stopping or replacing a working review.
                 self.review.import(&path)?;
                 self.pause();
@@ -237,7 +246,7 @@ impl Worker {
                 let doc = self.review.document().ok_or("Open an SGF first")?;
                 let node = &doc.nodes[doc.selected];
                 let next = if forward {
-                    node.children.first().copied()
+                    doc.continuation(doc.selected)
                 } else {
                     node.parent
                 };
@@ -287,12 +296,9 @@ impl Worker {
         &mut self,
         commands: Receiver<Command>,
         snapshots: Sender<Snapshot>,
-        wake: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
+        wake: Option<Arc<dyn Fn() + Send + Sync>>,
     ) {
-        self.publish(&snapshots);
-        if let Some(wake) = &wake {
-            wake();
-        }
+        self.publish(&snapshots, &wake);
         let mut last_publish = Instant::now();
         let mut dirty = false;
         loop {
@@ -308,10 +314,7 @@ impl Worker {
                     if let Err(error) = result {
                         self.state.error = Some(error.to_string());
                     }
-                    self.publish(&snapshots);
-                    if let Some(wake) = &wake {
-                        wake();
-                    }
+                    self.publish(&snapshots, &wake);
                     if success
                         && auto
                         && self.state.config.executable.is_file()
@@ -320,10 +323,7 @@ impl Worker {
                         if let Err(error) = self.start() {
                             self.state.error = Some(error.to_string());
                         }
-                        self.publish(&snapshots);
-                        if let Some(wake) = &wake {
-                            wake();
-                        }
+                        self.publish(&snapshots, &wake);
                     }
                     last_publish = Instant::now();
                 }
@@ -428,10 +428,7 @@ impl Worker {
                 }
             }
             if dirty && last_publish.elapsed() >= Duration::from_millis(30) {
-                self.publish(&snapshots);
-                if let Some(wake) = &wake {
-                    wake();
-                }
+                self.publish(&snapshots, &wake);
                 dirty = false;
                 last_publish = Instant::now();
             }

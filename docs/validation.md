@@ -59,7 +59,26 @@ These are local observations, not latency guarantees. The first process includes
 
 ## Reproduce
 
-Run the standard commands and explicit asset-dependent commands in [README.md](../README.md). To generate an optional local desktop preview:
+The project requires integration tests before application behavior changes; see [AGENTS.md](../AGENTS.md) for the full workflow. Standard checks:
+
+```sh
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+```
+
+Real-engine, corpus, and performance checks require a local KataGo executable, a compatible model, and SGFs for the corpus and performance runs. Set these paths for your machine:
+
+```sh
+export KATASTRO_TEST_ENGINE=/opt/homebrew/bin/katago
+export KATASTRO_TEST_MODEL="$HOME/katrain/katrain/models/b10c384h6nbttflrs.bin.gz"
+export KATASTRO_SGF_DIR="$HOME/Downloads"
+cargo test --release --test engine -- --ignored --nocapture
+cargo test --release --test corpus -- --ignored --nocapture
+cargo test --release --test performance -- --ignored --nocapture
+```
+
+To generate an optional local desktop preview, use a graphical macOS session with a working Metal adapter:
 
 ```sh
 mkdir -p local
@@ -261,3 +280,24 @@ The release app was rebuilt, verified with `codesign --verify --deep --strict --
 Before publishing, the session gained unrestricted filesystem and network access. Both explicit real KataGo tests then passed with the documented engine and model: three positions refined through 1/8/64/256 visits, final candidate counts were 29/10/13, and deepest completed results round-tripped exactly through SQLite. The run took 6.67 seconds after compilation. This resolves the earlier Metal initialization limitation for the final implementation; the failed restricted attempts remain recorded above.
 
 The latest untinted stones, thin chain boundaries, and halved inscribed rings also rendered successfully on the GPU. The preview was inspected after `KATASTRO_GROUP_PREVIEW="$PWD/local/group-final-no-tint-thin.png" cargo test --test group_strength toggle_colors_connected -- --nocapture` passed. The image and logs remain in ignored local storage; the figure uses a synthetic SGF. No app implementation changed during these final checks.
+
+## Simplification and correctness pass
+
+The pass reviewed the SGF/rules/tree, cache, scheduler, engine transport, worker, desktop/dialog integration, and board/chart rendering. Four new integration tests reached behavioral failures before their fixes:
+
+| User benefit | Observed failure | Passing outcome |
+| --- | --- | --- |
+| Export leaves the source SGF intact | Export to a hard-link alias replaced the original bytes | Original, symbolic-link, and hard-link targets are rejected; a separate export retains the variation |
+| New Zealand games follow the engine's rules | A legal two-stone suicide was rejected by positional superko | Different next-player states remain legal, identical situations are rejected atomically, and the branch reopens correctly |
+| The played line survives child reordering | Actual UI preview followed the variation; a later export assertion exposed a changed primary game | Real UI navigation, preview, top-row layout, persistence, and exported final board follow the frozen line; variation continuation still works |
+| Storage errors appear without extra user input | The worker published an error but sent no UI wake notification | Startup failure supplies both the error snapshot and an explicit wake event |
+
+The reordered-tree fixture creates its branches through Review commands, then reorders only the persisted child list while retaining frozen main-line IDs. The UI test opens that real SQLite document through the worker, clicks Next and tree nodes, and reopens/exports it. The New Zealand check matches `~/KataGo/cpp/game/rules.cpp`'s situational ko and multi-stone suicide settings. All fixtures are synthetic; synchronization uses channels and bounded deadlines without arbitrary sleeps.
+
+Continuation ordering, cache-key hashing, and snapshot notification now have shared implementations. The unused recursive OpenAndAnalyze handling was folded into the normal open path; cached snapshots still publish before engine startup. The cache-key serialization/version is unchanged. The README shrank from 1,139 to 183 words, with detailed test invocations moved into this document.
+
+Ten temporary regressions failed their integration checks before restoration: checking source aliases by pathname, using positional NZ ko, ignoring NZ superko, selecting continuation by child order, laying out by child order, exporting by child order, navigating by child order, previewing by child order, desynchronizing scheduler/persistence cache keys, and omitting startup-error wakes. Logs are in ignored `local/code-pass-*.log`.
+
+Final formatting, Clippy with warnings denied, and all 76 routine integration tests passed. Both explicit real Metal KataGo tests passed: three positions reached 256 visits with final candidate counts 25/7/14 and exact deepest cache round trips. The read-only corpus check replayed 65 SGFs and 12,334 positions with no failures (2.034 seconds); this is an import/replay measurement, not an analysis speedup. Original game files, engine sources, and production databases were unchanged.
+
+The release bundle was rebuilt and passed strict/deep code-signature verification before replacing ignored `local/Katastro.app`. The previous bundle remains at `local/Katastro-before-code-pass.app`; running applications were not terminated or relaunched.

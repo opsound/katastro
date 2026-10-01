@@ -200,7 +200,9 @@ impl Board {
                 history.len() >= 2 && history[history.len() - 2].0 == self.cells
             } else {
                 history.iter().any(|(cells, next)| {
-                    *cells == self.cells && (rules != "aga" || *next == played.color.other())
+                    *cells == self.cells
+                        && (!matches!(rules, "aga" | "new-zealand")
+                            || *next == played.color.other())
                 })
             };
             if repeated {
@@ -413,6 +415,26 @@ impl Document {
     pub fn board(&self, node: NodeId) -> Result<Board> {
         Ok(self.replay(node)?.0)
     }
+    /// Follow the imported game when present, otherwise this branch's first child.
+    pub fn continuation(&self, node: NodeId) -> Option<NodeId> {
+        let children = &self.nodes.get(node)?.children;
+        self.mainline
+            .windows(2)
+            .find(|pair| pair[0] == node)
+            .map(|pair| pair[1])
+            .filter(|id| children.contains(id))
+            .or_else(|| children.first().copied())
+    }
+    fn ordered_children(&self, node: NodeId) -> impl Iterator<Item = NodeId> + '_ {
+        let continuation = self.continuation(node);
+        continuation.into_iter().chain(
+            self.nodes[node]
+                .children
+                .iter()
+                .copied()
+                .filter(move |child| Some(*child) != continuation),
+        )
+    }
     pub fn append_move(&mut self, point: Option<Point>) -> Result<NodeId> {
         let (mut board, history) = self.replay(self.selected)?;
         let played = Move {
@@ -452,7 +474,9 @@ impl Document {
                     .iter()
                     .map(|(key, values)| Prop::new(key.clone(), values.clone()))
                     .collect(),
-                n.children.iter().map(|child| node(doc, *child)).collect(),
+                doc.ordered_children(id)
+                    .map(|child| node(doc, child))
+                    .collect(),
                 id == 0,
             )
         }
@@ -497,7 +521,7 @@ impl Document {
                 column: col,
                 row,
             };
-            for (index, child) in doc.nodes[id].children.iter().enumerate() {
+            for (index, child) in doc.ordered_children(id).enumerate() {
                 let child_row = if index == 0 {
                     row
                 } else {
@@ -505,7 +529,7 @@ impl Document {
                     *next_row += 1;
                     row
                 };
-                visit(doc, *child, col + 1, child_row, positions, next_row);
+                visit(doc, child, col + 1, child_row, positions, next_row);
             }
         }
         visit(self, 0, 0, 0, &mut positions, &mut next_row);

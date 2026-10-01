@@ -66,11 +66,8 @@ impl State {
                     }
                 }
                 Command::Step(true) => {
-                    let child = self.review.document().unwrap().nodes
-                        [self.review.document().unwrap().selected]
-                        .children
-                        .first()
-                        .copied();
+                    let doc = self.review.document().unwrap();
+                    let child = doc.continuation(doc.selected);
                     if let Some(id) = child {
                         self.review.select(id).unwrap();
                     }
@@ -128,6 +125,142 @@ fn actual_board_and_tree_input_creates_and_selects_persistent_variations() {
         .import(&temp.path().join("game.sgf"))
         .unwrap();
     assert_eq!(reopened.review.document().unwrap().nodes.len(), 5);
+}
+#[test]
+fn reordered_children_keep_the_played_line_preview_navigation_and_top_row() {
+    use katastro::worker::Client;
+    use std::time::{Duration, Instant};
+    struct Running {
+        client: Client,
+        snapshot: Snapshot,
+    }
+    impl Running {
+        fn render(&mut self, ui: &mut eframe::egui::Ui) {
+            for action in ui::render(ui, &self.snapshot) {
+                if let ui::Action::Review(command) = action {
+                    self.client.send(command).unwrap();
+                }
+            }
+        }
+    }
+    fn until(client: &Client, predicate: impl Fn(&Snapshot) -> bool) -> Snapshot {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let snapshot = client
+                .recv(deadline.saturating_duration_since(Instant::now()))
+                .unwrap();
+            assert!(snapshot.error.is_none(), "{:?}", snapshot.error);
+            if predicate(&snapshot) {
+                return snapshot;
+            }
+        }
+    }
+    let temp = tempfile::TempDir::new().unwrap();
+    let source = temp.path().join("game.sgf");
+    std::fs::write(&source, b"(;SZ[9];B[cc];W[gg];B[cg])").unwrap();
+    let reviews = temp.path().join("reviews");
+    let cache = temp.path().join("cache");
+    let mut seed = Review::new(&reviews, &cache).unwrap();
+    seed.import(&source).unwrap();
+    let source_key = seed.document().unwrap().source_identity().unwrap();
+    let mainline = seed.document().unwrap().mainline.clone();
+    let branch = seed.play(Some(Point::new(3, 3))).unwrap();
+    let leaf = seed.play(Some(Point::new(4, 4))).unwrap();
+    seed.select(0).unwrap();
+    let mut saved = seed.document().unwrap().clone();
+    saved.nodes[0].children.reverse();
+    drop(seed);
+    // A persisted child ordering must not supersede the separately frozen main line.
+    let db = rusqlite::Connection::open(&reviews).unwrap();
+    db.execute(
+        "UPDATE documents SET document=?1 WHERE id=?2",
+        [serde_json::to_string(&saved).unwrap(), source_key],
+    )
+    .unwrap();
+    drop(db);
+    let client = Client::spawn(
+        reviews.clone(),
+        cache.clone(),
+        EngineConfig {
+            executable: Default::default(),
+            model: Default::default(),
+        },
+    );
+    client.send(Command::Open(source.clone())).unwrap();
+    let snapshot = until(&client, |s| s.document.is_some());
+    let mut h = Harness::builder()
+        .with_size(eframe::egui::vec2(1200.0, 820.0))
+        .build_ui_state(
+            |ui, state: &mut Running| state.render(ui),
+            Running { client, snapshot },
+        );
+    h.get_by_label("Next recorded move: Black C7");
+    assert!(
+        h.get_by_label("Tree node 1").rect().center().y
+            < h.get_by_label(&format!("Tree node {branch}"))
+                .rect()
+                .center()
+                .y,
+        "the imported continuation must stay on the top row after child reordering"
+    );
+    h.get_by_label("Next move").click();
+    h.run();
+    let next = until(&h.state().client, |s| {
+        s.document.as_ref().is_some_and(|d| d.selected != 0)
+    });
+    assert_eq!(next.document.as_ref().unwrap().selected, mainline[1]);
+    assert_eq!(
+        next.board.as_ref().unwrap().stone(Point::new(2, 2)),
+        Some(Color::Black)
+    );
+    assert_eq!(next.board.as_ref().unwrap().stone(Point::new(3, 3)), None);
+    h.state_mut().snapshot = next;
+    h.run();
+    h.get_by_label("Next recorded move: White G3");
+    h.get_by_label(&format!("Tree node {branch}")).click();
+    h.run();
+    let selected = until(&h.state().client, |s| {
+        s.document.as_ref().is_some_and(|d| d.selected == branch)
+    });
+    h.state_mut().snapshot = selected;
+    h.run();
+    h.get_by_label("Next recorded move: White E5");
+    h.get_by_label("Next move").click();
+    h.run();
+    let next = until(&h.state().client, |s| {
+        s.document.as_ref().is_some_and(|d| d.selected != branch)
+    });
+    assert_eq!(next.document.as_ref().unwrap().selected, leaf);
+    assert_eq!(
+        next.board.as_ref().unwrap().stone(Point::new(4, 4)),
+        Some(Color::White)
+    );
+    drop(h);
+    let mut reopened = Review::new(&reviews, &cache).unwrap();
+    reopened.import(&source).unwrap();
+    assert_eq!(reopened.document().unwrap().selected, leaf);
+    assert_eq!(reopened.document().unwrap().mainline, mainline);
+    assert!(
+        mainline
+            .iter()
+            .all(|id| reopened.document().unwrap().layout()[*id].row == 0)
+    );
+    let exported_path = temp.path().join("exported.sgf");
+    reopened.export(&exported_path).unwrap();
+    let exported = katastro::Document::parse(&std::fs::read(exported_path).unwrap()).unwrap();
+    assert_eq!(
+        exported.board(*exported.mainline.last().unwrap()).unwrap(),
+        reopened
+            .document()
+            .unwrap()
+            .board(*mainline.last().unwrap())
+            .unwrap(),
+        "export must keep the frozen played game as its primary continuation"
+    );
+    assert_eq!(
+        exported.nodes.len(),
+        reopened.document().unwrap().nodes.len()
+    );
 }
 #[test]
 fn keyboard_navigation_and_pass_work_with_loaded_review() {

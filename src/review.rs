@@ -20,6 +20,25 @@ pub(crate) fn connection(path: &Path) -> Result<Connection> {
     conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
     Ok(conn)
 }
+fn same_file(source: &Path, target: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        fs::metadata(source)
+            .ok()
+            .zip(fs::metadata(target).ok())
+            .is_some_and(|(source, target)| {
+                source.dev() == target.dev() && source.ino() == target.ino()
+            })
+    }
+    #[cfg(not(unix))]
+    {
+        fs::canonicalize(source)
+            .ok()
+            .zip(fs::canonicalize(target).ok())
+            .is_some_and(|(source, target)| source == target)
+    }
+}
 impl Review {
     pub fn new(reviews: &Path, cache: &Path) -> Result<Self> {
         let reviews = connection(reviews)?;
@@ -93,7 +112,7 @@ impl Review {
         if self
             .source
             .as_ref()
-            .is_some_and(|source| fs::canonicalize(path).is_ok_and(|target| *source == target))
+            .is_some_and(|source| same_file(source, path))
         {
             return Err("Choose a new file; export cannot overwrite the original SGF".into());
         }

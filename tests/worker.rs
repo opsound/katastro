@@ -33,6 +33,31 @@ fn until(client: &Client, predicate: impl Fn(&Snapshot) -> bool) -> Snapshot {
     }
 }
 #[test]
+fn storage_initialization_failure_wakes_the_ui_to_display_its_error() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let blocked = temp.path().join("not-a-directory");
+    std::fs::write(&blocked, b"an existing file").unwrap();
+    let (notified, notifications) = std::sync::mpsc::channel();
+    let client = Client::spawn_with_wake(
+        blocked.join("reviews"),
+        temp.path().join("cache"),
+        EngineConfig {
+            executable: Default::default(),
+            model: Default::default(),
+        },
+        Some(std::sync::Arc::new(move || {
+            let _ = notified.send(());
+        })),
+    );
+    let snapshot = client.recv(Duration::from_secs(5)).unwrap();
+    assert_eq!(snapshot.status, "Could not open local storage");
+    assert!(snapshot.error.is_some());
+    assert!(!snapshot.running);
+    notifications
+        .recv_timeout(Duration::from_secs(5))
+        .expect("storage errors must wake the UI so it can display the error");
+}
+#[test]
 fn worker_keeps_variations_and_cached_chart_usable_with_engine_unavailable() {
     let temp = tempfile::TempDir::new().unwrap();
     let sgf = temp.path().join("game.sgf");

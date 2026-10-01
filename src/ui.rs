@@ -1021,8 +1021,8 @@ fn chart(ui: &mut egui::Ui, snapshot: &Snapshot, score: bool, out: &mut Vec<Acti
         None
     } else {
         path = doc.path(doc.selected).unwrap_or_default();
-        while let Some(child) = path.last().and_then(|id| doc.nodes[*id].children.first()) {
-            path.push(*child);
+        while let Some(child) = path.last().and_then(|id| doc.continuation(*id)) {
+            path.push(child);
         }
         Some(
             path.iter()
@@ -1349,12 +1349,12 @@ fn suggestion_color(analysis: &Analysis, rank: usize, player: Color) -> Color32 
 }
 
 fn next_recorded_move(doc: &Document) -> Option<(crate::NodeId, crate::Move)> {
-    let mut next = doc.nodes[doc.selected].children.first().copied();
+    let mut next = doc.continuation(doc.selected);
     while let Some(id) = next {
         if let Some(played) = doc.nodes[id].played {
             return Some((id, played));
         }
-        next = doc.nodes[id].children.first().copied();
+        next = doc.continuation(id);
     }
     None
 }

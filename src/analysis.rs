@@ -93,6 +93,11 @@ pub struct Position {
     pub initial_player: String,
     pub moves: Vec<(String, String)>,
 }
+impl Position {
+    pub(crate) fn analysis_key(&self, profile: &EngineProfile) -> Result<String> {
+        Ok(digest(&serde_json::to_vec(&(1, profile, self))?))
+    }
+}
 impl Document {
     pub fn position(&self, node: NodeId) -> Result<Position> {
         let path = self.path(node)?;
@@ -168,7 +173,7 @@ impl Review {
             .as_ref()
             .ok_or("Open an SGF first")?
             .position(node)?;
-        Ok(digest(&serde_json::to_vec(&(1, profile, position))?))
+        position.analysis_key(profile)
     }
     pub fn store_analysis(&mut self, key: &str, analysis: &Analysis) -> Result<()> {
         analysis.validate()?;
