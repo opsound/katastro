@@ -73,7 +73,7 @@ fn live_katago_protocol_returns_real_estimates_when_explicitly_configured() {
         model: model.into(),
     })
     .unwrap();
-    engine.send(&json!({"id":"real","boardXSize":9,"boardYSize":9,"rules":"chinese","komi":7.5,"moves":[["B","D4"],["W","F6"]],"analyzeTurns":[0,1,2],"maxVisits":1})).unwrap();
+    engine.send(&json!({"id":"real","boardXSize":9,"boardYSize":9,"rules":"chinese","komi":7.5,"moves":[["B","D4"],["W","F6"]],"analyzeTurns":[0,1,2],"maxVisits":1,"includeOwnership":true})).unwrap();
     let mut turns = Vec::new();
     for _ in 0..3 {
         let value = response(&engine);
@@ -83,6 +83,13 @@ fn live_katago_protocol_returns_real_estimates_when_explicitly_configured() {
         assert_eq!(root["visits"], 1);
         assert!((0.0..=1.0).contains(&root["winrate"].as_f64().unwrap()));
         assert!(root["scoreLead"].as_f64().unwrap().is_finite());
+        let ownership: Vec<f64> = serde_json::from_value(value["ownership"].clone()).unwrap();
+        assert_eq!(
+            ownership.len(),
+            81,
+            "even a one-visit selected-position request must return a usable map"
+        );
+        assert!(ownership.iter().all(|v| (-1.0..=1.0).contains(v)));
         turns.push(value["turnNumber"].as_u64().unwrap());
     }
     turns.sort();

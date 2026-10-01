@@ -364,6 +364,10 @@ pub fn render(ui: &mut egui::Ui, snapshot: &Snapshot) -> Vec<Action> {
                 let mut group_strength = ui.ctx().data_mut(|data| {
                     data.get_temp::<bool>(strength_id).unwrap_or(false)
                 });
+                let suggestions_id = ui.id().with("board-ai-moves");
+                let mut show_ai_moves = ui.ctx().data_mut(|data| {
+                    data.get_temp::<bool>(suggestions_id).unwrap_or(true)
+                });
                 ui.horizontal(|ui| {
                     player(
                         ui,
@@ -378,10 +382,15 @@ pub fn render(ui: &mut egui::Ui, snapshot: &Snapshot) -> Vec<Action> {
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.checkbox(&mut group_strength, "Group strength")
-                            .on_hover_text("Connected chains: green = likely to live, orange = unsettled, red = likely to die. Tint and solid outlines increase with decisive expected ownership. This is KataGo's estimate under continued play, not a life-and-death proof; ko and seki can appear unsettled. Move-circle colors still show point loss.");
+                            .on_hover_text("Connected chains: green = likely to live, orange = unsettled, red = likely to die. Solid outlines indicate decisive expected ownership. This is KataGo's estimate under continued play, not a life-and-death proof; ko and seki can appear unsettled. Move-circle colors still show point loss.");
+                        ui.checkbox(&mut show_ai_moves, "AI moves")
+                            .on_hover_text("Show AI move suggestions on the board.");
                     });
                 });
-                ui.ctx().data_mut(|data| data.insert_temp(strength_id, group_strength));
+                ui.ctx().data_mut(|data| {
+                    data.insert_temp(strength_id, group_strength);
+                    data.insert_temp(suggestions_id, show_ai_moves);
+                });
                 // Reserve the same height for all states, including ownership arriving.
                 ui.allocate_ui_with_layout(
                     Vec2::new(ui.available_width(), 18.0),
@@ -393,7 +402,13 @@ pub fn render(ui: &mut egui::Ui, snapshot: &Snapshot) -> Vec<Action> {
                                 for (label, color) in [("Likely live", GROUP_LIVE), ("Unsettled", GROUP_UNSETTLED), ("Likely die", GROUP_DYING)] {
                                     ui.label(RichText::new(label).color(color).size(11.0));
                                 }
-                                ui.label(RichText::new(format!("· {} visits", value.visits)).color(MUTED).size(11.0));
+                                let depth = value.ownership_depth();
+                                let label = if depth < crate::analysis::MIN_CACHE_VISITS {
+                                    format!("· quick estimate · {depth} {}", if depth == 1 { "visit" } else { "visits" })
+                                } else {
+                                    format!("· {depth} visits")
+                                };
+                                ui.label(RichText::new(label).color(MUTED).size(11.0));
                             } else {
                                 ui.label(RichText::new("Group estimates pending").color(MUTED).size(11.0))
                                     .on_hover_text("Ownership appears as this position refines. Older cached charts remain usable while group estimates are pending.");
@@ -407,7 +422,7 @@ pub fn render(ui: &mut egui::Ui, snapshot: &Snapshot) -> Vec<Action> {
                     },
                 );
                 ui.add_space(9.0);
-                board_view(ui, doc, board, snapshot, group_strength, &mut out);
+                board_view(ui, doc, board, snapshot, group_strength, show_ai_moves, &mut out);
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
                     for (label, value) in [
@@ -457,6 +472,7 @@ fn board_view(
     board: &crate::Board,
     snapshot: &Snapshot,
     group_strength: bool,
+    show_ai_moves: bool,
     out: &mut Vec<Action>,
 ) {
     let analysis = snapshot.values.get(&doc.selected);
@@ -603,7 +619,7 @@ fn board_view(
     {
         paint_group_strength(painter, board, &analysis.ownership, start, gap);
     }
-    if let Some(analysis) = analysis {
+    if show_ai_moves && let Some(analysis) = analysis {
         for (rank, suggestion) in analysis.suggestions.iter().enumerate() {
             let Some(point) = suggestion.point.filter(|_| suggestion.score_lead.is_some()) else {
                 continue;
@@ -662,11 +678,12 @@ fn board_view(
                 .collect();
             painter.add(egui::Shape::line(points, Stroke::new(2.1, color)));
         }
-        let already_labeled = analysis.is_some_and(|a| {
-            a.suggestions
-                .iter()
-                .any(|s| s.point == Some(point) && s.score_lead.is_some())
-        });
+        let already_labeled = show_ai_moves
+            && analysis.is_some_and(|a| {
+                a.suggestions
+                    .iter()
+                    .any(|s| s.point == Some(point) && s.score_lead.is_some())
+            });
         if !already_labeled {
             paint_move_delta(
                 painter,
@@ -755,13 +772,18 @@ fn paint_group_strength(
             GROUP_UNSETTLED
         };
         let decisiveness = ((owned.abs() - 0.5) * 2.0).clamp(0.0, 1.0) as f32;
-        let tint = hue.gamma_multiply(0.12 + 0.20 * decisiveness);
-        let stroke = Stroke::new(2.0, hue.gamma_multiply(0.65 + 0.35 * decisiveness));
+        let stroke = Stroke::new(1.5, hue);
+        let halo = Stroke::new(3.2, Color32::from_rgb(28, 31, 34));
         for cell in chain {
             let x = cell % board.size;
             let y = cell / board.size;
             let center = start + Vec2::new(x as f32 * gap, y as f32 * gap);
-            painter.circle_filled(center, gap * 0.455, tint);
+            // The same opaque hue stays legible on both Black and White stones.
+            painter.circle_stroke(
+                center,
+                gap * 0.32,
+                Stroke::new((gap * 0.10).clamp(2.0, 4.0) * 0.5, hue),
+            );
             // Exposed cell edges form the boundary; connected stones have no seam.
             for (dx, dy, a, b) in [
                 (-1, 0, Vec2::new(-0.48, -0.48), Vec2::new(-0.48, 0.48)),
@@ -782,8 +804,15 @@ fn paint_group_strength(
                 }
                 let points = [center + a * gap, center + b * gap];
                 if decisiveness >= 0.9 {
+                    painter.line_segment(points, halo);
                     painter.line_segment(points, stroke);
                 } else {
+                    painter.extend(egui::Shape::dashed_line(
+                        &points,
+                        halo,
+                        gap * 0.18,
+                        gap * (0.06 + 0.12 * (1.0 - decisiveness)),
+                    ));
                     painter.extend(egui::Shape::dashed_line(
                         &points,
                         stroke,

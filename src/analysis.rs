@@ -20,8 +20,35 @@ pub struct Analysis {
     /// Row-major expected ownership, from Black's perspective. Empty in older results.
     #[serde(default)]
     pub ownership: Vec<f64>,
+    /// Map effort can differ from chart effort; zero infers the depth of a legacy map.
+    #[serde(default)]
+    pub ownership_visits: u64,
 }
 impl Analysis {
+    pub fn ownership_depth(&self) -> u64 {
+        if self.ownership.is_empty() {
+            0
+        } else if self.ownership_visits == 0 {
+            self.visits
+        } else {
+            self.ownership_visits
+        }
+    }
+    pub(crate) fn merge(&self, incoming: &Self) -> Self {
+        let mut result = if incoming.visits >= self.visits {
+            incoming.clone()
+        } else {
+            self.clone()
+        };
+        let ownership = if incoming.ownership_depth() >= self.ownership_depth() {
+            incoming
+        } else {
+            self
+        };
+        result.ownership = ownership.ownership.clone();
+        result.ownership_visits = ownership.ownership_depth();
+        result
+    }
     pub fn validate(&self) -> Result<()> {
         if self.visits == 0
             || !self.winrate.is_finite()
@@ -148,7 +175,30 @@ impl Review {
         if analysis.visits < MIN_CACHE_VISITS {
             return Ok(());
         }
-        self.cache.execute("INSERT INTO analysis(key,visits,result) VALUES (?1,?2,?3) ON CONFLICT(key) DO UPDATE SET visits=excluded.visits,result=excluded.result WHERE excluded.visits >= analysis.visits",params![key,i64::try_from(analysis.visits)?,serde_json::to_string(analysis)?])?;
+        let mut eligible = analysis.clone();
+        if eligible.ownership_depth() < MIN_CACHE_VISITS {
+            eligible.ownership.clear();
+            eligible.ownership_visits = 0;
+        }
+        // Merge completed components under a write lock, including when another app
+        // or review is updating the same cache. A quick map cannot downgrade a chart.
+        let transaction = self
+            .cache
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let old: Option<String> = transaction
+            .query_row("SELECT result FROM analysis WHERE key=?1", [key], |row| {
+                row.get(0)
+            })
+            .optional()?;
+        let combined = if let Some(old) = old {
+            let old: Analysis = serde_json::from_str(&old)?;
+            old.validate()?;
+            old.merge(&eligible)
+        } else {
+            eligible
+        };
+        transaction.execute("INSERT INTO analysis(key,visits,result) VALUES (?1,?2,?3) ON CONFLICT(key) DO UPDATE SET visits=excluded.visits,result=excluded.result WHERE excluded.visits >= analysis.visits",params![key,i64::try_from(combined.visits)?,serde_json::to_string(&combined)?])?;
+        transaction.commit()?;
         Ok(())
     }
     pub fn cached_analysis(&self, profile: &EngineProfile) -> Result<BTreeMap<NodeId, Analysis>> {

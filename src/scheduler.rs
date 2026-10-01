@@ -68,7 +68,7 @@ impl Scheduler {
             json!(targets.keys().copied().collect::<Vec<_>>()),
         );
         object.insert("priority".into(), json!(priority));
-        object.insert("includeOwnership".into(), json!(visits > 1));
+        object.insert("includeOwnership".into(), json!(visits > 1 || priority > 0));
         object.insert("includePolicy".into(), json!(visits == 1));
         object.insert("analysisPVLen".into(), json!(1));
         if visits > 1 {
@@ -89,18 +89,22 @@ impl Scheduler {
         }
         if let Some(node) = self.interactive.take() {
             let current = self.values.get(&node).map_or(0, |v| v.visits);
+            let missing_ownership = self
+                .values
+                .get(&node)
+                .is_none_or(|v| v.ownership.is_empty());
             if !self.failed.contains(&node)
-                && !self
-                    .inflight
-                    .values()
-                    .any(|r| r.targets.values().flatten().any(|t| t.node == node))
+                && !self.inflight.values().any(|r| {
+                    r.query["includeOwnership"] == true
+                        && r.targets.values().flatten().any(|t| t.node == node)
+                })
             {
                 return self
                     .request(
                         &[node],
                         if current == 0 {
                             1
-                        } else if current < 64 {
+                        } else if current < 64 || missing_ownership {
                             64
                         } else {
                             budgets().find(|v| *v > current).unwrap_or(i64::MAX as u64)
@@ -190,6 +194,11 @@ impl Scheduler {
                 Vec::new()
             };
             let analysis = Analysis {
+                ownership_visits: if ownership.is_empty() {
+                    0
+                } else {
+                    root["visits"].as_u64().ok_or("Invalid visit count")?
+                },
                 ownership,
                 visits: root["visits"].as_u64().ok_or("Invalid visit count")?,
                 winrate: root["winrate"].as_f64().ok_or("Invalid winrate")?,
@@ -202,12 +211,14 @@ impl Scheduler {
         let mut accepted = Vec::new();
         if let Some(value) = result {
             for target in &targets {
-                if self
-                    .values
-                    .get(&target.node)
-                    .is_none_or(|old| value.visits >= old.visits)
-                {
-                    self.values.insert(target.node, value.clone());
+                let old = self.values.get(&target.node);
+                let persistable_response =
+                    old.is_none_or(|old| value.visits >= old.visits) || !value.ownership.is_empty();
+                let combined = old.map_or_else(|| value.clone(), |old| old.merge(&value));
+                self.values.insert(target.node, combined);
+                if persistable_response {
+                    // Return the actual response for final-result caching. The display
+                    // can contain earlier streamed components that are not complete.
                     accepted.push((target.clone(), value.clone()));
                 }
             }
@@ -217,7 +228,7 @@ impl Scheduler {
             }
         }
         if final_reply {
-            if !self.doc.mainline.contains(&self.doc.selected)
+            if (!self.doc.mainline.contains(&self.doc.selected) || request.query["priority"] == 100)
                 && targets.iter().any(|t| t.node == self.doc.selected)
                 && self
                     .values
@@ -237,7 +248,9 @@ impl Scheduler {
         let canceled: Vec<_> = self
             .inflight
             .values()
-            .filter(|r| r.visits > 1)
+            // Keep the fast original-game chart pass, but supersede interactive
+            // work even at one visit so it cannot occupy the new selection's slot.
+            .filter(|r| r.visits > 1 || r.query["priority"] == 100)
             .map(|r| r.id.clone())
             .collect();
         for id in &canceled {

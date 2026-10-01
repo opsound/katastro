@@ -179,3 +179,85 @@ KATASTRO_TEST_ENGINE=/opt/homebrew/bin/katago KATASTRO_TEST_MODEL="$HOME/katrain
 ```
 
 Formatting, Clippy with warnings denied, and all 60 standard integration tests passed after restoring the mutations. The cache identity and deepest-result policy remain compatible with earlier chart data. Existing maps are reused offline; missing maps arrive on subsequent refinement. The display estimates expected ownership under continued play and does not claim a calibrated survival probability or a life-and-death proof. Native dialog handling is unchanged, so the prior explicit dialog evidence remains above.
+
+## Fast ownership backfill and clearer group markers
+
+The user found ownership slow to appear and orange/red outlines hard to see against the board. Five new routine integration tests bring the suite to 65, with an additional explicit real-engine latency benchmark. Before production changes, tests failed because a missing map requested 65,536 visits instead of a bounded pass, lower-visit ownership was discarded behind deeper chart values, a completed map could not backfill a deep cached chart, no opaque status rings were drawn, and the group legend falsely used the chart's 16,384 visits. An existing selected-variation test was strengthened: reverting interactive one-visit ownership reproduced its missing-payload failure before restoration.
+
+Ownership now has a separate actual-visit count. The selected position receives ownership with an interactive one-visit result, and cached deep charts with missing maps get a prioritized 64-visit request. Streaming maps display independently of chart depth. Points, winrate, and candidates retain their highest chart visits; ownership retains its highest map visits. Persistence merges completed components in an immediate SQLite transaction, rejects sub-64 ownership even when carried with deep chart values, and preserves a prior deep map when later chart replies lack ownership. The scheduler returns original response values for final-result caching rather than merged transient display state. Metadata-free legacy maps infer their original root depth. Group labels show actual map visits and identify sub-64 previews as quick estimates.
+
+The user selected opaque colored rings on stones plus dark halos around chain outlines. UI tests compare actual ring colors and full opacity for Black/White pairs of all three statuses, require matching wider dark strokes beneath red/orange solid and dashed boundaries, exercise legal variation input, and verify unchanged board bounds when a quick-map legend becomes a 64-visit legend. A GPU-rendered preview was inspected using `KATASTRO_GROUP_PREVIEW="$PWD/local/group-rings-and-halos.png" cargo test --test group_strength toggle_colors_connected`.
+
+Fourteen deliberate regressions caused behavioral test failures before restoration: uncapped missing-map requests, omitted interactive one-visit ownership, dropping lower-visit maps, downgrading charts, coupling map depth to chart depth, replacing deep maps with cheaper late maps, passing merged transient state to cache writes, ignoring cache backfill, persisting cheap carried maps, displaying chart depth in the group legend, removing rings, reducing ring opacity, removing solid-outline halos, and removing dashed-outline halos. Logs remain under ignored `local/`.
+
+### Measured latency
+
+The benchmark uses the real background worker, local Metal KataGo 1.18.2, the same b10 model, and two private 19×19 games with 232 and 285 positions. It uses actual legacy cache results at 4,096 visits, rather than inventing chart values. A read-only snapshot of those results was frozen in ignored local storage, so before/after measurements use the same games, selected nodes (116 and 142), profile, and cached depth. Both versions warm the engine before measurement; the clock runs from OpenAndAnalyze to the first ownership-bearing snapshot for the selected position. Three trials per game produced:
+
+| Game positions | Before, three trials | After, three trials |
+| --- | --- | --- |
+| 232 | 22.557 s, 22.542 s, 29.069 s | 0.394 s, 0.384 s, 0.395 s |
+| 285 | 17.374 s, 19.218 s, 23.104 s | 0.375 s, 0.370 s, 0.375 s |
+
+Across all six observations, median readiness fell from 22.550 s to 0.380 s. Earlier maps used roughly 4,100 visits; the fast displayed maps used 35–38 visits and are explicitly provisional. Every measured snapshot retained the original 4,096-visit chart or a deeper result. These are warm local worker measurements, not an accuracy equivalence claim or a guarantee including cold model startup. The original SGFs and production databases were read-only; imports, selections, cache writes, and analysis ran in temporary storage.
+
+Reproduce the new measurement with a read-only legacy cache containing analyzed positions without ownership:
+
+```sh
+KATASTRO_TEST_ENGINE=/opt/homebrew/bin/katago KATASTRO_TEST_MODEL="$HOME/katrain/katrain/models/b10c384h6nbttflrs.bin.gz" KATASTRO_SGF_DIR="$HOME/Downloads" KATASTRO_LEGACY_CACHE="$PWD/local/group-latency-fixtures/analysis.sqlite" cargo test --release --test group_strength_latency -- --ignored --nocapture
+```
+
+Both explicit real-engine tests passed: one-visit requests returned board-sized bounded ownership maps, and three positions refined through 1/8/64/256 visits with exact deepest cache round trips. Final candidate counts were 25, 11, and 18; protocol checks ran in 5.43 seconds after compilation. Native dialog handling is unchanged; prior dialog evidence remains documented above.
+
+Final formatting, Clippy with warnings denied, and all 65 standard integration tests passed after restoring the counterfactual changes. The packaged app is rebuilt from the verified implementation.
+
+
+## Untinted stones and thinner group boundaries
+
+The user found that alive groups were visually too similar when stone fills were tinted and requested thinner group borders. Two new integration tests were written before the drawing changes. The first compared actual stone fills with Group strength off and on, and failed on an extra translucent green fill at B8. The second failed on the oversized colored boundary. The tests use real SGF parsing, actual toggle and board clicks, and temporary review databases; they cover both stone colors across live/unsettled/dying readings, preservation of strength outlines, and reopening an autosaved variation.
+
+The overlay now leaves stone fills unchanged. Opaque inscribed status rings and exposed chain boundaries carry strength colors. Colored chain boundaries shrink from 2.5 to 1.5 points, and their dark contrast halos from 5.5 to 3.2 points. Existing overlay tests now detect colored rings rather than depending on the removed tint, preserving their chain-averaging, perspective, navigation, pending-map, and board-input assertions. The tooltip and current product documentation describe the new treatment.
+
+Four temporary regressions were detected and restored: reintroducing all stone tints, tinting only White stones, restoring the thick colored border, and restoring the thick halo. Red/green and mutation logs are in ignored local storage. The routine suite now contains 67 tests. The previous real-engine and latency evidence remains applicable because this follow-up changes only rendering and its tests.
+
+
+Formatting, Clippy with warnings denied, and all 67 standard integration tests passed after restoring the rendering mutations. An explicit preview attempt (`KATASTRO_GROUP_PREVIEW="$PWD/local/group-no-tint-thin.png" cargo test --test group_strength toggle_colors_connected`) could not create a GPU render state in the current restricted session: `No adapter found`. The ordinary headless rendering/input tests passed; the newest appearance has no GPU screenshot evidence from this session.
+
+
+## Visual-only AI hints and slimmer inscribed rings
+
+The user requested a default-on AI suggestion toggle beside Group strength, keeping ongoing background analysis active, and asked to halve the inscribed strength rings. Three new UI integration tests and a strengthened ring assertion were written before production behavior. After adding only the checkbox interface, the tests failed on candidates still being painted, a played marker still filled by an overlapping candidate, and board hints remaining visible during a controlled engine run. The ring test failed because its old maximum width was four points. These red runs were behavioral failures. The sidebar input fixture uses a tall window to ensure the clicked row is visible, and empty-intersection checks exclude the board's small star points.
+
+AI moves starts enabled and changes only board drawing. Tests check actual filled circles and delta text, adjacent toggle placement, stable board bounds when switching, continued group markers, navigation and fresh-analysis updates retaining the off setting, clickable sidebar moves, and reopening the resulting saved variation with its original main line intact. Both Black and White played-move markers retain their hollow outlines and exactly one signed point delta when a matching AI suggestion is hidden, and regain their blue candidate fill when restored.
+
+The background test uses the real worker and a controlled fake engine subprocess. A named-pipe barrier holds the first 256-visit request after complete 64-visit coverage. The actual UI click emits no review or engine commands; releasing the barrier produces completed deeper results and full coverage while the application remains running and board hints remain hidden. Synchronization uses channels and bounded deadlines, with no arbitrary sleeps. Sidebar suggestions still render after the update.
+
+Inscribed rings shrink from 2–4 to 1–2 logical points, exactly half their prior width. They retain opaque, identical status colors across Black and White stones. The untinted stone fills and the thinner external group boundaries remain covered by the preceding tests.
+
+Nine temporary regressions were detected and restored: defaulting hints off, ignoring the drawing toggle, resetting it every frame, suppressing the played-move score, pausing analysis, restarting analysis, letting Group strength re-enable hints, hiding the recorded-move ring, and restoring thick inscribed rings. Logs remain under ignored local storage. The standard suite now contains 70 integration tests. The previous real-engine protocol and latency results still apply; this follow-up changes GUI rendering and the controlled test fixture. The current session still exposes no GPU adapter for an explicit screenshot preview.
+
+
+After restoring all nine mutations, `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` passed; the latter ran all 70 routine integration tests with zero failures. Final logs are in ignored `local/board-ai-toggle-half-ring-final.log`.
+
+
+The release bundle was rebuilt with `bash scripts/package-macos.sh "$PWD/local/Katastro-next.app"`. The installed `local/Katastro.app` passed `codesign --verify --deep --strict --verbose=2`; its binary contains the new AI moves control. The previous app was retained as ignored `local/Katastro-23637d8.app`. The running application was not terminated or relaunched.
+
+## Suggestions after successive variation moves
+
+The user reported missing variation hints, then found them working in another game. Investigation reproduced a specific queueing case rather than establishing that every variation was affected: the original-game one-visit coverage request and a previous interactive one-visit request could fill both slots. Moving again retained both, leaving the newest variation without analysis until older work finished.
+
+Two integration tests were written before changing production behavior. The application/scheduler test failed because no request could be issued for the newest branch. The UI/worker test held those two older requests in a controllable fake subprocess, clicked D6 and E5 on the actual board, and timed out with selection 3, no evaluation, and original coverage 0/2. Both failures reached the intended missing behavior with working SGF, SQLite, UI, and engine fixtures.
+
+Selection now cancels superseded interactive work even at one visit, preserving the original-game quick coverage request. The tests obtain scored 64-visit suggestions before original coverage finishes, verify a blue F5 marker with a +1.5 point delta, play it through the sidebar, and reopen the persistent branch and cached suggestion with the imported main line intact. The core test then completes the original chart using its original request. Late `noResults` for the canceled branch cannot prevent the new hints. Synchronization uses explicit diagnostic barriers and bounded channel deadlines, with no arbitrary sleeps or GPU timing assertions. One-visit policy previews still stay off the board until point estimates arrive.
+
+Three deliberate regressions were detected and restored: retaining the obsolete one-visit interactive request (also detected through UI/worker input), canceling original coverage, and omitting the selected position's scored follow-up. The over-cancellation mutant initially survived; the test was strengthened to require completion of the chart from its original request, and that mutant then failed. These checks establish outcomes beyond request counts. Logs are in ignored `local/variation-hints-*.log`.
+
+After restoring those mutations, formatting, Clippy with warnings denied, and all 72 routine integration tests passed. Both explicit real-engine tests were attempted again with the documented executable/model and exited before returning any analysis. A direct run with the application's identical config confirmed `Metal backend: Failed to create Metal device` and failure to create the MPSGraph handle in the current restricted session. The prior live-engine successes above remain historical evidence; this repair has controlled-subprocess and headless UI evidence, without a new live-engine pass. Logs are in ignored `local/variation-hints-final.log`, `local/variation-hints-real-engine.log`, and `local/variation-hints-engine-diagnostic.log`.
+
+The release app was rebuilt, verified with `codesign --verify --deep --strict --verbose=2`, and installed as ignored `local/Katastro.app`. Its previous bundle is retained as `local/Katastro-before-variation-hints.app`. No running app was terminated or relaunched.
+
+### Verification after lifting session restrictions
+
+Before publishing, the session gained unrestricted filesystem and network access. Both explicit real KataGo tests then passed with the documented engine and model: three positions refined through 1/8/64/256 visits, final candidate counts were 29/10/13, and deepest completed results round-tripped exactly through SQLite. The run took 6.67 seconds after compilation. This resolves the earlier Metal initialization limitation for the final implementation; the failed restricted attempts remain recorded above.
+
+The latest untinted stones, thin chain boundaries, and halved inscribed rings also rendered successfully on the GPU. The preview was inspected after `KATASTRO_GROUP_PREVIEW="$PWD/local/group-final-no-tint-thin.png" cargo test --test group_strength toggle_colors_connected -- --nocapture` passed. The image and logs remain in ignored local storage; the figure uses a synthetic SGF. No app implementation changed during these final checks.

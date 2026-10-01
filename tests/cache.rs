@@ -11,6 +11,7 @@ fn profile() -> EngineProfile {
 fn sample(visits: u64) -> Analysis {
     Analysis {
         ownership: vec![],
+        ownership_visits: 0,
         visits,
         winrate: 0.0,
         score_lead: 0.0,
@@ -37,6 +38,7 @@ fn reopen_restores_partial_analysis_and_deeper_results_without_an_engine() {
             &key,
             &Analysis {
                 ownership: vec![],
+                ownership_visits: 0,
                 visits: 5,
                 winrate: f64::NAN,
                 score_lead: 3.0,
@@ -180,5 +182,62 @@ fn cheap_results_are_transient_and_only_deepest_eligible_results_are_saved() {
         conn.query_row("SELECT COUNT(*) FROM analysis", [], |r| r.get::<_, i64>(0))
             .unwrap(),
         1
+    );
+}
+
+#[test]
+fn chart_and_group_maps_keep_their_deepest_completed_depths_independently() {
+    let temp = TempDir::new().unwrap();
+    let source = temp.path().join("game.sgf");
+    fs::write(&source, b"(;SZ[9];B[bb])").unwrap();
+    let mut app = Review::new(&temp.path().join("reviews"), &temp.path().join("cache")).unwrap();
+    app.import(&source).unwrap();
+    let key = app.analysis_key(1, &profile()).unwrap();
+    app.store_analysis(&key, &sample(16384)).unwrap();
+    let mut transient_on_deep_chart = sample(16384);
+    transient_on_deep_chart.ownership = vec![0.7; 81];
+    transient_on_deep_chart.ownership_visits = 1;
+    app.store_analysis(&key, &transient_on_deep_chart).unwrap();
+    assert!(
+        app.cached_analysis(&profile()).unwrap()[&1]
+            .ownership
+            .is_empty(),
+        "a cheap preview carried with a deep chart must stay off disk"
+    );
+    let mut map = sample(64);
+    map.ownership = vec![0.9; 81];
+    map.ownership_visits = 64;
+    app.store_analysis(&key, &map).unwrap();
+    let cached = app.cached_analysis(&profile()).unwrap();
+    assert_eq!(cached[&1].visits, 16384);
+    assert_eq!(
+        cached[&1].ownership_depth(),
+        64,
+        "a completed map must backfill missing legacy ownership without replacing the chart"
+    );
+    map.visits = 256;
+    map.ownership_visits = 256;
+    map.ownership.fill(-0.9);
+    app.store_analysis(&key, &map).unwrap();
+    map.visits = 64;
+    map.ownership_visits = 64;
+    map.ownership.fill(0.0);
+    app.store_analysis(&key, &map).unwrap();
+    app.store_analysis(&key, &sample(65536)).unwrap();
+    let mut quick_on_deep_chart = sample(65536);
+    quick_on_deep_chart.ownership = vec![0.5; 81];
+    quick_on_deep_chart.ownership_visits = 1;
+    app.store_analysis(&key, &quick_on_deep_chart).unwrap();
+    drop(app);
+    let mut reopened =
+        Review::new(&temp.path().join("reviews"), &temp.path().join("cache")).unwrap();
+    reopened.import(&source).unwrap();
+    let stored = reopened.cached_analysis(&profile()).unwrap();
+    assert_eq!(stored[&1].visits, 65536);
+    assert_eq!(stored[&1].ownership_depth(), 256);
+    assert_eq!(
+        stored[&1].ownership,
+        vec![-0.9; 81],
+        "late cheap maps and deep replies without ownership must preserve the best complete map"
     );
 }

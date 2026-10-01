@@ -71,8 +71,8 @@ fn cheap_coverage_arrives_out_of_order_before_deep_work_and_survives_reopen() {
     );
     assert_eq!(
         from_cache.next_request().unwrap().unwrap().visits,
-        256,
-        "reopen must skip duplicate coverage requests"
+        64,
+        "reopen reuses the chart while backfilling legacy ownership with a small request"
     );
 }
 #[test]
@@ -83,6 +83,7 @@ fn selecting_a_new_variation_interrupts_deep_work_and_ignores_stale_replies() {
             node,
             Analysis {
                 ownership: vec![],
+                ownership_visits: 0,
                 visits: 8,
                 winrate: 0.5,
                 score_lead: 0.0,
@@ -99,6 +100,10 @@ fn selecting_a_new_variation_interrupts_deep_work_and_ignores_stale_replies() {
     assert!(scheduler.select(changed).contains(&deep.id));
     let selected = scheduler.next_request().unwrap().unwrap();
     assert_eq!(selected.visits, 1);
+    assert_eq!(
+        selected.query["includeOwnership"], true,
+        "a newly selected variation should receive ownership in its first one-visit response"
+    );
     assert_eq!(selected.query["priority"], 100);
     assert_eq!(
         selected.targets.values().flatten().next().unwrap().node,
@@ -122,6 +127,98 @@ fn selecting_a_new_variation_interrupts_deep_work_and_ignores_stale_replies() {
     assert_eq!(
         scheduler.values, before,
         "canceled work must not modify the selected review"
+    );
+}
+#[test]
+fn successive_variation_moves_get_scored_hints_while_older_quick_requests_are_pending() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let source = temp.path().join("game.sgf");
+    std::fs::write(&source, b"(;SZ[9];B[cc])").unwrap();
+    let mut review = Review::new(&temp.path().join("reviews"), &temp.path().join("cache")).unwrap();
+    review.import(&source).unwrap();
+    let mut scheduler = Scheduler::new(
+        1,
+        review.document().unwrap().clone(),
+        profile(),
+        BTreeMap::new(),
+    );
+    let coverage = scheduler.next_request().unwrap().unwrap();
+    review.play(Some(Point::new(3, 3))).unwrap();
+    scheduler.select(review.document().unwrap().clone());
+    let previous = scheduler.next_request().unwrap().unwrap();
+    assert_eq!(previous.visits, 1);
+    let selected = review.play(Some(Point::new(4, 4))).unwrap();
+    let canceled = scheduler.select(review.document().unwrap().clone());
+    let current = scheduler.next_request().unwrap().expect(
+        "the newest variation must be analyzed without waiting for superseded quick work or whole-game coverage",
+    );
+    assert!(canceled.contains(&previous.id));
+    assert!(
+        !canceled.contains(&coverage.id),
+        "original-game coverage must continue"
+    );
+    assert_eq!(
+        current.targets.values().flatten().next().unwrap().node,
+        selected
+    );
+    assert_eq!(current.query["priority"], 100);
+    let old_turn = *previous.targets.keys().next().unwrap();
+    scheduler.accept(&json!({"id":previous.id, "turnNumber":old_turn, "isDuringSearch":false, "noResults":true})).unwrap();
+    let turn = *current.targets.keys().next().unwrap();
+    let mut policy = reply(&current.id, turn, 1, false);
+    policy["ownership"] = json!(vec![0.0; 81]);
+    policy["policy"] = json!(vec![1.0 / 82.0; 82]);
+    scheduler.accept(&policy).unwrap();
+    let searched = scheduler
+        .next_request()
+        .unwrap()
+        .expect("a policy-only variation result must be followed by scored hints");
+    let mut result = reply(&searched.id, turn, 64, false);
+    result["ownership"] = json!(vec![0.1; 81]);
+    result["moveInfos"] = json!([{"move":"F5", "visits":32, "winrate":0.6, "scoreLead":1.5}]);
+    for (target, value) in scheduler.accept(&result).unwrap() {
+        review.store_analysis(&target.key, &value).unwrap();
+    }
+    assert_eq!(
+        scheduler.coverage(),
+        (0, 2),
+        "interactive hints must not depend on finishing the original chart"
+    );
+    assert_eq!(
+        scheduler.values[&selected].suggestions[0].point,
+        Some(Point::new(5, 4))
+    );
+    assert!(
+        scheduler.values[&selected].suggestions[0]
+            .score_lead
+            .is_some()
+    );
+    for turn in [0, 1] {
+        scheduler
+            .accept(&reply(&coverage.id, turn, 1, false))
+            .unwrap();
+    }
+    assert_eq!(
+        scheduler.coverage(),
+        (2, 2),
+        "the still-running original chart must finish using its original request"
+    );
+    review
+        .play(scheduler.values[&selected].suggestions[0].point)
+        .unwrap();
+    drop(review);
+    let mut reopened =
+        Review::new(&temp.path().join("reviews"), &temp.path().join("cache")).unwrap();
+    reopened.import(&source).unwrap();
+    let doc = reopened.document().unwrap();
+    assert_eq!(doc.mainline, vec![0, 1]);
+    assert_eq!(
+        doc.board(doc.selected).unwrap().stone(Point::new(5, 4)),
+        Some(katastro::Color::Black)
+    );
+    assert_eq!(
+        reopened.cached_analysis(&profile()).unwrap()[&selected].suggestions,
+        scheduler.values[&selected].suggestions
     );
 }
 #[test]
@@ -326,6 +423,7 @@ fn ownership_refines_with_the_position_and_reopens_without_losing_deeper_results
     let key = review.analysis_key(0, &profile()).unwrap();
     let mut shallower = expected[&0].clone();
     shallower.visits = 64;
+    shallower.ownership_visits = 64;
     shallower.ownership.fill(1.0);
     review.store_analysis(&key, &shallower).unwrap();
     drop(review);
@@ -372,4 +470,115 @@ fn malformed_ownership_cannot_replace_a_usable_position_evaluation() {
             "bad ownership must leave the existing chart evaluation usable"
         );
     }
+}
+
+#[test]
+fn missing_group_map_gets_a_bounded_selected_request_and_does_not_downgrade_deep_charts() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let source = temp.path().join("game.sgf");
+    std::fs::write(&source, b"(;SZ[9];B[bb];W[gg])").unwrap();
+    let mut review = Review::new(&temp.path().join("reviews"), &temp.path().join("cache")).unwrap();
+    review.import(&source).unwrap();
+    review.select(1).unwrap();
+    let deep: Analysis =
+        serde_json::from_value(json!({"visits":16384,"winrate":0.73,"score_lead":7.25})).unwrap();
+    let key = review.analysis_key(1, &profile()).unwrap();
+    review.store_analysis(&key, &deep).unwrap();
+    let mut scheduler = Scheduler::new(
+        1,
+        review.document().unwrap().clone(),
+        profile(),
+        review.cached_analysis(&profile()).unwrap(),
+    );
+    let quick = scheduler.next_request().unwrap().unwrap();
+    assert!(
+        quick.visits <= 64,
+        "a missing map must not wait for the chart's next 65536-visit run"
+    );
+    assert_eq!(quick.query["includeOwnership"], true);
+    let mut map = vec![0.0; 81];
+    map[10] = 0.9;
+    let mut partial = reply(&quick.id, 1, 8, true);
+    partial["ownership"] = json!(map);
+    scheduler.accept(&partial).unwrap();
+    let shown = &scheduler.values[&1];
+    assert_eq!(
+        (shown.visits, shown.score_lead, shown.winrate),
+        (16384, 7.25, 0.73)
+    );
+    assert_eq!(
+        shown.ownership, map,
+        "a fast map must appear without waiting for the old score depth"
+    );
+    assert_eq!(
+        shown.ownership_depth(),
+        8,
+        "the overlay must not claim 16384 visits for a fast map"
+    );
+    assert!(
+        review.cached_analysis(&profile()).unwrap()[&1]
+            .ownership
+            .is_empty(),
+        "partial maps stay transient"
+    );
+    let mut final_reply = reply(&quick.id, 1, 64, false);
+    final_reply["ownership"] = json!(map);
+    for (target, raw) in scheduler.accept(&final_reply).unwrap() {
+        assert_eq!(
+            raw.visits, 64,
+            "cache input must be the actual completed response, not merged transient state"
+        );
+        review.store_analysis(&target.key, &raw).unwrap();
+    }
+    drop(review);
+    let mut reopened =
+        Review::new(&temp.path().join("reviews"), &temp.path().join("cache")).unwrap();
+    reopened.import(&source).unwrap();
+    let cached = reopened.cached_analysis(&profile()).unwrap();
+    assert_eq!(
+        (cached[&1].visits, cached[&1].score_lead, cached[&1].winrate),
+        (16384, 7.25, 0.73)
+    );
+    assert_eq!(
+        cached[&1].ownership, map,
+        "the first eligible group map must be reused offline alongside the deeper chart"
+    );
+    assert_eq!(cached[&1].ownership_depth(), 64);
+    let mut resumed = Scheduler::new(2, reopened.document().unwrap().clone(), profile(), cached);
+    assert_eq!(
+        resumed.next_request().unwrap().unwrap().visits,
+        65536,
+        "reopen must skip duplicate quick maps and continue deepening"
+    );
+}
+
+#[test]
+fn ownership_in_a_cheaper_stream_is_visible_while_a_deep_chart_is_kept() {
+    let mut scheduler = Scheduler::new(1, doc(), profile(), BTreeMap::new());
+    let request = scheduler.next_request().unwrap().unwrap();
+    scheduler
+        .accept(&reply(&request.id, 1, 4096, true))
+        .unwrap();
+    let mut fast = reply(&request.id, 1, 1, true);
+    fast["ownership"] = json!(vec![0.8; 81]);
+    scheduler.accept(&fast).unwrap();
+    assert_eq!(scheduler.values[&1].visits, 4096);
+    assert_eq!(
+        scheduler.values[&1].ownership_depth(),
+        1,
+        "ownership must have its own depth independent of a newer root evaluation"
+    );
+    assert_eq!(scheduler.values[&1].ownership.len(), 81);
+    fast["rootInfo"]["visits"] = json!(64);
+    fast["ownership"] = json!(vec![-0.8; 81]);
+    scheduler.accept(&fast).unwrap();
+    assert_eq!(scheduler.values[&1].ownership_depth(), 64);
+    let before = scheduler.values[&1].clone();
+    fast["rootInfo"]["visits"] = json!(8);
+    fast["ownership"] = json!(vec![0.0; 81]);
+    scheduler.accept(&fast).unwrap();
+    assert_eq!(
+        scheduler.values[&1], before,
+        "a later cheap map must not replace a deeper map"
+    );
 }

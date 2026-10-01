@@ -163,6 +163,7 @@ fn original_game_chart_keeps_gaps_zero_values_and_its_line_when_a_branch_is_sele
         1,
         katastro::Analysis {
             ownership: vec![],
+            ownership_visits: 0,
             visits: 1,
             winrate: 0.0,
             score_lead: 0.0,
@@ -180,6 +181,7 @@ fn original_game_chart_keeps_gaps_zero_values_and_its_line_when_a_branch_is_sele
         branch,
         katastro::Analysis {
             ownership: vec![],
+            ownership_visits: 0,
             visits: 64,
             winrate: 0.9,
             score_lead: 99.0,
@@ -229,6 +231,7 @@ fn variation_state(root: &Path) -> State {
             id,
             katastro::Analysis {
                 ownership: vec![],
+                ownership_visits: 0,
                 visits: 64,
                 score_lead,
                 winrate,
@@ -363,6 +366,7 @@ fn variation_charts_follow_nested_selection_and_restore_after_reopen() {
         8,
         katastro::Analysis {
             ownership: vec![],
+            ownership_visits: 0,
             visits: 64,
             score_lead: -4.0,
             winrate: 0.1,
@@ -373,6 +377,7 @@ fn variation_charts_follow_nested_selection_and_restore_after_reopen() {
         9,
         katastro::Analysis {
             ownership: vec![],
+            ownership_visits: 0,
             visits: 64,
             score_lead: -5.0,
             winrate: 0.0,
@@ -451,6 +456,7 @@ fn variation_chart_gaps_remain_disconnected_and_zero_results_refine_in_place() {
         6,
         katastro::Analysis {
             ownership: vec![],
+            ownership_visits: 0,
             visits: 256,
             score_lead: 0.0,
             winrate: 0.0,
@@ -520,6 +526,7 @@ fn variation_charts_extend_through_a_branch_longer_than_the_original_game() {
             id,
             katastro::Analysis {
                 ownership: vec![],
+                ownership_visits: 0,
                 visits: 64,
                 score_lead,
                 winrate: 0.0,
@@ -677,6 +684,7 @@ fn analysis_column_stays_fixed_when_playing_and_refining_a_variation() {
         0,
         katastro::Analysis {
             ownership: vec![],
+            ownership_visits: 0,
             visits: 64,
             score_lead: 2.5,
             winrate: 0.55,
@@ -702,6 +710,7 @@ fn analysis_column_stays_fixed_when_playing_and_refining_a_variation() {
             selected,
             katastro::Analysis {
                 ownership: vec![],
+                ownership_visits: 0,
                 visits,
                 score_lead: -12.5,
                 winrate: 0.0,
@@ -752,6 +761,7 @@ fn placing_a_stone_does_not_flood_the_board_when_full_policy_results_arrive() {
         0,
         katastro::Analysis {
             ownership: vec![],
+            ownership_visits: 0,
             visits: 256,
             winrate: 0.5,
             score_lead: 2.5,
@@ -918,6 +928,7 @@ fn hidden_policy_preview_does_not_hide_the_recorded_moves_point_delta() {
             1,
             katastro::Analysis {
                 ownership: vec![],
+                ownership_visits: 0,
                 visits: 64,
                 winrate: 0.5,
                 score_lead: if white { 2.0 } else { 3.0 },
@@ -953,6 +964,398 @@ fn has_circle(
     h.output().shapes.iter().any(|shape| matches!(&shape.shape, eframe::egui::Shape::Circle(circle) if rect.contains(circle.center) && predicate(circle)))
 }
 #[test]
+fn board_ai_toggle_starts_on_and_hides_candidates_without_disabling_review_input() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let mut state = imported_state(temp.path(), "(;SZ[9]AB[bb]AW[gg];B[cc])");
+    let mut ownership = vec![0.0; 81];
+    ownership[10] = 0.95;
+    ownership[60] = -0.95;
+    let value = katastro::Analysis {
+        ownership,
+        ownership_visits: 256,
+        visits: 256,
+        winrate: 0.6,
+        score_lead: 2.5,
+        suggestions: suggestions(),
+    };
+    state.snapshot.values.insert(0, value.clone());
+    let mut h = Harness::builder()
+        .with_size(eframe::egui::vec2(1200.0, 1100.0))
+        .build_ui_state(|ui, state: &mut State| state.render(ui), state);
+    let best = h.get_by_label("AI suggestion 1: D6").rect();
+    assert!(
+        has_circle(&h, best, |c| c.fill.b() > c.fill.r()
+            && c.fill.b() > c.fill.g()),
+        "AI move circles must be visible by default"
+    );
+    let controls = [
+        h.get_by_label("AI moves").rect(),
+        h.get_by_label("Group strength").rect(),
+    ];
+    assert!((controls[0].center().y - controls[1].center().y).abs() < 0.5);
+    let board_before = h.get_by_label("Play D6").rect();
+    h.get_by_label("AI moves").click();
+    h.run();
+    assert!(h.query_by_label("AI suggestion 1: D6").is_none());
+    assert!(
+        !has_circle(&h, board_before, |c| c.fill.a() > 0),
+        "disabling suggestions must remove the actual painted circle"
+    );
+    assert!(painted_text_in(&h, board_before).is_empty());
+    assert_eq!(h.get_by_label("Play D6").rect(), board_before);
+    h.get_by_label("1  D6");
+    h.get_by_label("Next recorded move: Black C7");
+    h.get_by_label("Group strength").click();
+    h.run();
+    let stone = h.get_by_label("Play B8").rect();
+    assert!(has_circle(&h, stone, |c| c.stroke.color.g() > c.stroke.color.r()));
+    assert!(
+        h.query_by_label("AI suggestion 1: D6").is_none(),
+        "group strength must not re-enable suggestions"
+    );
+    h.get_by_label("1  D6").click();
+    h.run();
+    let branch = h.state().snapshot.document.as_ref().unwrap().selected;
+    assert_eq!(
+        h.state()
+            .snapshot
+            .board
+            .as_ref()
+            .unwrap()
+            .stone(Point::new(3, 3)),
+        Some(Color::Black)
+    );
+    h.state_mut().snapshot.values.insert(branch, value);
+    h.run();
+    assert!(
+        h.query_by_label("AI suggestion 2: E5").is_none(),
+        "the off setting must survive navigation and arriving analysis"
+    );
+    let empty = h.get_by_label("Play E5").rect();
+    assert!(!has_circle(&h, empty, |c| c.fill.a() > 0
+        && c.radius > empty.width() * 0.3));
+    assert!(painted_text_in(&h, empty).is_empty());
+    h.get_by_label("Tree node 0").click();
+    h.run();
+    assert!(h.query_by_label("AI suggestion 1: D6").is_none());
+    let board_before_restore = h.get_by_label("Play D6").rect();
+    h.get_by_label("AI moves").click();
+    h.run();
+    assert!(has_circle(
+        &h,
+        h.get_by_label("AI suggestion 1: D6").rect(),
+        |c| c.fill.b() > c.fill.r() && c.fill.b() > c.fill.g()
+    ));
+    assert_eq!(h.get_by_label("Play D6").rect(), board_before_restore);
+    drop(h);
+    let reopened = imported_state(temp.path(), "(;SZ[9]AB[bb]AW[gg];B[cc])");
+    let doc = reopened.review.document().unwrap();
+    assert_eq!(doc.mainline, vec![0, 1]);
+    assert_eq!(
+        doc.board(branch).unwrap().stone(Point::new(3, 3)),
+        Some(Color::Black),
+        "sidebar suggestions must still create persistent variations while board hints are off"
+    );
+}
+#[test]
+fn hiding_ai_moves_keeps_an_overlapping_played_moves_hollow_ring_and_point_delta() {
+    for white in [false, true] {
+        let temp = tempfile::TempDir::new().unwrap();
+        let mut state = imported_state(
+            temp.path(),
+            if white {
+                "(;SZ[9]PL[W];W[dd])"
+            } else {
+                "(;SZ[9];B[dd])"
+            },
+        );
+        let mut moves = suggestions();
+        moves[0].score_lead = Some(3.5);
+        state.snapshot.values.insert(
+            0,
+            katastro::Analysis {
+                ownership: vec![],
+                ownership_visits: 0,
+                visits: 256,
+                winrate: 0.6,
+                score_lead: 2.5,
+                suggestions: moves,
+            },
+        );
+        let mut h = Harness::builder()
+            .with_size(eframe::egui::vec2(900.0, 680.0))
+            .build_ui_state(|ui, state: &mut State| state.render(ui), state);
+        let label = if white {
+            "Next recorded move: White D6"
+        } else {
+            "Next recorded move: Black D6"
+        };
+        let expected = if white { "-1.0" } else { "+1.0" };
+        let before = h.get_by_label(label).rect();
+        assert_eq!(painted_text_in(&h, before), vec![expected]);
+        h.get_by_label("AI moves").click();
+        h.run();
+        let ring = h.get_by_label(label).rect();
+        assert_eq!(ring, before);
+        assert!(
+            !has_circle(&h, ring, |c| c.center.distance(ring.center()) < 0.1
+                && c.fill.a() > 0),
+            "the played marker must become hollow when the matching AI candidate is hidden"
+        );
+        assert!(
+            marker_radius(&h, ring, true) > 0.0,
+            "the recorded move outline must remain drawn"
+        );
+        assert_eq!(
+            painted_text_in(&h, ring),
+            vec![expected],
+            "hiding a matching AI move must not suppress or duplicate the played move's score"
+        );
+        h.get_by_label("AI moves").click();
+        h.run();
+        assert_eq!(
+            painted_text_in(&h, h.get_by_label(label).rect()),
+            vec![expected]
+        );
+        assert!(
+            has_circle(&h, h.get_by_label(label).rect(), |c| c.fill.b()
+                > c.fill.r()
+                && c.fill.b() > c.fill.g()),
+            "restoring hints must restore the matching blue candidate"
+        );
+    }
+}
+#[cfg(unix)]
+#[test]
+fn disabling_board_ai_moves_allows_background_refinement_to_complete() {
+    use katastro::worker::Client;
+    use std::{
+        io::Write,
+        time::{Duration, Instant},
+    };
+    struct Running {
+        client: Client,
+        snapshot: Snapshot,
+        commands: Vec<Command>,
+    }
+    impl Running {
+        fn render(&mut self, ui: &mut eframe::egui::Ui) {
+            for action in ui::render(ui, &self.snapshot) {
+                if let ui::Action::Review(command) = action {
+                    self.commands.push(command.clone());
+                    self.client.send(command).unwrap();
+                }
+            }
+        }
+    }
+    fn until(client: &Client, predicate: impl Fn(&Snapshot) -> bool) -> Snapshot {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let snapshot = client
+                .recv(deadline.saturating_duration_since(Instant::now()))
+                .unwrap();
+            assert!(snapshot.error.is_none(), "{:?}", snapshot.error);
+            if predicate(&snapshot) {
+                return snapshot;
+            }
+        }
+    }
+    let temp = tempfile::TempDir::new().unwrap();
+    let gate = temp.path().join("refinement-gate");
+    assert!(
+        std::process::Command::new("mkfifo")
+            .arg(&gate)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let model = temp.path().join("model");
+    std::fs::write(&model, format!("gate-deep:{}", gate.display())).unwrap();
+    let source = temp.path().join("game.sgf");
+    std::fs::write(&source, "(;SZ[9];B[cc])").unwrap();
+    let client = Client::spawn(
+        temp.path().join("reviews"),
+        temp.path().join("cache"),
+        EngineConfig {
+            executable: env!("CARGO_BIN_EXE_katastro-test-engine").into(),
+            model,
+        },
+    );
+    client.send(Command::OpenAndAnalyze(source)).unwrap();
+    let snapshot = until(&client, |s| {
+        s.coverage == (2, 2) && s.values.values().all(|v| v.visits >= 64)
+    });
+    let mut h = Harness::builder()
+        .with_size(eframe::egui::vec2(900.0, 680.0))
+        .build_ui_state(
+            |ui, state: &mut Running| state.render(ui),
+            Running {
+                client,
+                snapshot,
+                commands: vec![],
+            },
+        );
+    h.get_by_label("AI suggestion 1: D6");
+    h.get_by_label("AI moves").click();
+    h.run();
+    assert!(
+        h.state().commands.is_empty(),
+        "a visual toggle must not issue engine or review commands"
+    );
+    assert!(h.query_by_label("AI suggestion 1: D6").is_none());
+    let (released, ready) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut writer = std::fs::OpenOptions::new().write(true).open(gate).unwrap();
+        writer.write_all(&[1]).unwrap();
+        released.send(()).unwrap();
+    });
+    ready
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the engine must reach the explicit refinement barrier");
+    let refined = until(&h.state().client, |s| {
+        s.values.values().all(|v| v.visits >= 256)
+    });
+    assert!(refined.running, "background refinement must remain enabled");
+    assert_eq!(refined.coverage, (2, 2));
+    h.state_mut().snapshot = refined;
+    h.run();
+    assert!(
+        h.query_by_label("AI suggestion 1: D6").is_none(),
+        "new analysis must not reset the visual setting"
+    );
+    h.get_by_label("1  D6");
+}
+#[test]
+fn rapid_variation_input_gets_visible_playable_hints_before_original_chart_finishes() {
+    use katastro::{engine::Engine, worker::Client};
+    use std::time::{Duration, Instant};
+    struct Running {
+        client: Client,
+        snapshot: Snapshot,
+    }
+    impl Running {
+        fn render(&mut self, ui: &mut eframe::egui::Ui) {
+            for action in ui::render(ui, &self.snapshot) {
+                if let ui::Action::Review(command) = action {
+                    self.client.send(command).unwrap();
+                }
+            }
+        }
+    }
+    fn until(client: &Client, predicate: impl Fn(&Snapshot) -> bool) -> Snapshot {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut latest = None;
+        loop {
+            let snapshot = client
+                .recv(deadline.saturating_duration_since(Instant::now()))
+                .unwrap_or_else(|error| panic!("new variation must receive hints while older work is held: {error}; latest selection/visits/coverage: {latest:?}"));
+            assert!(snapshot.error.is_none(), "{:?}", snapshot.error);
+            latest = snapshot.document.as_ref().map(|d| {
+                (
+                    d.selected,
+                    snapshot.values.get(&d.selected).map(|v| v.visits),
+                    snapshot.coverage,
+                )
+            });
+            if predicate(&snapshot) {
+                return snapshot;
+            }
+        }
+    }
+    let temp = tempfile::TempDir::new().unwrap();
+    let model = temp.path().join("model");
+    std::fs::write(&model, b"variation-hints").unwrap();
+    let source = temp.path().join("game.sgf");
+    std::fs::write(&source, b"(;SZ[9];B[cc])").unwrap();
+    let config = EngineConfig {
+        executable: env!("CARGO_BIN_EXE_katastro-test-engine").into(),
+        model,
+    };
+    let profile = Engine::profile(&config).unwrap();
+    let client = Client::spawn(
+        temp.path().join("reviews"),
+        temp.path().join("cache"),
+        config,
+    );
+    client
+        .send(Command::OpenAndAnalyze(source.clone()))
+        .unwrap();
+    let snapshot = until(&client, |s| {
+        s.diagnostic.as_deref() == Some("fixture: coverage held")
+    });
+    let mut h = Harness::builder()
+        .with_size(eframe::egui::vec2(1200.0, 1100.0))
+        .build_ui_state(
+            |ui, state: &mut Running| state.render(ui),
+            Running { client, snapshot },
+        );
+    h.get_by_label("Play D6").click();
+    h.run();
+    let snapshot = until(&h.state().client, |s| {
+        s.diagnostic.as_deref() == Some("fixture: first variation held")
+    });
+    let first = snapshot.document.as_ref().unwrap().selected;
+    assert_eq!(
+        snapshot.board.as_ref().unwrap().stone(Point::new(3, 3)),
+        Some(Color::Black)
+    );
+    h.state_mut().snapshot = snapshot;
+    h.run();
+    h.get_by_label("Play E5").click();
+    h.run();
+    let snapshot = until(&h.state().client, |s| {
+        s.document.as_ref().is_some_and(|d| {
+            d.selected != first
+                && s.values.get(&d.selected).is_some_and(|v| {
+                    v.visits >= 64 && v.suggestions.iter().any(|m| m.score_lead.is_some())
+                })
+        })
+    });
+    let second = snapshot.document.as_ref().unwrap().selected;
+    assert_eq!(snapshot.coverage, (0, 2));
+    assert!(snapshot.running);
+    h.state_mut().snapshot = snapshot;
+    h.run();
+    let marker = h.get_by_label("AI suggestion 1: F5").rect();
+    assert!(
+        h.output().shapes.iter().any(|shape| matches!(
+            &shape.shape, eframe::egui::Shape::Circle(c)
+                if marker.contains(c.center) && c.fill.a() == 255
+                    && c.fill.b() > c.fill.r() && c.fill.b() > c.fill.g()
+        )),
+        "the current variation must show its blue top candidate"
+    );
+    assert!(
+        h.output().shapes.iter().any(|shape| matches!(
+            &shape.shape, eframe::egui::Shape::Text(t)
+                if marker.contains(t.pos) && t.galley.text() == "+1.5"
+        )),
+        "the visible hint must have the moving player's point delta"
+    );
+    h.get_by_label("1  F5").click();
+    h.run();
+    let played = until(&h.state().client, |s| {
+        s.board
+            .as_ref()
+            .is_some_and(|b| b.stone(Point::new(5, 4)) == Some(Color::Black))
+    });
+    assert_eq!(played.document.as_ref().unwrap().mainline, vec![0, 1]);
+    drop(h);
+    let mut reopened =
+        Review::new(&temp.path().join("reviews"), &temp.path().join("cache")).unwrap();
+    reopened.import(&source).unwrap();
+    let doc = reopened.document().unwrap();
+    assert_eq!(doc.mainline, vec![0, 1]);
+    assert_eq!(
+        doc.board(doc.selected).unwrap().stone(Point::new(5, 4)),
+        Some(Color::Black)
+    );
+    assert_eq!(
+        reopened.cached_analysis(&profile).unwrap()[&second].suggestions[0].point,
+        Some(Point::new(5, 4))
+    );
+}
+#[test]
 fn suggestions_are_ranked_blue_clickable_and_specific_to_the_position() {
     let temp = tempfile::TempDir::new().unwrap();
     let mut state = state(temp.path());
@@ -960,6 +1363,7 @@ fn suggestions_are_ranked_blue_clickable_and_specific_to_the_position() {
         0,
         katastro::Analysis {
             ownership: vec![],
+            ownership_visits: 0,
             visits: 256,
             winrate: 0.6,
             score_lead: 2.5,
@@ -1045,6 +1449,7 @@ fn quality_state(root: &Path, white: bool) -> State {
         0,
         katastro::Analysis {
             ownership: vec![],
+            ownership_visits: 0,
             visits: 1024,
             winrate: 0.5,
             score_lead: sign * 2.0,
@@ -1283,6 +1688,7 @@ fn scarce_legal_choices_do_not_turn_bad_candidates_green_and_policy_best_is_neut
         0,
         katastro::Analysis {
             ownership: vec![],
+            ownership_visits: 0,
             visits: 256,
             winrate: 0.1,
             score_lead: 10.0,
@@ -1515,6 +1921,7 @@ fn both_charts_fit_at_the_default_window_size_with_suggestions() {
         0,
         katastro::Analysis {
             ownership: vec![],
+            ownership_visits: 0,
             visits: 256,
             winrate: 0.6,
             score_lead: 2.5,
@@ -1576,6 +1983,7 @@ fn ai_and_recorded_markers_keep_equal_circles_when_the_recorded_score_is_pending
         0,
         katastro::Analysis {
             ownership: vec![],
+            ownership_visits: 0,
             visits: 256,
             winrate: 0.5,
             score_lead: 2.5,
@@ -1615,6 +2023,7 @@ fn evaluated_state(root: &Path, white: bool) -> State {
         0,
         katastro::Analysis {
             ownership: vec![],
+            ownership_visits: 0,
             visits: 256,
             winrate: 0.6,
             score_lead: 2.5,
@@ -1625,6 +2034,7 @@ fn evaluated_state(root: &Path, white: bool) -> State {
         1,
         katastro::Analysis {
             ownership: vec![],
+            ownership_visits: 0,
             visits: 64,
             winrate: 0.4,
             score_lead: if white { 4.5 } else { 0.0 },
@@ -1672,6 +2082,7 @@ fn a_played_ai_candidate_has_one_label_and_uses_the_same_search_estimate() {
         0,
         katastro::Analysis {
             ownership: vec![],
+            ownership_visits: 0,
             visits: 1024,
             winrate: 0.6,
             score_lead: 2.5,
@@ -1683,6 +2094,7 @@ fn a_played_ai_candidate_has_one_label_and_uses_the_same_search_estimate() {
         1,
         katastro::Analysis {
             ownership: vec![],
+            ownership_visits: 0,
             visits: 64,
             winrate: 0.5,
             score_lead: -20.0,
@@ -1764,6 +2176,7 @@ fn delta_labels_fit_inside_equal_circles_on_a_19_by_19_board() {
         0,
         katastro::Analysis {
             ownership: vec![],
+            ownership_visits: 0,
             visits: 256,
             winrate: 0.5,
             score_lead: 2.5,
@@ -1774,6 +2187,7 @@ fn delta_labels_fit_inside_equal_circles_on_a_19_by_19_board() {
         1,
         katastro::Analysis {
             ownership: vec![],
+            ownership_visits: 0,
             visits: 64,
             winrate: 0.5,
             score_lead: 0.0,

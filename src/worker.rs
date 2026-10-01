@@ -172,12 +172,10 @@ impl Worker {
         let mut values = self.review.cached_analysis(&profile)?;
         if self.review.last_profile()?.as_ref() == Some(&profile) {
             for (node, value) in &self.state.values {
-                if values
+                let combined = values
                     .get(node)
-                    .is_none_or(|old| value.visits >= old.visits)
-                {
-                    values.insert(*node, value.clone());
-                }
+                    .map_or_else(|| value.clone(), |old| old.merge(value));
+                values.insert(*node, combined);
             }
         }
         if self.engine.is_none() {
