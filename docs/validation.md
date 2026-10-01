@@ -301,3 +301,24 @@ Ten temporary regressions failed their integration checks before restoration: ch
 Final formatting, Clippy with warnings denied, and all 76 routine integration tests passed. Both explicit real Metal KataGo tests passed: three positions reached 256 visits with final candidate counts 25/7/14 and exact deepest cache round trips. The read-only corpus check replayed 65 SGFs and 12,334 positions with no failures (2.034 seconds); this is an import/replay measurement, not an analysis speedup. Original game files, engine sources, and production databases were unchanged.
 
 The release bundle was rebuilt and passed strict/deep code-signature verification before replacing ignored `local/Katastro.app`. The previous bundle remains at `local/Katastro-before-code-pass.app`; running applications were not terminated or relaunched.
+
+## Full-height board and review sidebar
+
+The user's OGS screenshots guided the board-first layout. The application header and full-width footer are removed. Players, file actions, board toggles, charts, move buttons, keyboard shortcuts, status, and the variation tree now occupy the right column. Its tree and navigation remain visible while analysis details scroll. The board uses the largest square that fits the remaining full-height area, with narrow margins; neither status changes nor arriving group estimates shrink it.
+
+Two new integration tests exercise real SGFs, temporary SQLite review stores, and actual pointer/keyboard input at 1600×900, 1200×860, and 900×680. Before implementation, the layout test failed because player controls occupied the board area. The long-name test then failed because a player label spilled out of the sidebar. Subsequent assertions exposed a 20-point shift when ownership arrived and a painted error clipped by the status panel. Fixed legend space and truncated labels with full-text hover help resolved those failures.
+
+The tests place and select persistent branches from the relocated buttons/tree, play a candidate after scrolling the narrow analysis column, resize the window, verify retained toggle state, and reopen the review with its original main line intact. The UI adapter now carries the actual source path. That exposed winrate clipping at the default size; the strengthened chart check compares against the fixed navigation buttons, and more compact charts made it pass. Existing navigation, candidate, chart, group, controlled-worker, and dialog checks remain in the regression suite.
+
+Ten temporary mutations produced behavioral failures and were restored: adding a global header, reserving old move-bar space on the board, moving the sidebar below the board, suppressing move-button commands, suppressing tree selection, resetting the AI toggle, removing player truncation, dropping the fixed group-legend height, clipping long status text, and enlarging charts beneath the fixed controls. Logs remain in ignored `local/layout-*.log`.
+
+GPU-rendered wide-layout and actual desktop/worker previews were generated and visually inspected. They use synthetic games and supplement the input/persistence assertions. Reproduce them in a graphical macOS session with a Metal adapter:
+
+```sh
+KATASTRO_LAYOUT_PREVIEW="$PWD/local/layout-wide.png" cargo test --test ui height_filling_board -- --nocapture
+KATASTRO_UI_PREVIEW="$PWD/local/layout-desktop.png" cargo test --test desktop -- --nocapture
+```
+
+Final formatting, Clippy with warnings denied, and all 78 routine integration tests passed after restoration. The explicit native Open/Export sheet regression also passed. Engine, scheduler, and cache behavior are unchanged; this layout pass does not claim new engine performance measurements.
+
+The release bundle was rebuilt and passed strict/deep code-signature verification before replacing ignored `local/Katastro.app`. The previous bundle remains at `local/Katastro-before-sidebar.app`; no running app was terminated or relaunched.

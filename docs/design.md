@@ -22,6 +22,12 @@ Start with one application library and one desktop binary. Separate modules for 
 
 Engine readers, the writer queue, and database work run outside the UI thread. The app receives typed events. Coalesce intermediate updates and request a redraw after meaningful changes; preserve final results and database commits. Bound outstanding requests rather than enqueueing unbounded deep searches.
 
+## Desktop layout
+
+The left side contains only the board, centered at the largest square size that fits its full-height area. There is no application header or footer across it. The resizable right column holds file actions, player names with colored stones, and the adjacent AI moves and Group strength toggles at the top. Move buttons and a resizable, independently scrolling variation tree stay visible at the bottom, above the status line. Analysis charts, candidates, comments, and keyboard shortcuts scroll between these fixed sections. Both charts fit above the move buttons at the default window size.
+
+Reserve the group legend's height as ownership arrives, keeping the analysis controls steady. Long player names and status messages truncate within the column and expose their full text on hover. Resizing and scrolling retain the board toggles and review selection; moving controls does not change background analysis or persistence.
+
 ## SGF import and the variation tree
 
 Preserve the SGF node tree and properties. A document has stable node IDs, parent IDs, ordered children, move/setup data, and explicit provenance. Store an immutable list of the originally imported main-line IDs, following the SGF's first-child line at import. Comments and setup nodes do not necessarily correspond one-to-one with moves; maintain the mapping from node IDs to KataGo move-prefix lengths.

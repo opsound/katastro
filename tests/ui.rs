@@ -35,6 +35,7 @@ fn imported_state(root: &Path, sgf: &str) -> State {
 }
 impl State {
     fn sync(&mut self) {
+        self.snapshot.source = self.review.source().map(Path::to_path_buf);
         self.snapshot.document = self.review.document().cloned();
         self.snapshot.board = self.review.document().map(|d| d.board(d.selected).unwrap());
     }
@@ -126,6 +127,252 @@ fn actual_board_and_tree_input_creates_and_selects_persistent_variations() {
         .unwrap();
     assert_eq!(reopened.review.document().unwrap().nodes.len(), 5);
 }
+#[test]
+fn height_filling_board_keeps_review_controls_in_the_sidebar_and_branches_usable() {
+    use eframe::egui::{Rect, Vec2, pos2, vec2};
+
+    for window in [vec2(1600.0, 900.0), vec2(1200.0, 860.0), vec2(900.0, 680.0)] {
+        let temp = tempfile::TempDir::new().unwrap();
+        let mut h = Harness::builder().with_size(window).build_ui_state(
+            |ui, state: &mut State| state.render(ui),
+            imported_state(temp.path(), "(;SZ[9]PB[Alice]PW[Bob];B[cc];W[gg];B[cg])"),
+        );
+        let board = h.get_by_label("Go board").rect();
+        let analysis_heading = h.get_by_label("Game analysis").rect();
+        let screen = Rect::from_min_size(pos2(0.0, 0.0), window);
+        let controls = [
+            "Black player: Alice",
+            "White player: Bob",
+            "AI moves",
+            "Group strength",
+            "Open SGF",
+            "Export SGF",
+            "Engine settings",
+            "First move",
+            "Previous move",
+            "Next move",
+            "Last move",
+            "Pass",
+            "Timeline viewport",
+            "Open an SGF to begin",
+        ];
+        for label in controls {
+            let control = h.get_by_label(label).rect();
+            assert!(
+                control.min.x > board.max.x,
+                "{label} steals board space: {board:?} {control:?}"
+            );
+            assert!(
+                screen.contains_rect(control),
+                "{label} is outside the {window:?} window: {control:?}"
+            );
+        }
+        if window.x >= 1600.0 {
+            assert!(
+                board.min.y <= 16.0 && board.max.y >= window.y - 16.0,
+                "a header, footer, or controls still reduce the board's height: {board:?}"
+            );
+        } else {
+            let sidebar = h.get_by_label("Timeline viewport").rect();
+            assert!(
+                board.width() >= (sidebar.min.x - 40.0).min(window.y - 32.0),
+                "unused space makes the board smaller than necessary: {board:?} {sidebar:?}"
+            );
+        }
+        assert!(
+            (board.width() - board.height()).abs() < 1.0,
+            "the board was stretched"
+        );
+
+        h.get_by_label("Next move").click();
+        h.run();
+        assert_eq!(h.state().review.document().unwrap().selected, 1);
+        h.get_by_label("Play D6").click();
+        h.run();
+        let branch = h.state().review.document().unwrap().selected;
+        assert_eq!(
+            h.state()
+                .snapshot
+                .board
+                .as_ref()
+                .unwrap()
+                .stone(Point::new(3, 3)),
+            Some(Color::White)
+        );
+        let tree = h.get_by_label("Timeline viewport").rect();
+        assert!(
+            tree.contains_rect(
+                h.get_by_label(&format!("Tree node {branch}"))
+                    .rect()
+                    .expand(2.0)
+            )
+        );
+        h.get_by_label("Previous move").click();
+        h.run();
+        h.get_by_label(&format!("Tree node {branch}")).click();
+        h.run();
+        assert_eq!(h.state().review.document().unwrap().selected, branch);
+        h.get_by_label("AI moves").click();
+        h.get_by_label("Group strength").click();
+        h.run();
+        assert_eq!(
+            h.get_by_label("Go board").rect(),
+            board,
+            "sidebar state resized the board"
+        );
+        for visits in [1, 64] {
+            h.state_mut().snapshot.values.insert(
+                branch,
+                katastro::Analysis {
+                    ownership: vec![0.0; 81],
+                    ownership_visits: visits,
+                    visits: 256,
+                    score_lead: 2.5,
+                    winrate: 0.6,
+                    suggestions: vec![],
+                },
+            );
+            h.run();
+            assert_eq!(
+                h.get_by_label("Game analysis").rect(),
+                analysis_heading,
+                "the ownership legend moved the analysis column"
+            );
+        }
+        let error = "An engine error with enough detail to wrap inside the sidebar instead of reserving a footer across the board.";
+        h.state_mut().snapshot.error = Some(error.into());
+        h.run();
+        assert_eq!(
+            h.get_by_label("Go board").rect(),
+            board,
+            "an error stole board height"
+        );
+        assert!(
+            screen.contains_rect(h.get_by_label(error).rect()),
+            "the error message is clipped below the window"
+        );
+        for shape in &h.output().shapes {
+            if let eframe::egui::Shape::Text(text) = &shape.shape
+                && text.galley.text() == error
+            {
+                assert!(
+                    shape
+                        .clip_rect
+                        .contains_rect(Rect::from_min_size(text.pos, text.galley.size())),
+                    "the status panel clips the painted error message"
+                );
+            }
+        }
+        h.state_mut().snapshot.error = None;
+        h.run();
+        if let Some(path) = std::env::var_os("KATASTRO_LAYOUT_PREVIEW")
+            && window == Vec2::new(1600.0, 900.0)
+        {
+            h.render().unwrap().save(path).unwrap();
+        }
+        drop(h);
+        let reopened = imported_state(temp.path(), "(;SZ[9]PB[Alice]PW[Bob];B[cc];W[gg];B[cg])");
+        assert_eq!(reopened.review.document().unwrap().selected, branch);
+        assert_eq!(
+            reopened.review.document().unwrap().mainline,
+            vec![0, 1, 2, 3]
+        );
+    }
+}
+
+#[test]
+fn narrow_sidebar_keeps_long_player_names_compact_and_scrolled_analysis_playable() {
+    use eframe::egui::{Event, MouseWheelUnit, TouchPhase, vec2};
+    let temp = tempfile::TempDir::new().unwrap();
+    let black = "Alice with a very long player name that needs to fit in one column";
+    let white = "Bob with another very long player name that needs to fit in one column";
+    let sgf = format!("(;SZ[9]PB[{black}]PW[{white}];B[cc];W[gg];B[cg])");
+    let mut state = imported_state(temp.path(), &sgf);
+    state.snapshot.values.insert(
+        0,
+        katastro::Analysis {
+            ownership: vec![],
+            ownership_visits: 0,
+            visits: 256,
+            score_lead: 2.5,
+            winrate: 0.6,
+            suggestions: suggestions(),
+        },
+    );
+    let mut h = Harness::builder()
+        .with_size(vec2(900.0, 680.0))
+        .build_ui_state(|ui, state: &mut State| state.render(ui), state);
+    for label in [
+        format!("Black player: {black}"),
+        format!("White player: {white}"),
+    ] {
+        let player = h.get_by_label(&label).rect();
+        assert!(
+            player.height() <= 26.0,
+            "a long player name consumes the analysis area: {player:?}"
+        );
+        assert!(
+            player.max.x < 900.0,
+            "a player name spills out of the sidebar"
+        );
+    }
+    let board = h.get_by_label("Go board").rect();
+    let tree = h.get_by_label("Timeline viewport").rect();
+    let next = h.get_by_label("Next move").rect();
+    let score = h.get_by_label("Score lead chart").rect();
+    h.event(Event::PointerMoved(score.center()));
+    h.event(Event::MouseWheel {
+        unit: MouseWheelUnit::Point,
+        delta: vec2(0.0, -300.0),
+        phase: TouchPhase::Move,
+        modifiers: Default::default(),
+    });
+    h.run();
+    assert_eq!(h.get_by_label("Go board").rect(), board);
+    assert_eq!(h.get_by_label("Timeline viewport").rect(), tree);
+    assert_eq!(h.get_by_label("Next move").rect(), next);
+    let candidate = h.get_by_label("1  D6").rect();
+    assert!(
+        candidate.max.y < next.min.y,
+        "scrolled candidate overlaps the fixed move controls"
+    );
+    h.get_by_label("1  D6").click();
+    h.run();
+    assert_eq!(
+        h.state()
+            .snapshot
+            .board
+            .as_ref()
+            .unwrap()
+            .stone(Point::new(3, 3)),
+        Some(Color::Black)
+    );
+    let branch = h.state().review.document().unwrap().selected;
+    h.get_by_label("AI moves").click();
+    h.run();
+    h.set_size(vec2(1600.0, 900.0));
+    h.run();
+    let enlarged = h.get_by_label("Go board").rect();
+    assert!(enlarged.min.y <= 16.0 && enlarged.max.y >= 884.0);
+    assert!(h.query_by_label("AI suggestion 1: D6").is_none());
+    h.get_by_label("Previous move").click();
+    h.run();
+    assert_eq!(h.state().review.document().unwrap().selected, 0);
+    assert!(
+        h.query_by_label("AI suggestion 1: D6").is_none(),
+        "resizing reset the display toggle"
+    );
+    h.get_by_label("AI moves").click();
+    h.run();
+    assert!(h.query_by_label("AI suggestion 1: D6").is_some());
+    drop(h);
+    let reopened = imported_state(temp.path(), &sgf);
+    assert_eq!(
+        reopened.review.document().unwrap().nodes[0].children,
+        vec![1, branch]
+    );
+}
+
 #[test]
 fn reordered_children_keep_the_played_line_preview_navigation_and_top_row() {
     use katastro::worker::Client;
@@ -2013,11 +2260,6 @@ fn player_colors_depth_and_navigation_legend_are_visible_without_arrow_glyphs() 
     let mut h = Harness::builder()
         .with_size(eframe::egui::vec2(1200.0, 1100.0))
         .build_ui_state(|ui, state: &mut State| state.render(ui), state);
-    let logo = h.get_by_label("Katastro emblem").rect();
-    assert!(
-        has_circle(&h, logo, |c| c.fill.g() > c.fill.r() && c.radius > 2.0),
-        "the emblem still depends on an unsupported glyph"
-    );
     for (label, white) in [("Black player: Alice", false), ("White player: Bob", true)] {
         let rect = h.get_by_label(label).rect();
         assert!(
@@ -2064,15 +2306,15 @@ fn both_charts_fit_at_the_default_window_size_with_suggestions() {
     let h = Harness::builder()
         .with_size(eframe::egui::vec2(1200.0, 860.0))
         .build_ui_state(|ui, state: &mut State| state.render(ui), state);
-    let tree = h.get_by_label("Timeline viewport").rect();
+    let controls = h.get_by_label("First move").rect();
     for label in ["Score lead chart", "Winrate chart"] {
         let chart = h
             .query_by_label(label)
             .expect("a chart is completely hidden by the suggestions list")
             .rect();
         assert!(
-            chart.max.y < tree.min.y - 20.0,
-            "{label} is cut off at the default window height: {chart:?} {tree:?}"
+            chart.max.y < controls.min.y - 4.0,
+            "{label} is cut off by the fixed navigation controls: {chart:?} {controls:?}"
         );
     }
 }

@@ -75,367 +75,104 @@ pub fn render(ui: &mut egui::Ui, snapshot: &Snapshot) -> Vec<Action> {
             }
         });
     }
-    egui::Panel::top("header")
+    let strength_id = ui.id().with("group-strength");
+    let suggestions_id = ui.id().with("board-ai-moves");
+    let (mut group_strength, mut show_ai_moves) = ui.ctx().data_mut(|data| {
+        (
+            data.get_temp::<bool>(strength_id).unwrap_or(false),
+            data.get_temp::<bool>(suggestions_id).unwrap_or(true),
+        )
+    });
+    egui::Panel::right("analysis")
+        .resizable(true)
+        .default_size(365.0)
+        .size_range(300.0..=520.0)
         .frame(
             egui::Frame::new()
                 .fill(Color32::from_rgb(26, 30, 36))
-                .inner_margin(16),
+                .inner_margin(14),
         )
         .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                let (logo, response) = ui.allocate_exact_size(Vec2::splat(24.0), Sense::hover());
-                ui.painter()
-                    .circle_stroke(logo.center(), 9.0, Stroke::new(1.5, ACCENT));
-                ui.painter().circle_filled(logo.center(), 3.5, ACCENT);
-                response.widget_info(|| {
-                    WidgetInfo::labeled(WidgetType::Other, true, "Katastro emblem")
-                });
-                ui.label(RichText::new("KATASTRO").strong().size(19.0));
-                ui.add_space(14.0);
-                if let Some(source) = &snapshot.source {
-                    ui.label(
-                        RichText::new(source.file_name().unwrap_or_default().to_string_lossy())
-                            .color(MUTED),
-                    );
-                } else {
-                    ui.label(RichText::new("Go game review").color(MUTED));
-                }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("Engine settings").clicked() {
-                        out.push(Action::Settings);
-                    }
-                    if ui
-                        .add_enabled(snapshot.document.is_some(), egui::Button::new("Export SGF"))
-                        .clicked()
-                    {
-                        out.push(Action::Export);
-                    }
-                    if ui.button("Open SGF").clicked() {
-                        out.push(Action::Open);
-                    }
-                });
-            });
-        });
-    egui::Panel::bottom("status")
-        .frame(
-            egui::Frame::new()
-                .fill(Color32::from_rgb(26, 30, 36))
-                .inner_margin(9),
-        )
-        .show(ui, |ui| {
-            if let Some(error) = &snapshot.error {
-                ui.colored_label(Color32::from_rgb(255, 151, 136), error);
-            } else {
-                ui.horizontal(|ui| {
-                    ui.colored_label(
-                        if snapshot.running { ACCENT } else { MUTED },
-                        if snapshot.running { "●" } else { "○" },
-                    );
-                    ui.label(&snapshot.status);
-                });
-            }
-        });
-    if let Some(doc) = &snapshot.document {
-        egui::Panel::bottom("tree")
-            .resizable(true)
-            .default_size(156.0)
-            .min_size(100.0)
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new("VARIATIONS").color(MUTED).size(11.0).strong());
-                    ui.label(
-                        RichText::new(
-                            "Played game stays on the top row · click any node to explore",
+            ui.spacing_mut().item_spacing.y = 6.0;
+            egui::Panel::bottom("review-status")
+                .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(0, 9)))
+                .show(ui, |ui| {
+                    let (text, color) = if let Some(error) = &snapshot.error {
+                        (error, Color32::from_rgb(255, 151, 136))
+                    } else {
+                        (
+                            &snapshot.status,
+                            if snapshot.running { ACCENT } else { MUTED },
                         )
-                        .color(MUTED)
-                        .size(11.0),
+                    };
+                    ui.add(egui::Label::new(RichText::new(text).color(color)).truncate())
+                        .on_hover_text(text);
+                });
+            if let Some(doc) = &snapshot.document {
+                egui::Panel::bottom("review-tree")
+                    .resizable(true)
+                    .default_size(200.0)
+                    .size_range(160.0..=320.0)
+                    .frame(egui::Frame::NONE)
+                    .show(ui, |ui| {
+                        move_buttons(ui, &mut out);
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new("VARIATIONS").color(MUTED).size(11.0).strong());
+                            ui.label(RichText::new("Played game on top").color(MUTED).size(11.0));
+                        });
+                        tree(ui, doc, &snapshot.source, &mut out);
+                    });
+            }
+            egui::Panel::top("review-controls")
+                .frame(egui::Frame::NONE)
+                .show(ui, |ui| {
+                    review_controls(
+                        ui,
+                        snapshot,
+                        &mut group_strength,
+                        &mut show_ai_moves,
+                        &mut out,
                     );
                 });
-                tree(ui, doc, &snapshot.source, &mut out);
-            });
-        egui::Panel::right("analysis")
-            .resizable(true)
-            .default_size(365.0)
-            .size_range(300.0..=520.0)
-            .frame(
-                egui::Frame::new()
-                    .fill(Color32::from_rgb(26, 30, 36))
-                    .inner_margin(20),
-            )
-            .show(ui, |ui| {
-                egui::ScrollArea::vertical()
-                    .auto_shrink([false, false])
-                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
-                    .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.heading("Game analysis");
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    if ui
-                                        .button(if snapshot.running { "Pause" } else { "Analyze" })
-                                        .clicked()
-                                    {
-                                        command(
-                                            &mut out,
-                                            if snapshot.running {
-                                                Command::Pause
-                                            } else {
-                                                Command::Start
-                                            },
-                                        );
-                                    }
-                                },
-                            );
-                        });
-                        ui.label(RichText::new("Black's perspective").color(MUTED).size(12.0));
+            egui::ScrollArea::vertical()
+                .id_salt("analysis-details")
+                .auto_shrink([false, false])
+                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
+                .show(ui, |ui| {
+                    if let Some(doc) = &snapshot.document {
+                        analysis_details(ui, doc, snapshot, &mut out);
+                    } else {
                         ui.label(
-                            RichText::new(match snapshot.analysis_target {
-                                Some(target) => format!(
-                                    "{} {target} visits per position",
-                                    if snapshot.running {
-                                        "Refining:"
-                                    } else {
-                                        "Paused: target"
-                                    }
-                                ),
-                                None => {
-                                    if snapshot.running {
-                                        "Preparing analysis".into()
-                                    } else {
-                                        "Analysis paused".into()
-                                    }
-                                }
-                            })
-                            .size(11.0)
-                            .color(MUTED),
-                        );
-                        ui.add_space(12.0);
-                        let selected = doc.selected;
-                        ui.allocate_ui_with_layout(
-                            Vec2::new(ui.available_width(), 96.0),
-                            egui::Layout::top_down(egui::Align::Min),
-                            |ui| {
-                                let value = snapshot.values.get(&selected);
-                                ui.columns(2, |columns| {
-                                    columns[0].label(
-                                        RichText::new(
-                                            value
-                                                .map(|v| format!("{:+.1}", v.score_lead))
-                                                .unwrap_or("--".into()),
-                                        )
-                                        .size(31.0)
-                                        .color(ACCENT),
-                                    );
-                                    columns[0].label(
-                                        RichText::new("points · Black lead")
-                                            .color(MUTED)
-                                            .size(11.0),
-                                    );
-                                    columns[1].label(
-                                        RichText::new(
-                                            value
-                                                .map(|v| format!("{:.1}%", v.winrate * 100.0))
-                                                .unwrap_or("--".into()),
-                                        )
-                                        .size(31.0),
-                                    );
-                                    columns[1].label(
-                                        RichText::new("Black winrate").color(MUTED).size(11.0),
-                                    );
-                                });
-                                ui.add_space(6.0);
-                                ui.label(
-                                    RichText::new(
-                                        value
-                                            .map(|value| {
-                                                format!(
-                                                    "{} visits · {}",
-                                                    value.visits,
-                                                    if value.visits < 64 {
-                                                        "provisional"
-                                                    } else {
-                                                        "refined estimate"
-                                                    }
-                                                )
-                                            })
-                                            .unwrap_or("Awaiting analysis".into()),
-                                    )
-                                    .color(MUTED)
-                                    .size(11.0),
-                                );
-                            },
-                        );
-                        ui.add_space(12.0);
-                        ui.add(
-                            egui::ProgressBar::new(if snapshot.coverage.1 == 0 {
-                                0.0
-                            } else {
-                                snapshot.coverage.0 as f32 / snapshot.coverage.1 as f32
-                            })
-                            .fill(ACCENT)
-                            .text(format!(
-                                "{} / {} played positions",
-                                snapshot.coverage.0, snapshot.coverage.1
-                            )),
-                        );
-                        ui.add_space(14.0);
-                        ui.label(
-                            RichText::new("SCORE LEAD · POINTS")
-                                .size(11.0)
-                                .color(MUTED)
-                                .strong(),
-                        );
-                        chart(ui, snapshot, true, &mut out);
-                        ui.add_space(8.0);
-                        ui.label(
-                            RichText::new("WINRATE · BLACK %")
-                                .size(11.0)
-                                .color(MUTED)
-                                .strong(),
-                        );
-                        chart(ui, snapshot, false, &mut out);
-                        ui.label(
-                            RichText::new("Click a curve to navigate · gold shows your variation.")
-                                .size(11.0)
+                            RichText::new("Open a game to review its analysis and variations.")
                                 .color(MUTED),
                         );
-                        ui.add_space(12.0);
-                        suggested_moves(
-                            ui,
-                            snapshot.values.get(&selected),
-                            doc.size,
-                            snapshot.board.as_ref().map_or(Color::Black, |b| b.next),
-                            &mut out,
-                        );
-                        ui.add_space(16.0);
-                        ui.separator();
-                        ui.add_space(8.0);
-                        if let Some(board) = &snapshot.board {
-                            ui.label(
-                                RichText::new(format!(
-                                    "Move {} · {} to play",
-                                    board.move_number,
-                                    if board.next == Color::Black {
-                                        "Black"
-                                    } else {
-                                        "White"
-                                    }
-                                ))
-                                .strong(),
-                            );
-                            ui.label(format!(
-                                "Captures  ● {}   ○ {}",
-                                board.captures[0], board.captures[1]
-                            ));
-                        }
-                        ui.label(format!(
-                            "{}×{} · {} rules · komi {}",
-                            doc.size, doc.size, doc.rules, doc.komi
-                        ));
-                        if doc.nodes[0].property("RU").is_none() {
-                            ui.label(
-                                RichText::new("SGF omits rules; Chinese rules assumed.")
-                                    .color(Color32::from_rgb(221, 184, 108))
-                                    .size(11.0),
-                            );
-                        }
-                        if !doc.mainline.contains(&doc.selected) {
-                            ui.colored_label(ACCENT, "Exploring a saved variation");
-                        }
-                        if let Some(comment) = doc.nodes[selected].property("C") {
-                            ui.add_space(10.0);
-                            ui.label(comment);
-                        }
-                        ui.add_space(15.0);
                         navigation_legend(ui);
-                    });
-            });
-    }
+                    }
+                });
+        });
+    ui.ctx().data_mut(|data| {
+        data.insert_temp(strength_id, group_strength);
+        data.insert_temp(suggestions_id, show_ai_moves);
+    });
     egui::CentralPanel::default()
         .frame(
             egui::Frame::new()
                 .fill(Color32::from_rgb(20, 23, 28))
-                .inner_margin(18),
+                .inner_margin(8),
         )
         .show(ui, |ui| {
             if let (Some(doc), Some(board)) = (&snapshot.document, &snapshot.board) {
-                let strength_id = ui.id().with("group-strength");
-                let mut group_strength = ui.ctx().data_mut(|data| {
-                    data.get_temp::<bool>(strength_id).unwrap_or(false)
-                });
-                let suggestions_id = ui.id().with("board-ai-moves");
-                let mut show_ai_moves = ui.ctx().data_mut(|data| {
-                    data.get_temp::<bool>(suggestions_id).unwrap_or(true)
-                });
-                ui.horizontal(|ui| {
-                    player(
+                ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
+                    ui.add_space(((ui.available_height() - ui.available_width()) / 2.0).max(0.0));
+                    board_view(
                         ui,
-                        Color::Black,
-                        doc.nodes[0].property("PB").unwrap_or("Black"),
+                        doc,
+                        board,
+                        snapshot,
+                        group_strength,
+                        show_ai_moves,
+                        &mut out,
                     );
-                    ui.label(RichText::new("vs").color(MUTED));
-                    player(
-                        ui,
-                        Color::White,
-                        doc.nodes[0].property("PW").unwrap_or("White"),
-                    );
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.checkbox(&mut group_strength, "Group strength")
-                            .on_hover_text("Connected chains: green = likely to live, orange = unsettled, red = likely to die. Solid outlines indicate decisive expected ownership. This is KataGo's estimate under continued play, not a life-and-death proof; ko and seki can appear unsettled. Move-circle colors still show point loss.");
-                        ui.checkbox(&mut show_ai_moves, "AI moves")
-                            .on_hover_text("Show AI move suggestions on the board.");
-                    });
-                });
-                ui.ctx().data_mut(|data| {
-                    data.insert_temp(strength_id, group_strength);
-                    data.insert_temp(suggestions_id, show_ai_moves);
-                });
-                // Reserve the same height for all states, including ownership arriving.
-                ui.allocate_ui_with_layout(
-                    Vec2::new(ui.available_width(), 18.0),
-                    egui::Layout::left_to_right(egui::Align::Center),
-                    |ui| {
-                        if group_strength {
-                            if let Some(value) = snapshot.values.get(&doc.selected)
-                                .filter(|a| a.ownership.len() == board.cells.len()) {
-                                for (label, color) in [("Likely live", GROUP_LIVE), ("Unsettled", GROUP_UNSETTLED), ("Likely die", GROUP_DYING)] {
-                                    ui.label(RichText::new(label).color(color).size(11.0));
-                                }
-                                let depth = value.ownership_depth();
-                                let label = if depth < crate::analysis::MIN_CACHE_VISITS {
-                                    format!("· quick estimate · {depth} {}", if depth == 1 { "visit" } else { "visits" })
-                                } else {
-                                    format!("· {depth} visits")
-                                };
-                                ui.label(RichText::new(label).color(MUTED).size(11.0));
-                            } else {
-                                ui.label(RichText::new("Group estimates pending").color(MUTED).size(11.0))
-                                    .on_hover_text("Ownership appears as this position refines. Older cached charts remain usable while group estimates are pending.");
-                            }
-                        } else {
-                            ui.label(RichText::new(format!(
-                                "Move labels: point change for {}",
-                                if board.next == Color::Black { "Black" } else { "White" }
-                            )).size(11.0).color(MUTED));
-                        }
-                    },
-                );
-                ui.add_space(9.0);
-                board_view(ui, doc, board, snapshot, group_strength, show_ai_moves, &mut out);
-                ui.add_space(10.0);
-                ui.horizontal(|ui| {
-                    for (label, value) in [
-                        ("First move", Command::First),
-                        ("Previous move", Command::Step(false)),
-                        ("Next move", Command::Step(true)),
-                        ("Last move", Command::Last),
-                        ("Pass", Command::Play(None)),
-                    ] {
-                        if ui.button(label).clicked() {
-                            command(&mut out, value);
-                        }
-                    }
                 });
             } else {
                 ui.vertical_centered(|ui| {
@@ -466,6 +203,280 @@ pub fn render(ui: &mut egui::Ui, snapshot: &Snapshot) -> Vec<Action> {
         });
     out
 }
+
+fn review_controls(
+    ui: &mut egui::Ui,
+    snapshot: &Snapshot,
+    group_strength: &mut bool,
+    show_ai_moves: &mut bool,
+    out: &mut Vec<Action>,
+) {
+    ui.scope(|ui| {
+        ui.spacing_mut().button_padding = Vec2::new(7.0, 5.0);
+        ui.horizontal_wrapped(|ui| {
+            if ui.button("Open SGF").clicked() {
+                out.push(Action::Open);
+            }
+            if ui
+                .add_enabled(snapshot.document.is_some(), egui::Button::new("Export SGF"))
+                .clicked()
+            {
+                out.push(Action::Export);
+            }
+            if ui.button("Engine settings").clicked() {
+                out.push(Action::Settings);
+            }
+        });
+    });
+    if let Some(source) = &snapshot.source {
+        ui.add(
+            egui::Label::new(
+                RichText::new(source.file_name().unwrap_or_default().to_string_lossy())
+                    .color(MUTED)
+                    .size(11.0),
+            )
+            .truncate(),
+        );
+    }
+    if let (Some(doc), Some(board)) = (&snapshot.document, &snapshot.board) {
+        ui.columns(2, |columns| {
+            player(
+                &mut columns[0],
+                Color::Black,
+                doc.nodes[0].property("PB").unwrap_or("Black"),
+            );
+            player(
+                &mut columns[1],
+                Color::White,
+                doc.nodes[0].property("PW").unwrap_or("White"),
+            );
+        });
+        ui.horizontal(|ui| {
+            ui.checkbox(show_ai_moves, "AI moves").on_hover_text("Show AI move suggestions on the board.");
+            ui.checkbox(group_strength, "Group strength")
+                .on_hover_text("Connected chains: green = likely to live, orange = unsettled, red = likely to die. Solid outlines indicate decisive expected ownership. This is KataGo's estimate under continued play, not a life-and-death proof; ko and seki can appear unsettled. Move-circle colors still show point loss.");
+        });
+        // Keep controls fixed when ownership or a different move arrives.
+        ui.allocate_ui_with_layout(Vec2::new(ui.available_width(), 34.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+            ui.set_min_height(34.0);
+            ui.spacing_mut().item_spacing.y = 2.0;
+            if *group_strength {
+                if let Some(value) = snapshot.values.get(&doc.selected).filter(|a| a.ownership.len() == board.cells.len()) {
+                    ui.horizontal(|ui| {
+                        for (label, color) in [("Likely live", GROUP_LIVE), ("Unsettled", GROUP_UNSETTLED), ("Likely die", GROUP_DYING)] {
+                            ui.label(RichText::new(label).color(color).size(11.0));
+                        }
+                    });
+                    let depth = value.ownership_depth();
+                    let label = if depth < crate::analysis::MIN_CACHE_VISITS {
+                        format!("· quick estimate · {depth} {}", if depth == 1 { "visit" } else { "visits" })
+                    } else { format!("· {depth} visits") };
+                    ui.label(RichText::new(label).color(MUTED).size(11.0));
+                } else {
+                    ui.label(RichText::new("Group estimates pending").color(MUTED).size(11.0))
+                        .on_hover_text("Ownership appears as this position refines. Older cached charts remain usable while group estimates are pending.");
+                }
+            } else {
+                ui.label(RichText::new(format!("Move labels: point change for {}", if board.next == Color::Black { "Black" } else { "White" })).size(11.0).color(MUTED));
+            }
+        });
+    }
+}
+
+fn move_buttons(ui: &mut egui::Ui, out: &mut Vec<Action>) {
+    ui.horizontal(|ui| {
+        let width = (ui.available_width() - 4.0 * ui.spacing().item_spacing.x) / 5.0;
+        for (text, label, value) in [
+            ("First", "First move", Command::First),
+            ("Prev", "Previous move", Command::Step(false)),
+            ("Next", "Next move", Command::Step(true)),
+            ("Last", "Last move", Command::Last),
+            ("Pass", "Pass", Command::Play(None)),
+        ] {
+            let response = ui.add_sized(Vec2::new(width, 30.0), egui::Button::new(text));
+            response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, label));
+            if response.clicked() {
+                command(out, value);
+            }
+            response.on_hover_text(label);
+        }
+    });
+}
+
+fn analysis_details(ui: &mut egui::Ui, doc: &Document, snapshot: &Snapshot, out: &mut Vec<Action>) {
+    ui.horizontal(|ui| {
+        ui.heading("Game analysis");
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui
+                .button(if snapshot.running { "Pause" } else { "Analyze" })
+                .clicked()
+            {
+                command(
+                    out,
+                    if snapshot.running {
+                        Command::Pause
+                    } else {
+                        Command::Start
+                    },
+                );
+            }
+        });
+    });
+    ui.label(
+        RichText::new(match snapshot.analysis_target {
+            Some(target) => format!(
+                "{} {target} visits per position",
+                if snapshot.running {
+                    "Refining:"
+                } else {
+                    "Paused: target"
+                }
+            ),
+            None => {
+                if snapshot.running {
+                    "Preparing analysis".into()
+                } else {
+                    "Analysis paused".into()
+                }
+            }
+        })
+        .size(11.0)
+        .color(MUTED),
+    );
+    ui.add_space(6.0);
+    let selected = doc.selected;
+    ui.allocate_ui_with_layout(
+        Vec2::new(ui.available_width(), 64.0),
+        egui::Layout::top_down(egui::Align::Min),
+        |ui| {
+            let value = snapshot.values.get(&selected);
+            ui.columns(2, |columns| {
+                columns[0].label(
+                    RichText::new(
+                        value
+                            .map(|v| format!("{:+.1}", v.score_lead))
+                            .unwrap_or("--".into()),
+                    )
+                    .size(26.0)
+                    .color(ACCENT),
+                );
+                columns[0].label(RichText::new("points · Black lead").color(MUTED).size(11.0));
+                columns[1].label(
+                    RichText::new(
+                        value
+                            .map(|v| format!("{:.1}%", v.winrate * 100.0))
+                            .unwrap_or("--".into()),
+                    )
+                    .size(26.0),
+                );
+                columns[1].label(RichText::new("Black winrate").color(MUTED).size(11.0));
+            });
+            ui.add_space(6.0);
+            ui.label(
+                RichText::new(
+                    value
+                        .map(|value| {
+                            format!(
+                                "{} visits · {}",
+                                value.visits,
+                                if value.visits < 64 {
+                                    "provisional"
+                                } else {
+                                    "refined estimate"
+                                }
+                            )
+                        })
+                        .unwrap_or("Awaiting analysis".into()),
+                )
+                .color(MUTED)
+                .size(11.0),
+            );
+        },
+    );
+    ui.add_space(6.0);
+    ui.add(
+        egui::ProgressBar::new(if snapshot.coverage.1 == 0 {
+            0.0
+        } else {
+            snapshot.coverage.0 as f32 / snapshot.coverage.1 as f32
+        })
+        .fill(ACCENT)
+        .text(format!(
+            "{} / {} played positions",
+            snapshot.coverage.0, snapshot.coverage.1
+        )),
+    );
+    ui.add_space(6.0);
+    ui.label(
+        RichText::new("SCORE LEAD · POINTS")
+            .size(11.0)
+            .color(MUTED)
+            .strong(),
+    );
+    chart(ui, snapshot, true, out);
+    ui.add_space(8.0);
+    ui.label(
+        RichText::new("WINRATE · BLACK %")
+            .size(11.0)
+            .color(MUTED)
+            .strong(),
+    );
+    chart(ui, snapshot, false, out);
+    ui.label(
+        RichText::new("Click a curve to navigate · gold shows your variation.")
+            .size(11.0)
+            .color(MUTED),
+    );
+    ui.add_space(6.0);
+    suggested_moves(
+        ui,
+        snapshot.values.get(&selected),
+        doc.size,
+        snapshot.board.as_ref().map_or(Color::Black, |b| b.next),
+        out,
+    );
+    ui.add_space(6.0);
+    ui.separator();
+    ui.add_space(8.0);
+    if let Some(board) = &snapshot.board {
+        ui.label(
+            RichText::new(format!(
+                "Move {} · {} to play",
+                board.move_number,
+                if board.next == Color::Black {
+                    "Black"
+                } else {
+                    "White"
+                }
+            ))
+            .strong(),
+        );
+        ui.label(format!(
+            "Captures  ● {}   ○ {}",
+            board.captures[0], board.captures[1]
+        ));
+    }
+    ui.label(format!(
+        "{}×{} · {} rules · komi {}",
+        doc.size, doc.size, doc.rules, doc.komi
+    ));
+    if doc.nodes[0].property("RU").is_none() {
+        ui.label(
+            RichText::new("SGF omits rules; Chinese rules assumed.")
+                .color(Color32::from_rgb(221, 184, 108))
+                .size(11.0),
+        );
+    }
+    if !doc.mainline.contains(&doc.selected) {
+        ui.colored_label(ACCENT, "Exploring a saved variation");
+    }
+    if let Some(comment) = doc.nodes[selected].property("C") {
+        ui.add_space(10.0);
+        ui.label(comment);
+    }
+    ui.add_space(6.0);
+    navigation_legend(ui);
+}
 fn board_view(
     ui: &mut egui::Ui,
     doc: &Document,
@@ -484,11 +495,9 @@ fn board_view(
             .and_then(|s| s.score_lead)
             .or_else(|| snapshot.values.get(&id).map(|a| a.score_lead))
     });
-    let side = ui
-        .available_width()
-        .min((ui.available_height() - 56.0).max(150.0))
-        .max(140.0);
-    let (rect, _) = ui.allocate_exact_size(Vec2::splat(side), Sense::hover());
+    let side = ui.available_width().min(ui.available_height()).max(140.0);
+    let (rect, response) = ui.allocate_exact_size(Vec2::splat(side), Sense::hover());
+    response.widget_info(|| WidgetInfo::labeled(WidgetType::Other, true, "Go board"));
     let painter = ui.painter();
     painter.rect_filled(rect, 12, Color32::from_rgb(221, 185, 130));
     let padding = (side * 0.055).max(20.0);
@@ -1043,7 +1052,7 @@ fn chart(ui: &mut egui::Ui, snapshot: &Snapshot, score: bool, out: &mut Vec<Acti
         Color32::from_rgb(126, 167, 244)
     };
     let mut plot = Plot::new(if score { "score" } else { "winrate" })
-        .height(145.0)
+        .height(110.0)
         .include_x(0.0)
         .include_x(doc.mainline.len().max(path.len()).saturating_sub(1).max(1) as f64)
         .include_y(if score { 0.0 } else { 50.0 })
@@ -1135,7 +1144,8 @@ fn player(ui: &mut egui::Ui, color: Color, name: &str) {
                 7.0,
                 Stroke::new(1.0, Color32::from_rgb(128, 133, 139)),
             );
-            ui.label(RichText::new(name).strong());
+            ui.add(egui::Label::new(RichText::new(name).strong()).truncate())
+                .on_hover_text(name);
         })
         .response;
     response.widget_info(|| {
