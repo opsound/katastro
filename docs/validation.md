@@ -322,3 +322,49 @@ KATASTRO_UI_PREVIEW="$PWD/local/layout-desktop.png" cargo test --test desktop --
 Final formatting, Clippy with warnings denied, and all 78 routine integration tests passed after restoration. The explicit native Open/Export sheet regression also passed. Engine, scheduler, and cache behavior are unchanged; this layout pass does not claim new engine performance measurements.
 
 The release bundle was rebuilt and passed strict/deep code-signature verification before replacing ignored `local/Katastro.app`. The previous bundle remains at `local/Katastro-before-sidebar.app`; no running app was terminated or relaunched.
+
+## Import and analysis preparation audit (November 2026)
+
+The audit covered SGF decoding and rules replay, review persistence, cache identity, request scheduling, engine transport, worker snapshots, and desktop rendering. Two repeated-work costs were addressed:
+
+- Import previously reconstructed the board from the root for every node. It now validates each tree edge once, copying board and ko history only at forks. Setup application and move application are shared with selected-board replay. All sibling variations are still validated before the imported review replaces the current document.
+- Preparing each analysis position previously cloned the complete document to clear the root move. It now constructs the initial board directly from handicap, setup stones, and explicit player properties, keeping any root move in the move history. Position serialization, cache keys, source identity, and saved-review formats are unchanged.
+
+Full-document snapshot copies and repeated model/executable hashing on Analyze remain potential follow-ups. This pass did not change them: they need separate worker/UI allocation measurements and careful invalidation behavior. No inference or UI frame-time speedup is claimed here.
+
+### Evidence and measurements
+
+Before implementation, an explicit release benchmark recorded a baseline and a second unchanged run failed the required 25% reduction. It uses the same 413 private local SGFs (80,043 positions), verifies their aggregate content fingerprint, and reports the median of three passes. Inputs are already in memory: the timed import phase includes parsing and legal-tree validation; the second phase constructs every analysis position. Real SQLite imports, final-board selection, and replay are also exercised outside the timed sections. Original SGFs are read-only and neither names nor game content are committed.
+
+| Metric, whole corpus | Baseline | After |
+| --- | ---: | ---: |
+| Parse and validate | 13.169 s | 0.201 s |
+| Prepare all analysis positions | 3.158 s | 0.681 s |
+
+Measured on Apple M3, macOS 26.6.2, Rust 1.101.0-nightly, release profile. These are local CPU measurements, approximately 65.6× and 4.6× respectively; they do not include file dialogs, database lookup latency, model startup, or KataGo search. Timing assertions run only in the explicitly invoked benchmark, never in routine tests.
+
+Two new characterization integration tests passed before the refactor and stayed green afterward. They cover sibling ko isolation, rejection of an illegal non-main-line branch without replacing the current review, setup-history reset, persistent variation selection, root setup plus a root move, explicit White-to-play, identical equivalent engine histories, and per-position cache round trips. Temporary mutations that skipped sibling validation, retained pre-setup history, or treated the root move as setup each produced behavioral failures before restoration. Restoring repeated import-prefix replay raised import time to 12.864 s and failed the import benchmark; restoring whole-document cloning raised position preparation to 3.042 s and failed its separate metric. Both optimizations were restored afterward. Raw logs and timings remain under ignored `local/`.
+
+Reproduce the baseline on the old implementation, then compare on the new implementation (same compiler/profile and unchanged corpus):
+
+```sh
+mkdir -p local
+KATASTRO_SGF_DIR="$HOME/Downloads" KATASTRO_PERF_RECORD=local/import-baseline.json cargo test --release --test import_performance -- --ignored --nocapture
+KATASTRO_SGF_DIR="$HOME/Downloads" KATASTRO_PERF_BASELINE=local/import-baseline.json cargo test --release --test import_performance -- --ignored --nocapture
+```
+
+### Fox investigation
+
+The supplied Fox SGF imported and all 213 positions returned real KataGo analysis through `Client::OpenAndAnalyze` **before any production change**. The full private corpus also imported and replayed successfully before the refactor. Its duplicate `AP` properties, versionless `AP[foxwq]`, UTF-8 names without `CA`, `KM[0]`, and `HA[1]` are already accepted. The explicit zero komi and Black-to-play are retained. No speculative Fox rules/komi correction was made, and no Fox-specific parser failure was reproduced; the user's app symptom/error is still needed to identify that reported problem.
+
+A small synthetic Fox fixture now covers the public Review API, temporary SQLite databases, and a controlled fake subprocess through 1/8/64-visit coverage and refinement. It checks player text, final board, unchanged original game, saved variation, SGF export, exact cache restoration, and omission of the cheap pass after reopening. The same fixture has an explicit real-engine test. A separate opt-in test reads the user's supplied path and checks full chart coverage through the background worker with real KataGo, without embedding the private file or its moves.
+
+```sh
+KATASTRO_TEST_ENGINE=/opt/homebrew/bin/katago KATASTRO_TEST_MODEL="$HOME/katrain/katrain/models/b10c384h6nbttflrs.bin.gz" cargo test --test fox live_fox_analysis_and_cache -- --ignored --nocapture
+# Set KATASTRO_TEST_SGF to the private Fox SGF's full path.
+KATASTRO_TEST_ENGINE=/opt/homebrew/bin/katago KATASTRO_TEST_MODEL="$HOME/katrain/katrain/models/b10c384h6nbttflrs.bin.gz" cargo test --test fox live_local_fox_worker_import_and_analysis -- --ignored --nocapture
+```
+
+Both explicit tests require a working local KataGo executable and model, with Metal access for this installed binary. They do not use production review/cache databases. The local `~/KataGo` reference checkout was absent during this pass; the installed engine and `~/katrain` reference remained read-only.
+
+Final verification: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` passed (81 routine tests; nine opt-in tests excluded by default). Both existing real KataGo tests and both new live Fox tests passed on the restored implementation. The scheduler reached 256 visits with exact cache restoration; the private Fox file again reached 213/213 analyzed positions. The final repeated performance check passed at 0.199 s for import and 0.708 s for position preparation. The release app was rebuilt at ignored `local/Katastro.app` and passed `codesign --verify --deep --strict`. Live AppKit sheet and optional GPU screenshot checks were not rerun for these core-only changes; their existing invocations and prerequisites above remain applicable.

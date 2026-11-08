@@ -18,6 +18,51 @@ fn sample(visits: u64) -> Analysis {
         suggestions: vec![],
     }
 }
+
+#[test]
+fn root_setup_and_root_move_keep_distinct_analysis_histories_and_cached_results() {
+    use katastro::{Document, scheduler::Scheduler};
+    let temp = TempDir::new().unwrap();
+    let source = temp.path().join("root-move.sgf");
+    fs::write(&source, "(;SZ[9]HA[2]AB[cc][gg]AW[dc]PL[W]W[ee];B[ff])").unwrap();
+    let mut app = Review::new(&temp.path().join("reviews"), &temp.path().join("cache")).unwrap();
+    app.import(&source).unwrap();
+    let doc = app.document().unwrap().clone();
+    let pos = doc.position(0).unwrap();
+    assert_eq!(pos.initial_player, "W");
+    assert_eq!(
+        pos.initial_stones,
+        vec![
+            ("B".into(), "C7".into()),
+            ("W".into(), "D7".into()),
+            ("B".into(), "G3".into())
+        ]
+    );
+    assert_eq!(pos.moves, vec![("W".into(), "E5".into())]);
+    let split = Document::parse(b"(;SZ[9]HA[2]AB[cc][gg]AW[dc]PL[W];W[ee];B[ff])").unwrap();
+    assert_eq!(doc.position(1).unwrap(), split.position(2).unwrap());
+    let mut scheduler = Scheduler::new(1, doc, profile(), Default::default());
+    let request = scheduler.next_request().unwrap().unwrap();
+    assert_eq!(request.query["analyzeTurns"], serde_json::json!([1, 2]));
+    for (turn, targets) in request.targets {
+        for target in targets {
+            assert_eq!(
+                target.key,
+                app.analysis_key(target.node, &profile()).unwrap()
+            );
+            let mut value = sample(64);
+            value.score_lead = turn as f64;
+            app.store_analysis(&target.key, &value).unwrap();
+        }
+    }
+    drop(app);
+    let mut reopened =
+        Review::new(&temp.path().join("reviews"), &temp.path().join("cache")).unwrap();
+    reopened.import(&source).unwrap();
+    let cached = reopened.cached_analysis(&profile()).unwrap();
+    assert_eq!(cached[&0].score_lead, 1.0);
+    assert_eq!(cached[&1].score_lead, 2.0);
+}
 #[test]
 fn reopen_restores_partial_analysis_and_deeper_results_without_an_engine() {
     let temp = TempDir::new().unwrap();

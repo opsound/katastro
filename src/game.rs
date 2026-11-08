@@ -338,9 +338,7 @@ impl Document {
                 break;
             }
         }
-        for id in 0..doc.nodes.len() {
-            doc.board(id)?;
-        }
+        doc.validate_tree()?;
         Ok(doc)
     }
     pub fn path(&self, node: NodeId) -> Result<Vec<NodeId>> {
@@ -356,7 +354,7 @@ impl Document {
         path.reverse();
         Ok(path)
     }
-    fn replay(&self, node: NodeId) -> Result<(Board, BoardHistory)> {
+    fn empty_board(&self) -> Board {
         let root = &self.nodes[0];
         let initial = if root.property("PL") == Some("W")
             || (root.property("PL").is_none()
@@ -369,48 +367,90 @@ impl Document {
         } else {
             Color::Black
         };
-        let mut board = Board {
+        Board {
             size: self.size,
             cells: vec![None; self.size * self.size],
             next: initial,
             move_number: 0,
             captures: [0, 0],
-        };
+        }
+    }
+    pub(crate) fn initial_board(&self) -> Result<Board> {
+        let mut board = self.empty_board();
+        Self::apply_setup(&self.nodes[0], &mut board)?;
+        Ok(board)
+    }
+    fn apply_setup(n: &Node, board: &mut Board) -> Result<bool> {
+        let mut setup = false;
+        for (property, color) in [
+            ("AE", None),
+            ("AB", Some(Color::Black)),
+            ("AW", Some(Color::White)),
+        ] {
+            if let Some(points) = n.props.get(property) {
+                for point in points {
+                    let point =
+                        Point::parse(point, board.size)?.ok_or("Setup stone cannot be pass")?;
+                    board.cells[point.y * board.size + point.x] = color;
+                    setup = true;
+                }
+            }
+        }
+        if let Some(next) = n.property("PL") {
+            board.next = if next == "B" {
+                Color::Black
+            } else {
+                Color::White
+            };
+            setup = true;
+        }
+        Ok(setup)
+    }
+    fn apply_node(&self, id: NodeId, board: &mut Board, history: &mut BoardHistory) -> Result<()> {
+        let node = &self.nodes[id];
+        if Self::apply_setup(node, board)? {
+            history.clear();
+            history.push((board.cells.clone(), board.next));
+        }
+        if let Some(played) = node.played {
+            board.apply(played, &self.rules, history)?;
+            history.push((board.cells.clone(), board.next));
+        }
+        Ok(())
+    }
+    fn replay(&self, node: NodeId) -> Result<(Board, BoardHistory)> {
+        let mut board = self.empty_board();
         let mut history = vec![(board.cells.clone(), board.next)];
         for id in self.path(node)? {
-            let n = &self.nodes[id];
-            let mut setup = false;
-            for (property, color) in [
-                ("AE", None),
-                ("AB", Some(Color::Black)),
-                ("AW", Some(Color::White)),
-            ] {
-                if let Some(points) = n.props.get(property) {
-                    for point in points {
-                        let point =
-                            Point::parse(point, self.size)?.ok_or("Setup stone cannot be pass")?;
-                        board.cells[point.y * self.size + point.x] = color;
-                        setup = true;
+            self.apply_node(id, &mut board, &mut history)?;
+        }
+        Ok((board, history))
+    }
+    fn validate_tree(&self) -> Result<()> {
+        // Replay each edge once; only forks need independent board/history copies.
+        fn line(
+            doc: &Document,
+            mut id: NodeId,
+            mut board: Board,
+            mut history: BoardHistory,
+        ) -> Result<()> {
+            loop {
+                doc.apply_node(id, &mut board, &mut history)?;
+                match doc.nodes[id].children.as_slice() {
+                    [] => return Ok(()),
+                    [child] => id = *child,
+                    children => {
+                        for child in children {
+                            line(doc, *child, board.clone(), history.clone())?;
+                        }
+                        return Ok(());
                     }
                 }
             }
-            if let Some(next) = n.property("PL") {
-                board.next = if next == "B" {
-                    Color::Black
-                } else {
-                    Color::White
-                };
-                setup = true;
-            }
-            if setup {
-                history = vec![(board.cells.clone(), board.next)];
-            }
-            if let Some(played) = n.played {
-                board.apply(played, &self.rules, &history)?;
-                history.push((board.cells.clone(), board.next));
-            }
         }
-        Ok((board, history))
+        let board = self.empty_board();
+        let history = vec![(board.cells.clone(), board.next)];
+        line(self, 0, board, history)
     }
     pub fn board(&self, node: NodeId) -> Result<Board> {
         Ok(self.replay(node)?.0)

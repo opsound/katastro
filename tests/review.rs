@@ -176,6 +176,59 @@ fn invalid_import_does_not_destroy_the_current_review() {
     assert!(app.import(&source).is_err());
     assert_eq!(serde_json::to_value(app.document()).unwrap(), before);
 }
+
+#[test]
+fn import_validates_every_branch_with_independent_board_and_ko_history() {
+    let temp = TempDir::new().unwrap();
+    let source = fixture(
+        temp.path(),
+        "(;SZ[5]RU[Japanese]AB[ab][ba][cb]AW[bb][ac][cc][bd]PL[B](;B[bc];W[];B[];W[bb])(;B[bc];W[ee]))",
+    );
+    let mut app = review(temp.path());
+    app.import(&source).unwrap();
+    let last = *app.document().unwrap().mainline.last().unwrap();
+    app.select(last).unwrap();
+    assert_eq!(
+        app.document()
+            .unwrap()
+            .board(last)
+            .unwrap()
+            .stone(Point::new(1, 1)),
+        Some(Color::White)
+    );
+    let saved = serde_json::to_value(app.document()).unwrap();
+    // The illegal recapture is in a sibling, after a legal first branch.
+    fs::write(&source, "(;SZ[5]RU[Japanese]AB[ab][ba][cb]AW[bb][ac][cc][bd]PL[B](;B[bc];W[];B[];W[bb])(;B[bc];W[bb]))").unwrap();
+    assert!(app.import(&source).unwrap_err().to_string().contains("Ko"));
+    assert_eq!(serde_json::to_value(app.document()).unwrap(), saved);
+    // A setup edit resets history on its own path and must not leak to siblings.
+    fs::write(&source, "(;SZ[5];B[aa](;AE[aa]PL[B];B[aa])(;W[bb]))").unwrap();
+    app.import(&source).unwrap();
+    assert_eq!(
+        app.document()
+            .unwrap()
+            .board(4)
+            .unwrap()
+            .stone(Point::new(0, 0)),
+        Some(Color::Black)
+    );
+    assert!(app.document().unwrap().position(3).is_err());
+    app.select(4).unwrap();
+    let branch = app.play(Some(Point::new(2, 2))).unwrap();
+    drop(app);
+    let mut reopened = review(temp.path());
+    reopened.import(&source).unwrap();
+    assert_eq!(reopened.document().unwrap().selected, branch);
+    assert_eq!(
+        reopened
+            .document()
+            .unwrap()
+            .board(branch)
+            .unwrap()
+            .stone(Point::new(2, 2)),
+        Some(Color::Black)
+    );
+}
 #[test]
 fn handicap_setup_has_stable_identity_across_reopen_and_compressed_lists_expand() {
     let temp = TempDir::new().unwrap();

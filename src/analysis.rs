@@ -108,9 +108,7 @@ impl Document {
         }) {
             return Err("Analysis of setup edits after the root is not supported; review and export remain available".into());
         }
-        let mut root = self.clone();
-        root.nodes[0].played = None;
-        let initial = root.board(0)?;
+        let initial = self.initial_board()?;
         let initial_stones = initial
             .cells
             .iter()
