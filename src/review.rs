@@ -58,16 +58,27 @@ impl Review {
         })
     }
     pub fn import(&mut self, path: &Path) -> Result<()> {
-        let imported = Document::parse(&fs::read(path)?)?;
+        let (imported, source_komi) = Document::parse_with_source_komi(&fs::read(path)?)?;
         let key = imported.source_identity()?;
-        let saved: Option<String> = self
-            .reviews
-            .query_row("SELECT document FROM documents WHERE id=?1", [&key], |r| {
-                r.get(0)
-            })
-            .optional()?;
+        let load = |key: &str| -> Result<Option<String>> {
+            Ok(self
+                .reviews
+                .query_row("SELECT document FROM documents WHERE id=?1", [key], |r| {
+                    r.get(0)
+                })
+                .optional()?)
+        };
+        let mut saved = load(&key)?;
+        if saved.is_none() && source_komi != imported.komi {
+            // Preserve variations/selection under the pre-fix identity. Only
+            // review data migrates; analysis remains keyed by the actual komi.
+            let mut legacy = imported.clone();
+            legacy.komi = source_komi;
+            saved = load(&legacy.source_identity()?)?;
+        }
         let doc = if let Some(saved) = saved {
             let mut doc: Document = serde_json::from_str(&saved)?;
+            doc.komi = imported.komi;
             for (id, node) in imported.nodes.iter().enumerate() {
                 doc.nodes[id].props = node.props.clone();
             }

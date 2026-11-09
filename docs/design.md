@@ -30,6 +30,8 @@ Reserve the group legend's height as ownership arrives, keeping the analysis con
 
 ## SGF import and the variation tree
 
+For Fox SGFs identified by a root `AP[foxwq]` (including a version suffix or duplicate AP entries), import converts known encoded komi values to points: Chinese `375`/`325` become `7.5`/`6.5`, and Japanese `650` becomes `6.5`. Already standard values, explicit zero, and other applications retain their komi. Export writes the normalized value without editing the source file. If normalization changes a source identity, reopening can recover a saved review under its old komi identity, retaining selection and variations while saving subsequent changes under the corrected identity. Analysis uses the corrected position key, so estimates calculated with the old komi cannot populate the chart.
+
 Preserve the SGF node tree and properties. A document has stable node IDs, parent IDs, ordered children, move/setup data, and explicit provenance. Store an immutable list of the originally imported main-line IDs, following the SGF's first-child line at import. Comments and setup nodes do not necessarily correspond one-to-one with moves; maintain the mapping from node IDs to KataGo move-prefix lengths.
 
 The document's shared continuation lookup prefers the frozen imported successor, then the first child of a variation. Navigation, recorded-move previews, chart continuation, tree layout, and SGF export use that lookup, so reordering children cannot promote a variation to the played line. New Zealand and AGA use situational superko: repetition includes the next player; New Zealand permits multi-stone suicide.

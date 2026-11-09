@@ -368,3 +368,28 @@ KATASTRO_TEST_ENGINE=/opt/homebrew/bin/katago KATASTRO_TEST_MODEL="$HOME/katrain
 Both explicit tests require a working local KataGo executable and model, with Metal access for this installed binary. They do not use production review/cache databases. The local `~/KataGo` reference checkout was absent during this pass; the installed engine and `~/katrain` reference remained read-only.
 
 Final verification: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` passed (81 routine tests; nine opt-in tests excluded by default). Both existing real KataGo tests and both new live Fox tests passed on the restored implementation. The scheduler reached 256 visits with exact cache restoration; the private Fox file again reached 213/213 analyzed positions. The final repeated performance check passed at 0.199 s for import and 0.708 s for position preparation. The release app was rebuilt at ignored `local/Katastro.app` and passed `codesign --verify --deep --strict`. Live AppKit sheet and optional GPU screenshot checks were not rerun for these core-only changes; their existing invocations and prerequisites above remain applicable.
+
+## Fox opening point balance correction (2026-11-09)
+
+The newly supplied even-game SGF exposed a different Fox import bug: its `KM[375]` was sent literally to KataGo, producing **−203.397 points at one visit** on the empty board. This is the [reported Fox komi encoding issue](https://github.com/SabakiHQ/sgf/issues/11); the previous zero-komi fixture could not expose it. Import now recognizes root Fox application metadata, including duplicate AP properties in either order, and converts the known Chinese `375`/`325` and Japanese `650` encodings to point komi. Already normalized values, explicit zero/handicap komi, unrelated applications, and unrecognized values remain unchanged. The source SGF remains byte-for-byte unchanged; exports contain standard komi.
+
+The observable benefit is a meaningful opening chart and reusable analysis for Fox games. A regression that passes the encoded value through would restore the extreme score. A separate persistence risk is losing saved variations when corrected komi changes the document identity, or displaying old analysis if the saved document retains 375-point komi. Import recovers the legacy review when no corrected review exists, retains its variations, selection, and frozen main line, and saves under the corrected identity. Old analysis stays under its incompatible komi key; it is never copied into the corrected cache.
+
+### Test evidence
+
+Three new integration tests in `tests/fox.rs` failed behaviorally before production changes: the scheduled request contained 375 instead of 7.5, the legacy −200-point cache populated the chart, and the encoded-komi compatibility cases failed. They now pass through real SGF parsing, temporary SQLite databases, application commands, and the controlled fake engine. They cover 1/8/64-visit coverage/refinement, cache restoration without a repeated cheap pass, persisted multi-move variations and selection, legacy review recovery, rejection of an incompatible 16,384-visit cached score, standard SGF export, idempotent reimport, and unchanged source bytes. The metadata matrix also checks duplicate/versioned AP, ordinary non-Fox komi, comment text resembling AP, and zero/handicap values.
+
+Four temporary mutations each caused a behavioral test failure: passing through 375, disabling the legacy review lookup, restoring the encoded komi on the saved document, and exporting the encoded value. All mutations were restored, and the focused suite passed afterward. Logs are under ignored `local/fox-komi-*.log`.
+
+The explicit local-file test also failed against real KataGo before the fix with −203.397 points. Afterward, the same file reached **150/150 analyzed positions** and its opening evaluated to **−0.796 points at 64 visits**, with komi 7.5. These are observed search estimates, not fixed expected scores or a performance claim. The live synthetic Fox test now covers both zero komi and encoded 7.5 komi, including persisted analysis on reopen.
+
+Final checks passed: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` (84 passed; nine opt-in tests excluded by default). Both live Fox tests, both existing live engine tests, and the private local SGF corpus import/replay check passed explicitly. The release bundle at `local/Katastro.app` was rebuilt and passed `codesign --verify --deep --strict`. Live AppKit/GPU checks were not rerun for this import/persistence change; their prerequisites and invocations remain documented above. No private game files, databases, or engine assets are included in Git.
+
+Reproduce with a working local KataGo executable/model and Metal access for this installed engine. The private local test requires an empty-board opening; it uses temporary review/cache databases and never modifies the input SGF.
+
+```sh
+cargo test --test fox
+KATASTRO_TEST_ENGINE=/opt/homebrew/bin/katago KATASTRO_TEST_MODEL="$HOME/katrain/katrain/models/b10c384h6nbttflrs.bin.gz" cargo test --test fox live_fox_analysis_and_cache -- --ignored --nocapture
+# Set KATASTRO_TEST_SGF to the affected private SGF's full path.
+KATASTRO_TEST_ENGINE=/opt/homebrew/bin/katago KATASTRO_TEST_MODEL="$HOME/katrain/katrain/models/b10c384h6nbttflrs.bin.gz" cargo test --test fox live_local_fox_worker_import_and_analysis -- --ignored --nocapture
+```

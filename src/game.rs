@@ -237,6 +237,10 @@ pub fn normalize_rules(rules: &str) -> String {
 }
 impl Document {
     pub fn parse(bytes: &[u8]) -> Result<Self> {
+        Self::parse_with_source_komi(bytes).map(|(doc, _)| doc)
+    }
+    /// Keep the source komi available for recovering reviews saved by older imports.
+    pub(crate) fn parse_with_source_komi(bytes: &[u8]) -> Result<(Self, f64)> {
         let text = match std::str::from_utf8(bytes) {
             Ok(text) => text.to_owned(),
             Err(_) => {
@@ -326,6 +330,32 @@ impl Document {
         doc.nodes[0].props.insert("CA".into(), vec!["UTF-8".into()]);
         doc.rules = normalize_rules(doc.nodes[0].property("RU").unwrap_or("Chinese"));
         doc.komi = doc.nodes[0].property("KM").unwrap_or("7.5").parse()?;
+        let source_komi = doc.komi;
+        // Fox can emit duplicate AP properties in either order. Inspect parsed
+        // root properties so comments and other applications cannot trigger this.
+        let fox = root.properties.iter().any(|prop| {
+            prop.identifier() == "AP"
+                && unescape_values(&prop.to_string()).iter().any(|value| {
+                    value
+                        .split(':')
+                        .next()
+                        .is_some_and(|name| name.eq_ignore_ascii_case("foxwq"))
+                })
+        });
+        if fox {
+            // Known Fox encodings only; retain explicit zero/handicap komi and
+            // values already expressed in points (including reimported exports).
+            doc.komi = match (doc.rules.as_str(), source_komi) {
+                ("chinese", 375.0) => 7.5,
+                ("chinese", 325.0) | ("japanese", 650.0) => 6.5,
+                _ => source_komi,
+            };
+            if doc.komi != source_komi {
+                doc.nodes[0]
+                    .props
+                    .insert("KM".into(), vec![doc.komi.to_string()]);
+            }
+        }
         if !doc.komi.is_finite() || doc.komi.abs() > 400.0 || (doc.komi * 2.0).fract() != 0.0 {
             return Err("Komi must be a half-integer between -400 and 400".into());
         }
@@ -339,7 +369,7 @@ impl Document {
             }
         }
         doc.validate_tree()?;
-        Ok(doc)
+        Ok((doc, source_komi))
     }
     pub fn path(&self, node: NodeId) -> Result<Vec<NodeId>> {
         if node >= self.nodes.len() {
