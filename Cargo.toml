@@ -7,7 +7,7 @@ default-run = "katastro"
 
 [features]
 default = ["desktop"]
-desktop = ["dep:eframe", "dep:egui_plot", "dep:rfd", "dep:objc2"]
+desktop = ["dep:eframe", "dep:egui_plot", "dep:egui_extras", "dep:rfd", "dep:objc2"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -22,6 +22,7 @@ rfd = { version = "0.17", optional = true }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "cookies"] }
 scraper = "0.24"
 zeroize = "1"
+egui_extras = { version = "=0.36.2", default-features = false, optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = { version = "0.6", optional = true }

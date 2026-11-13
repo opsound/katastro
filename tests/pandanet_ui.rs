@@ -217,3 +217,195 @@ fn games_library_filters_synced_games_and_opens_the_selected_record_directly() {
     );
     assert_eq!(h.state().state.document.as_ref().unwrap().mainline.len(), 4);
 }
+
+// Benefit: compare one field at a time and open the intended game after sorting.
+// A cosmetic header with unchanged row order, text-sorted margins/ranks, or a
+// click handler tied to the old row index would break this workflow.
+#[test]
+fn library_table_sorts_every_column_and_opens_the_correct_game_after_filtering() {
+    use katastro::pandanet::{Cancellation, Command};
+    let fixture = support::Fixture::new(|r| {
+        if r.url.contains("mode=sgf") {
+            let id = r
+                .url
+                .split("v1=game")
+                .nth(1)
+                .unwrap()
+                .split('&')
+                .next()
+                .unwrap()
+                .parse()
+                .unwrap();
+            return (200, support::sgf(id));
+        }
+        let rows = [
+            (1, "example 10k", "Zebra 1d", "Black won by 10.5"),
+            (2, "alpha 2k", "example 6k", "White won by 2.5"),
+            (3, "example 1d", "beta 10k", "White won by resign"),
+            (4, "Delta 5k", "example 3k", "Black won by time"),
+            (5, "example 2k", "omega 2d", "Game unfinished"),
+        ];
+        let mut html = support::page(1, 1, &[]);
+        for (id, white, black, result) in rows {
+            let page = support::page(1, 1, &[id]);
+            let row = page
+                .split("<tr><td>O")
+                .nth(1)
+                .unwrap()
+                .split("</tr>")
+                .next()
+                .unwrap();
+            let row = format!("<tr><td>O{row}</tr>")
+                .replace("example 6k+", white)
+                .replace("opponent 5k+", black)
+                .replace("White won by resign", result);
+            html = html.replacen("</table>", &format!("{row}</table>"), 1);
+        }
+        (200, html)
+    });
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("Pandanet");
+    let vault = Arc::new(support::Vault::default());
+    let mut service = fixture.service(&root, vault.clone());
+    service
+        .execute(
+            Command::Connect {
+                username: "example".into(),
+                password: "test-secret".into(),
+                remember: true,
+            },
+            100,
+            &Cancellation::default(),
+            &mut |_| {},
+        )
+        .unwrap();
+    service
+        .execute(
+            Command::SetAutomatic(false),
+            101,
+            &Cancellation::default(),
+            &mut |_| {},
+        )
+        .unwrap();
+    let labels: Vec<_> = (1..=5)
+        .map(|id| {
+            let state = service.snapshot();
+            let g = state
+                .games
+                .iter()
+                .find(|g| g.date == format!("2026/11/{id:02} 12:00"))
+                .unwrap();
+            format!("Review {}: {} vs {}", g.date, g.white, g.black)
+        })
+        .collect();
+    drop(service);
+    let mut h = Harness::builder()
+        .with_size(eframe::egui::vec2(1200., 860.))
+        .build_eframe(|cc| {
+            DesktopApp::with_sync(
+                &cc.egui_ctx,
+                temp.path().join("reviews.sqlite"),
+                temp.path().join("cache.sqlite"),
+                EngineConfig {
+                    executable: "missing".into(),
+                    model: "missing".into(),
+                },
+                None,
+                Options {
+                    root,
+                    endpoint: fixture.endpoint.clone(),
+                    request_interval: Duration::ZERO,
+                    credentials: vault,
+                    clock: Arc::new(SystemClock),
+                },
+            )
+        });
+    h.get_by_label("Games").click();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while h.query_by_label(&labels[0]).is_none() {
+        h.step();
+        assert!(Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    h.run_steps(3);
+    let order = |h: &Harness<'_, DesktopApp>| {
+        let mut rows: Vec<_> = labels
+            .iter()
+            .enumerate()
+            .map(|(i, label)| (i + 1, h.get_by_label(label).rect().center().y))
+            .collect();
+        rows.sort_by(|a, b| a.1.total_cmp(&b.1));
+        rows.into_iter().map(|r| r.0).collect::<Vec<_>>()
+    };
+    assert_eq!(order(&h), [5, 4, 3, 2, 1], "default is newest first");
+    for (column, ascending) in [
+        ("Date", vec![1, 2, 3, 4, 5]),
+        ("White", vec![2, 4, 5, 3, 1]),
+        ("White rank", vec![1, 4, 5, 2, 3]),
+        ("Black", vec![3, 4, 2, 5, 1]),
+        ("Black rank", vec![3, 2, 4, 1, 5]),
+        ("Winner", vec![4, 1, 3, 2, 5]),
+        ("Win condition", vec![2, 1, 3, 4, 5]),
+    ] {
+        h.get_by_label(&format!("Sort by {column}")).click();
+        h.run_steps(3);
+        assert_eq!(order(&h), ascending, "ascending {column}");
+        h.get_by_label(&format!("Sort by {column}")).click();
+        h.run_steps(3);
+        assert_eq!(
+            order(&h),
+            ascending.into_iter().rev().collect::<Vec<_>>(),
+            "descending {column}"
+        );
+    }
+    // Distinct cells, aligned under distinct headings; preserve unknown results.
+    for text in [
+        "10.5 points",
+        "2.5 points",
+        "Resignation",
+        "Time",
+        "Game unfinished",
+        "Zebra",
+        "10k",
+    ] {
+        assert!(
+            h.query_all_by_label(text).next().is_some(),
+            "missing table value: {text}"
+        );
+    }
+    assert!(h.query_by_label("Black won by 10.5").is_none());
+    for (text, column, next) in [
+        ("alpha", "White", "White rank"),
+        ("Zebra", "Black", "Black rank"),
+    ] {
+        let cell = h.get_by_label(text).rect();
+        assert!(cell.left() >= h.get_by_label(&format!("Sort by {column}")).rect().left());
+        assert!(
+            cell.right() <= h.get_by_label(&format!("Sort by {next}")).rect().left(),
+            "{text} must occupy its own column"
+        );
+    }
+    assert!(
+        (h.get_by_label("10.5 points").rect().center().y
+            - h.get_by_label(&labels[0]).rect().center().y)
+            .abs()
+            < 1.
+    );
+
+    if let Some(path) = std::env::var_os("KATASTRO_PANDANET_TABLE_PREVIEW") {
+        h.render().unwrap().save(path).unwrap();
+    }
+    h.get_by_label("Search synced games").focus();
+    h.get_by_label("Search synced games")
+        .type_text("resignation");
+    h.run_steps(3);
+    assert!(h.query_by_label(&labels[0]).is_none());
+    assert!(h.query_by_label(&labels[2]).is_some());
+    h.get_by_label("Resignation").click();
+    wait(&mut h, |app| app.state.document.is_some());
+    assert_eq!(
+        h.state().state.document.as_ref().unwrap().nodes[0].property("DT"),
+        Some("2026-11-03")
+    );
+    assert_eq!(h.state().state.document.as_ref().unwrap().mainline.len(), 4);
+}

@@ -2,6 +2,7 @@ use super::{Command, Snapshot};
 use eframe::egui;
 use std::path::{Path, PathBuf};
 use zeroize::Zeroize;
+mod table;
 #[derive(Default)]
 pub struct View {
     pub open: bool,
@@ -10,6 +11,7 @@ pub struct View {
     password: String,
     remember: bool,
     search: String,
+    sort: table::Sort,
 }
 pub struct Actions {
     pub command: Option<Command>,
@@ -38,7 +40,7 @@ impl View {
         let mut close = false;
         egui::Window::new("Game library")
             .open(&mut open)
-            .default_width(650.)
+            .default_width(1000.)
             .default_height(580.)
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
@@ -171,41 +173,16 @@ impl View {
                         .desired_width(f32::INFINITY),
                 )
                 .labelled_by(label.id);
-                let query = self.search.to_lowercase();
-                let games: Vec<_> = state
-                    .games
-                    .iter()
-                    .filter(|g| {
-                        query.is_empty()
-                            || format!("{} {} {} {}", g.date, g.white, g.black, g.result)
-                                .to_lowercase()
-                                .contains(&query)
-                    })
-                    .collect();
-                if games.is_empty() {
-                    ui.label(if state.games.is_empty() {
-                        "Connect in Sync settings to download games."
-                    } else {
-                        "No matching games."
-                    });
+                if let Some(path) = table::show(
+                    ui,
+                    state,
+                    &self.search,
+                    &mut self.sort,
+                    if self.settings_open { 240. } else { 400. },
+                ) {
+                    actions.review = Some(path);
+                    close = true;
                 }
-                egui::ScrollArea::vertical()
-                    .max_height(if self.settings_open { 240. } else { 400. })
-                    .show_rows(ui, 58., games.len(), |ui, range| {
-                        for game in &games[range] {
-                            ui.push_id(&game.id, |ui| {
-                                let label = format!(
-                                    "Review {}: {} vs {}",
-                                    game.date, game.white, game.black
-                                );
-                                if ui.button(label).clicked() {
-                                    actions.review = Some(game.path.clone());
-                                    close = true;
-                                }
-                                ui.small(&game.result);
-                            });
-                        }
-                    });
                 ui.separator();
                 if ui.button("Close Pandanet").clicked() {
                     close = true;

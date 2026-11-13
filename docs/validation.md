@@ -444,3 +444,21 @@ The HTML archive is an undocumented interface. Controlled fixtures cannot guaran
 Final automated checks passed: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` (103 passed; 12 opt-in tests excluded by default). The disposable Keychain test also passed explicitly. The release bundle at ignored `local/Katastro.app` was rebuilt and passed `codesign --verify --deep --strict`. The rebuilt app migrated the existing sync configuration to the 200-game default and requested macOS Keychain access for its changed local signature.
 
 After the user granted the rebuilt app Keychain access, native automatic sync resumed from the existing 34 records and completed at exactly 200 games. The sync index recorded a completed check with zero failed records, and all 200 local SGFs matched their stored SHA-256 values. No password was retrieved by diagnostic tools or written into repository artifacts.
+
+
+## Sortable Pandanet library table (2026-11-12)
+
+The library now presents one field per column: date, White, White rank, Black, Black rank, winner, and win condition. Users can sort each column in either direction, resize the columns, search normalized result text, and click a row to open its game. Newest-first is the default; ranks order by Go strength and point margins numerically. Resignation/time wins and unrecognized result text remain readable. This uses metadata already stored by sync; it requires no re-download or database migration.
+
+The observable benefit is comparing games by a chosen field and opening the intended record after sorting. Plausible regressions include cosmetic headers that do not reorder rows, alphabetical ordering of 10.5 versus 2.5 points or 10k versus 2k, combined name/rank cells, and click handlers still using the original unsorted row index. The new `library_table_sorts_every_column_and_opens_the_correct_game_after_filtering` integration test was written and run first: it failed because the real UI had no **Sort by Date** action. After implementation it verifies all seven columns in both directions through actual header clicks, rank/margin ordering, separate aligned player cells, winner/condition text, fallback text, filtering by the normalized **Resignation** label, and opening that row's actual SGF with its frozen main line. Existing sign-in, non-blocking sync, library search, and direct-opening UI tests also pass.
+
+A synthetic GPU render was inspected for table layout, readable text, and the active direction marker. The interaction outcomes establish behavior; the render supplements them. Reproduce the focused check and optional render (the latter requires a working wgpu adapter):
+
+```sh
+cargo test --test pandanet_ui
+KATASTRO_PANDANET_TABLE_PREVIEW=local/pandanet-table.png cargo test --test pandanet_ui library_table_sorts_every_column
+```
+
+Seven targeted mutations each produced a behavioral failure: ignoring the selected column, preventing direction reversal, sorting point margins as text, sorting ranks as text, replacing resignation with an incorrect condition, opening the original first record instead of the clicked sorted record, and keeping player/rank text combined. All mutations were restored. Logs are under ignored `local/pandanet-table-mutation-*.log`.
+
+Final verification passed: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` (104 passed; 12 opt-in tests excluded by default). The optional synthetic GPU table render also passed and was inspected. The optimized bundle at `local/Katastro.app` was rebuilt and passed `codesign --verify --deep --strict`. Native Keychain, live Pandanet transfers, real KataGo, and AppKit file-sheet checks were not rerun for this display-only change.
