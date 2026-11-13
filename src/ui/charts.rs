@@ -106,18 +106,18 @@ pub(super) fn chart(ui: &mut egui::Ui, snapshot: &Snapshot, score: bool, out: &m
                 "Played continuation",
                 &all[fork..],
                 game_color.gamma_multiply(0.3),
-                1.5,
+                1.0,
             );
-            paint_chart_series(plot_ui, "Shared game", &all[..=fork], game_color, 2.0);
+            paint_chart_series(plot_ui, "Shared game", &all[..=fork], game_color, 1.5);
             paint_chart_series(
                 plot_ui,
                 "Variation",
                 &variation[fork..],
                 CHART_VARIATION,
-                2.5,
+                2.0,
             );
         } else {
-            paint_chart_series(plot_ui, "Played game", &all, game_color, 2.0);
+            paint_chart_series(plot_ui, "Played game", &all, game_color, 1.5);
         }
         if let Some(index) = path.iter().position(|id| *id == doc.selected)
             && let Some(value) = assessment(snapshot, doc.selected, score)

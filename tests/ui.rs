@@ -621,11 +621,11 @@ fn variation_state(root: &Path) -> State {
     }
     state
 }
-fn chart_lines(
-    h: &Harness<'_, State>,
+fn chart_paths<'a>(
+    h: &'a Harness<'_, State>,
     score: bool,
     color: eframe::egui::Color32,
-) -> Vec<Vec<eframe::egui::Pos2>> {
+) -> Vec<&'a eframe::egui::epaint::PathShape> {
     let bounds = h.get_by_label(chart_label(score)).rect();
     h.output()
         .shapes
@@ -636,12 +636,23 @@ fn chart_lines(
                     && path.stroke.color == eframe::egui::epaint::ColorMode::Solid(color)
                     && path.points.iter().all(|point| bounds.contains(*point)) =>
             {
-                Some(path.points.clone())
+                Some(path)
             }
             _ => None,
         })
         .collect()
 }
+fn chart_lines(
+    h: &Harness<'_, State>,
+    score: bool,
+    color: eframe::egui::Color32,
+) -> Vec<Vec<eframe::egui::Pos2>> {
+    chart_paths(h, score, color)
+        .iter()
+        .map(|path| path.points.clone())
+        .collect()
+}
+
 fn chart_position(
     prefix: &[eframe::egui::Pos2],
     score: bool,
@@ -869,8 +880,25 @@ fn click_at(h: &mut Harness<'_, State>, pos: eframe::egui::Pos2) {
     }
     h.run();
 }
+fn assert_chart_stroke(
+    h: &Harness<'_, State>,
+    score: bool,
+    color: eframe::egui::Color32,
+    max_width: f32,
+) {
+    let widths: Vec<_> = chart_paths(h, score, color)
+        .iter()
+        .map(|path| path.stroke.width)
+        .collect();
+    assert!(!widths.is_empty(), "the chart curve must remain visible");
+    assert!(
+        widths.iter().all(|w| *w > 0.0 && *w <= max_width),
+        "{} curve is too bold: {widths:?}; expected at most {max_width} points",
+        chart_label(score)
+    );
+}
 #[test]
-fn clicking_highlighted_and_dimmed_chart_curves_selects_the_corresponding_position() {
+fn thinner_chart_curves_still_select_the_corresponding_position() {
     let temp = tempfile::TempDir::new().unwrap();
     let mut h = Harness::builder()
         .with_size(eframe::egui::vec2(1200.0, 1100.0))
@@ -879,6 +907,11 @@ fn clicking_highlighted_and_dimmed_chart_curves_selects_the_corresponding_positi
             variation_state(temp.path()),
         );
     for score in [true, false] {
+        h.event(eframe::egui::Event::PointerGone);
+        h.run();
+        assert_chart_stroke(&h, score, game_chart_color(score), 1.5);
+        assert_chart_stroke(&h, score, game_chart_color(score).gamma_multiply(0.3), 1.0);
+        assert_chart_stroke(&h, score, CHART_VARIATION, 2.0);
         let prefix = chart_lines(&h, score, game_chart_color(score));
         let variation = chart_position(&prefix[0], score, 3.0, if score { -2.0 } else { 15.0 });
         click_at(&mut h, variation);
@@ -891,6 +924,9 @@ fn clicking_highlighted_and_dimmed_chart_curves_selects_the_corresponding_positi
         let original = chart_position(&prefix[0], score, 3.0, if score { 3.0 } else { 50.0 });
         click_at(&mut h, original);
         assert_eq!(h.state().review.document().unwrap().selected, 3);
+        h.event(eframe::egui::Event::PointerGone);
+        h.run();
+        assert_chart_stroke(&h, score, game_chart_color(score), 1.5);
         h.get_by_label("Tree node 5").click();
         h.run();
     }
