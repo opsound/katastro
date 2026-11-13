@@ -3,7 +3,6 @@ use crate::{
     engine::{Engine, EngineConfig, EngineEvent},
     scheduler::Scheduler,
 };
-use rusqlite::OptionalExtension;
 use serde_json::json;
 use std::{
     collections::BTreeMap,
@@ -128,17 +127,7 @@ struct Worker {
 impl Worker {
     fn new(reviews: PathBuf, cache: PathBuf, config: EngineConfig) -> Result<Self> {
         let review = Review::new(&reviews, &cache)?;
-        let saved: Option<String> = review
-            .reviews
-            .query_row("SELECT value FROM settings WHERE key='engine'", [], |r| {
-                r.get(0)
-            })
-            .optional()?;
-        let config = if let Some(saved) = saved {
-            serde_json::from_str(&saved)?
-        } else {
-            config
-        };
+        let config = review.setting("engine")?.unwrap_or(config);
         Ok(Self {
             review,
             state: Snapshot::empty(config),
@@ -283,7 +272,7 @@ impl Worker {
             Command::Configure(config) => {
                 self.pause();
                 self.engine = None;
-                self.review.reviews.execute("INSERT INTO settings(key,value) VALUES ('engine',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[serde_json::to_string(&config)?])?;
+                self.review.save_setting("engine", &config)?;
                 self.state.config = config;
                 self.state.status =
                     "Engine settings saved · cached review remains available".into();

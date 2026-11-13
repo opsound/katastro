@@ -113,7 +113,11 @@ fn worker_keeps_variations_and_cached_chart_usable_with_engine_unavailable() {
             model: "missing".into(),
         },
     );
-    reopened.recv(Duration::from_secs(5)).unwrap();
+    let restored = reopened.recv(Duration::from_secs(5)).unwrap();
+    assert_eq!(
+        restored.config.executable,
+        temp.path().join("missing-engine")
+    );
     reopened.send(Command::Open(sgf)).unwrap();
     let state = until(&reopened, |s| s.document.is_some());
     assert_eq!(state.document.unwrap().nodes.len(), 5);

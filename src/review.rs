@@ -1,11 +1,12 @@
 use crate::{Document, NodeId, Point, Result};
 use rusqlite::{Connection, OptionalExtension, params};
+use serde::{Serialize, de::DeserializeOwned};
 use std::{
     fs,
     path::{Path, PathBuf},
 };
 pub struct Review {
-    pub(crate) reviews: Connection,
+    reviews: Connection,
     pub(crate) cache: Connection,
     pub(crate) document: Option<Document>,
     pub(crate) document_key: String,
@@ -56,6 +57,21 @@ impl Review {
             document_key: String::new(),
             source: None,
         })
+    }
+    pub(crate) fn save_setting(&self, key: &str, value: &impl Serialize) -> Result<()> {
+        self.reviews.execute("INSERT INTO settings(key,value) VALUES (?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value", params![key, serde_json::to_string(value)?])?;
+        Ok(())
+    }
+    pub(crate) fn setting<T: DeserializeOwned>(&self, key: &str) -> Result<Option<T>> {
+        let value: Option<String> = self
+            .reviews
+            .query_row("SELECT value FROM settings WHERE key=?1", [key], |row| {
+                row.get(0)
+            })
+            .optional()?;
+        value
+            .map(|v| serde_json::from_str(&v).map_err(Into::into))
+            .transpose()
     }
     pub fn import(&mut self, path: &Path) -> Result<()> {
         let (imported, source_komi) = Document::parse_with_source_komi(&fs::read(path)?)?;

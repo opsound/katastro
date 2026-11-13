@@ -229,18 +229,9 @@ impl Review {
         Ok(())
     }
     pub fn save_profile(&self, profile: &EngineProfile) -> Result<()> {
-        self.reviews.execute("INSERT INTO settings(key,value) VALUES ('profile',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[serde_json::to_string(profile)?])?;
-        Ok(())
+        self.save_setting("profile", profile)
     }
     pub fn last_profile(&self) -> Result<Option<EngineProfile>> {
-        let value: Option<String> = self
-            .reviews
-            .query_row("SELECT value FROM settings WHERE key='profile'", [], |r| {
-                r.get(0)
-            })
-            .optional()?;
-        value
-            .map(|v| serde_json::from_str(&v).map_err(Into::into))
-            .transpose()
+        self.setting("profile")
     }
 }
