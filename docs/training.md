@@ -2,7 +2,7 @@
 
 Open **Train**, or **Games → Train from these games**. The player name defaults to the synced account and is matched case-insensitively against SGF `PB`/`PW`. Search the latest 20 library games by default; increase the limit in setup. Choose five or ten of your moves per attempt. Passed and given-up exercises are skipped unless **Include completed exercises** is checked. Failed attempts remain eligible.
 
-The application pauses review analysis while training. All SGF reads, SQLite access, model verification/downloads, and engine work run on the training worker. Its queue keeps up to eight independent positions outstanding. Going back cancels the session; the UI does not wait for a network request to finish. Leaving an unfinished attempt does not mark the exercise complete.
+The application pauses review analysis while training. All SGF reads, SQLite access, model verification/downloads, and engine work run on the training worker. Its queue keeps up to eight independent positions outstanding. During the player's turn, at most seven grading requests run, leaving a slot for the next HumanSL reply; opponent requests go to the front of the queue. Searching and final grading can use all eight slots. Going back cancels the session; the UI does not wait for a network request to finish. Leaving an unfinished attempt does not mark the exercise complete.
 
 ## Finding turning points
 
@@ -10,7 +10,7 @@ Search original main-line moves made by the named player. Reuse compatible cache
 
 Candidates in each game are considered from largest screened winrate loss downward, with newer games searched first. The recorded continuation must contain enough moves for the selected attempt length. Unreadable records, unknown players, and unsupported positions are skipped. This bounded, screened search can miss turning points that only become clear with deeper analysis; it is not an exhaustive tactical proof.
 
-The attempt receives only the position's ancestry and moves made during the attempt. Future original moves, comments, annotations, results, evaluations, charts, navigation controls, and suggestions are not exposed by the training screen. Illegal moves leave the attempt unchanged. Input is blocked while the opponent thinks or the attempt is being graded.
+The attempt receives only the position's ancestry and moves made during the attempt. Future original moves, comments, annotations, results, evaluations, charts, navigation controls, and suggestions are not exposed by the training screen. Illegal moves leave the attempt unchanged. The board keeps its normal brightness while the opponent thinks, with a quiet text status beside it. Extra moves are blocked until the reply arrives, then play resumes immediately while evaluations continue in the background. There is no per-move spinner. Final grading waits for every required evaluation before displaying a report.
 
 ## Opponent and grading
 
@@ -72,8 +72,12 @@ KATASTRO_TRAINING_LIBRARY=/path/to/Pandanet \
 KATASTRO_TEST_ENGINE=/path/to/katago \
 KATASTRO_TEST_MODEL=/path/to/normal.bin.gz \
 KATASTRO_TEST_HUMAN_MODEL=/path/to/b18c384nbt-humanv0.bin.gz \
-cargo test --test training_worker real_library_exercise -- --ignored
+cargo test --test training_worker real_library_exercise -- --ignored --nocapture
 ```
+
+This check also reports elapsed time from each player move to the AI reply and to the next playable turn (or final report), including any wait after the reply. These are worker-snapshot timings; there are no timing thresholds in routine tests. Compare the same corpus, models and machine with other engine work paused. Human replies are sampled, so separate runs need not follow the same positions.
+
+For repeated latency comparisons, `KATASTRO_TRAINING_SCREENING_CACHE` can point to a private copy of an analysis cache containing only results below 512 visits. The check copies it into its temporary directory and rejects any retained grading results. Use the same seed in both versions to avoid repeating the full screening pass while still performing confirmation and grading. Never edit the application's live cache to prepare a benchmark seed.
 
 Optional synthetic GPU previews require a working wgpu adapter and an existing output directory:
 

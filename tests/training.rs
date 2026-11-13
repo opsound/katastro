@@ -6,6 +6,62 @@ use serde_json::json;
 #[path = "support/training.rs"]
 mod support;
 use support::*;
+// Benefit: an AI reply immediately opens the next turn, even with a backlog of
+// grading searches. Regression: waiting for evaluations, starving HumanSL, or
+// reporting a pass before the held evaluations have actually arrived.
+#[test]
+fn human_replies_keep_play_moving_while_grading_is_pending() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = fixture(temp.path(), false);
+    let mut t = trainer(temp.path());
+    t.begin(vec![source], "me".into(), Settings::default())
+        .unwrap();
+    settle(&mut t, false, true);
+    let mut held = Vec::new();
+    for i in 0..5 {
+        t.play(Some(Point::new(i, 4))).unwrap();
+        assert!(
+            t.play(Some(Point::new(i, 5))).is_err(),
+            "no extra move before the opponent replies"
+        );
+        let human = t
+            .next_request()
+            .unwrap()
+            .expect("grading must leave capacity for the opponent");
+        assert_eq!(human["overrideSettings"]["humanSLProfile"], "rank_1d");
+        while let Some(q) = t.next_request().unwrap() {
+            held.push(q);
+        }
+        t.accept(&reply(&human, false, true), 0.5).unwrap();
+        let state = t.snapshot();
+        assert_eq!(
+            state.phase,
+            if i == 4 {
+                Phase::Grading
+            } else {
+                Phase::YourTurn
+            },
+            "the next turn must not wait for held grading results"
+        );
+        assert_eq!(state.board.unwrap().move_number, (i + 1) * 2);
+        assert!(state.report.is_none(), "never grade an incomplete attempt");
+        while let Some(q) = t.next_request().unwrap() {
+            held.push(q);
+        }
+    }
+    assert!(!held.is_empty());
+    for q in held.iter().rev() {
+        t.accept(&reply(q, false, true), 0.5).unwrap();
+    }
+    settle(&mut t, false, true);
+    let state = t.snapshot();
+    assert_eq!(state.phase, Phase::Passed);
+    let report = state.report.unwrap();
+    assert_eq!(report.attempt_loss.winrate, 0.0);
+    assert_eq!(report.attempt_loss.score, 0.0);
+    assert!((report.recorded_loss.winrate - 0.4).abs() < 1e-9);
+    assert_eq!(report.recorded_loss.score, 10.0);
+}
 // Benefit: train only on our own loss of a lead, without leaking the recorded move.
 // Regression: reversed perspective, opponent mistakes, or a future child in the snapshot.
 #[test]

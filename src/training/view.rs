@@ -178,7 +178,7 @@ impl View {
                 }
                 if matches!(
                     state.phase,
-                    Phase::Searching | Phase::Opponent | Phase::Grading | Phase::Revealing
+                    Phase::Searching | Phase::Grading | Phase::Revealing
                 ) {
                     ui.spinner();
                 }

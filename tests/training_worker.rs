@@ -55,7 +55,7 @@ fn query(control: &mut BufReader<TcpStream>) -> Value {
 // Benefit: library preparation and a full attempt run through a real subprocess,
 // while user commands stay responsive; cancellation must not apply a delayed AI move.
 #[test]
-fn background_training_handles_out_of_order_results_and_cancels_a_thinking_opponent() {
+fn background_training_resumes_before_grading_and_cancels_a_thinking_opponent() {
     let temp = tempfile::tempdir().unwrap();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let (options, source) = setup(temp.path(), &listener);
@@ -64,7 +64,7 @@ fn background_training_handles_out_of_order_results_and_cancels_a_thinking_oppon
         vec![source],
         "me".into(),
         Settings {
-            moves: 1,
+            moves: 2,
             strict: true,
             ..Settings::default()
         },
@@ -94,6 +94,31 @@ fn background_training_handles_out_of_order_results_and_cancels_a_thinking_oppon
         .unwrap();
     let human = query(&mut engine);
     assert_eq!(human["overrideSettings"]["humanSLProfile"], "rank_1d");
+    until(&client, |s| s.phase == Phase::Opponent);
+    // Hold the normal evaluation, but deliver the much shorter HumanSL reply.
+    let grading = query(&mut engine);
+    assert_eq!(grading["maxVisits"], 512);
+    let mut policy = vec![-1.0; 82];
+    policy[81] = 1.0;
+    writeln!(
+        engine.get_mut(),
+        "{}",
+        json!({"id":human["id"],"turnNumber":1,"isDuringSearch":false,"humanPolicy":policy})
+    )
+    .unwrap();
+    let ready = until(&client, |s| s.phase == Phase::YourTurn);
+    assert_eq!(ready.board.unwrap().move_number, 2);
+    assert!(ready.report.is_none());
+    client
+        .send(Command::Play(Some(katastro::Point::new(4, 4))))
+        .unwrap();
+    loop {
+        let q = query(&mut engine);
+        if q["includePolicy"] == true {
+            assert_eq!(q["moves"].as_array().unwrap().len(), 3);
+            break;
+        }
+    }
     until(&client, |s| s.phase == Phase::Opponent);
     client.send(Command::Cancel).unwrap();
     let stopped = until(&client, |s| s.phase == Phase::Idle);
@@ -205,6 +230,21 @@ fn real_library_exercise_plays_grades_and_reveals_legal_lines() {
         .map(|p| digest(&std::fs::read(p).unwrap()))
         .collect();
     let temp = tempfile::tempdir().unwrap();
+    // Optional identical screening-only cache for before/after latency measurements.
+    // No grading results may be retained in this seed.
+    if let Some(seed) = std::env::var_os("KATASTRO_TRAINING_SCREENING_CACHE") {
+        std::fs::copy(seed, temp.path().join("cache")).unwrap();
+        let cache = rusqlite::Connection::open(temp.path().join("cache")).unwrap();
+        let deeper: i64 = cache
+            .query_row("SELECT count(*) FROM analysis WHERE visits>=512", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(
+            deeper, 0,
+            "latency measurements must actually perform grading"
+        );
+    }
     let mut options = Options::new(
         temp.path().join("reviews"),
         temp.path().join("cache"),
@@ -235,18 +275,43 @@ fn real_library_exercise_plays_grades_and_reveals_legal_lines() {
         }
     };
     let mut state = wait(|s| s.phase == Phase::YourTurn);
+    let mut timings = Vec::new();
     for _ in 0..5 {
         let doc = state.document.as_ref().unwrap();
+        let before = state.board.as_ref().unwrap().move_number;
         let point = (0..doc.size * doc.size)
             .map(|i| Some(katastro::Point::new(i % doc.size, i / doc.size)))
             .find(|point| doc.clone().append_move(*point).is_ok())
             .unwrap_or(None);
+        let started = Instant::now();
+        let mut replied = None;
         client.send(Command::Play(point)).unwrap();
-        state = wait(|s| matches!(s.phase, Phase::YourTurn | Phase::Passed | Phase::Failed));
+        loop {
+            state = client
+                .recv(deadline.saturating_duration_since(Instant::now()))
+                .unwrap();
+            assert!(state.error.is_none(), "{:?}", state.error);
+            if state
+                .board
+                .as_ref()
+                .is_some_and(|b| b.move_number >= before + 2)
+            {
+                replied.get_or_insert(started.elapsed());
+            }
+            if matches!(state.phase, Phase::YourTurn | Phase::Passed | Phase::Failed) {
+                break;
+            }
+        }
+        let elapsed = started.elapsed();
+        timings.push(json!({"ai_reply_ms": replied.map(|d| d.as_millis()),
+            "ready_ms": elapsed.as_millis(),
+            "post_reply_wait_ms": replied.map(|d| (elapsed-d).as_millis()),
+            "final_grade": state.report.is_some()}));
         if state.report.is_some() {
             break;
         }
     }
+    eprintln!("Training turn timings: {}", json!(timings));
     assert!(state.report.is_some());
     client.send(Command::Reveal).unwrap();
     state = wait(|s| s.phase == Phase::Revealed);

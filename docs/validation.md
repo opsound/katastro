@@ -546,3 +546,23 @@ Final verification passes: `cargo fmt --all --check`, `cargo clippy --workspace 
 The final grading policy uses the sum of negative changes on the player's own moves, superseding an earlier endpoint comparison. Two regression cases first failed behaviorally: clean cumulative improvement was rejected when the recorded opponent had restored the lead, while five small mistakes were incorrectly accepted when AI replies gave the losses back. Both now produce the intended grades. Tests also assert exact own-move totals with an opponent that worsens the position, ensure later player gains cannot cancel earlier losses, accumulate winrate and score independently, and exclude recorded mistakes beyond an early two-pass finish. The major-mistake test has an improving cumulative total and explicitly distinguishes the strict setting from its opt-out.
 
 Additional temporary mutations include opponent-caused drops, use signed changes instead of nonnegative loss independently for each metric, count only the first player move, and grade the full planned window after an early finish. The strict-guard mutation is checked again against the strengthened cumulative-loss case. The UI report names the two loss totals and the reduction, rather than reporting an endpoint gain.
+
+## Fluent training turns (2026-11-13)
+
+The board retains its brightness and position while the opponent thinks, with text status instead of a per-move spinner. The next turn opens on the correlated HumanSL reply, independently of pending grading searches. During the player's turn, grading uses at most seven of eight analysis slots so the next opponent request can start; searching and final grading retain all eight. The report still waits for complete before/after evaluations and uses the same cumulative own-move loss criteria.
+
+Before implementation, a public `Trainer` integration test with real SGF parsing and temporary databases failed because the phase stayed `Opponent` after an AI reply with grading held. A real pointer-input test failed because the rendered board became half transparent. The passing tests now complete all five turns with evaluations withheld, exercise an accumulated grading backlog, return results out of order, and verify the final loss totals. Pointer input checks unchanged board bounds/color, no opponent-turn spinner, blocked extra clicks, and a playable next turn. A controlled engine subprocess independently verifies that the second move reaches HumanSL before the first move's evaluation completes, then cancels the pending opponent.
+
+Five temporary mutations were detected and restored: reinstating the grading gate, removing the reserved slot, fading the board, restoring the per-move spinner, and allowing extra clicks. Formatting, strict workspace Clippy, the full workspace suite (135 passed, 16 opt-in checks excluded), and a build of the library without GUI features pass.
+
+The complete real-library flow passed with KataGo 1.18.2 (Metal), the normal b10c384 model and the official b18c384 HumanSL model: five moves, a complete report, legal revealed lines, and unchanged source SGF hashes. A separate before/after measurement compared the committed `Trainer` at `5132298` with this implementation using the same five recent 19×19 games and the same screening-only cache (no grading results). Review analysis was paused and the two runs were sequential. The four non-final turns produced these worker-snapshot timings:
+
+| Metric | Before | After |
+| --- | ---: | ---: |
+| Median player move → next playable turn | 10.95 s | 1.80 s |
+| Median wait after the AI reply | 10.38 s | 0 ms |
+| Final reply → completed report | 49.11 s | 81.29 s |
+
+The final row is one observation per version. Automated input plays immediately, so unfinished grading accumulates at the end; the change removes that work from the per-move interaction, without reducing evaluation budgets. The complete seeded checks took 112.09 s and 108.11 s respectively. These are single stochastic attempts, not a claim of faster engine throughput or displayed-frame latency. An earlier run overlapped review analysis and is excluded from the comparison. Logs, the cache seed, and mutation evidence remain under ignored `local/`. The timing invocation and optional seed are documented in `training.md`.
+
+The synthetic GPU preview was rendered and inspected using the documented `KATASTRO_TRAINING_PREVIEW` invocation; `thinking.png` shows the unchanged board brightness without a spinner. The optimized macOS bundle was rebuilt and passed strict code-sign verification.

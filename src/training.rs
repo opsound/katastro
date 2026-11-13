@@ -179,7 +179,9 @@ impl Trainer {
     }
     pub fn next_request(&mut self) -> Result<Option<Value>> {
         self.advance()?;
-        if self.pending.len() >= crate::engine::ANALYSIS_THREADS {
+        // Keep one analysis slot available for the next interactive HumanSL reply.
+        let reserve = self.state.phase == Phase::YourTurn;
+        if self.pending.len() >= crate::engine::ANALYSIS_THREADS - usize::from(reserve) {
             return Ok(None);
         }
         Ok(self.queue.pop_front().map(|job| {
@@ -302,6 +304,11 @@ impl Trainer {
                 let doc = doc.clone();
                 if self.state.played < self.settings.moves && !two_passes(&doc) {
                     self.need(&doc, doc.selected, GRADE_VISITS)?;
+                    self.state.phase = Phase::YourTurn;
+                    self.state.status = "Your move · evaluations stay hidden".into();
+                } else {
+                    self.state.phase = Phase::Grading;
+                    self.state.status = "Comparing losses on your moves…".into();
                 }
             }
             Kind::Lines => self.finish_reveal(reply)?,
@@ -396,17 +403,6 @@ impl Trainer {
                         }
                     } else {
                         self.game = None;
-                    }
-                }
-                Phase::Opponent => {
-                    let doc = self.state.document.as_ref().unwrap();
-                    if self.state.played >= self.settings.moves || two_passes(doc) {
-                        self.state.phase = Phase::Grading;
-                        self.state.status = "Comparing losses on your moves…".into();
-                    } else {
-                        self.state.phase = Phase::YourTurn;
-                        self.state.status = "Your move · evaluations stay hidden".into();
-                        break;
                     }
                 }
                 Phase::Grading => {

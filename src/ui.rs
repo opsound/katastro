@@ -266,7 +266,10 @@ pub(crate) fn training_board(
         model: Default::default(),
     });
     let mut actions = Vec::new();
+    let opacity = ui.painter().opacity();
     ui.add_enabled_ui(enabled, |ui| {
+        // Block interaction while thinking, without fading the position being studied.
+        ui.set_opacity(opacity);
         board_view(ui, doc, board, &empty, false, false, &mut actions)
     });
     actions.into_iter().find_map(|a| {
