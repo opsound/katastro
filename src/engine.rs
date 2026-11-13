@@ -56,7 +56,16 @@ pub struct Engine {
     config_path: PathBuf,
 }
 impl Engine {
+    pub fn spawn_with_human(config: &EngineConfig, human: &Path) -> Result<Self> {
+        if !human.is_file() {
+            return Err("HumanSL model is missing".into());
+        }
+        Self::spawn_models(config, Some(human))
+    }
     pub fn spawn(config: &EngineConfig) -> Result<Self> {
+        Self::spawn_models(config, None)
+    }
+    fn spawn_models(config: &EngineConfig, human: Option<&Path>) -> Result<Self> {
         if !config.model.is_file() {
             return Err("Choose a KataGo .bin.gz model in Engine settings".into());
         }
@@ -67,8 +76,13 @@ impl Engine {
             SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ));
         fs::write(&config_path, configuration())?;
-        let spawned = Command::new(&config.executable)
-            .args(["analysis", "-config"])
+        let mut command = Command::new(&config.executable);
+        command.arg("analysis");
+        if let Some(human) = human {
+            command.arg("-human-model").arg(human);
+        }
+        let spawned = command
+            .arg("-config")
             .arg(&config_path)
             .arg("-model")
             .arg(&config.model)

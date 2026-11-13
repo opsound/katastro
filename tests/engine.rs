@@ -228,3 +228,56 @@ fn live_partial_cancellation_preserves_other_turns_of_a_shared_query() {
     }
     assert_eq!(completed, std::collections::BTreeSet::from([0, 1, 2]));
 }
+
+// KATASTRO_TEST_ENGINE=/opt/homebrew/bin/katago KATASTRO_TEST_MODEL=...
+// KATASTRO_TEST_HUMAN_MODEL=... cargo test --test engine real_human_policy -- --ignored
+#[test]
+#[ignore = "requires KataGo >=1.15, normal model and b18c384nbt-humanv0 model"]
+fn real_human_policy_and_strong_multi_move_lines_share_a_persistent_engine() {
+    let config = EngineConfig {
+        executable: std::env::var_os("KATASTRO_TEST_ENGINE")
+            .expect("engine")
+            .into(),
+        model: std::env::var_os("KATASTRO_TEST_MODEL")
+            .expect("model")
+            .into(),
+    };
+    let human = std::path::PathBuf::from(
+        std::env::var_os("KATASTRO_TEST_HUMAN_MODEL").expect("human model"),
+    );
+    let mut engine = Engine::spawn_with_human(&config, &human).unwrap();
+    let doc = katastro::Document::parse(b"(;SZ[9]KM[6.5];B[cc];W[gg])").unwrap();
+    let mut q = serde_json::to_value(doc.position(2).unwrap()).unwrap();
+    q["id"] = json!("human");
+    q["maxVisits"] = json!(1);
+    q["includePolicy"] = json!(true);
+    q["overrideSettings"] = json!({"humanSLProfile":"rank_1d"});
+    engine.send(&q).unwrap();
+    let r = response(&engine);
+    assert!(r.get("error").is_none(), "{r}");
+    let policy = r["humanPolicy"]
+        .as_array()
+        .expect("a rank-1d opponent needs HumanSL probabilities");
+    assert_eq!(policy.len(), 82);
+    assert!(policy.iter().filter(|p| p.as_f64().unwrap() > 0.0).count() > 2);
+    assert!(
+        policy[2 * 9 + 2].as_f64().unwrap() < 0.0,
+        "occupied points cannot be played"
+    );
+    q["id"] = json!("strong");
+    q["maxVisits"] = json!(512);
+    q["includePolicy"] = json!(false);
+    q["overrideSettings"] = json!({"analysisPVLen":12});
+    engine.send(&q).unwrap();
+    let r = response(&engine);
+    assert!(r.get("error").is_none(), "{r}");
+    assert!(r["rootInfo"]["visits"].as_u64().unwrap() >= 512);
+    let pv = r["moveInfos"][0]["pv"].as_array().unwrap();
+    assert!(pv.len() >= 2);
+    let mut line = doc.clone();
+    line.selected = 2;
+    for m in pv {
+        line.append_move(katastro::Point::from_gtp(m.as_str().unwrap(), line.size).unwrap())
+            .unwrap();
+    }
+}
