@@ -5,6 +5,8 @@ use crate::{
     worker::{Client, Command, Snapshot},
 };
 use eframe::egui;
+#[cfg(test)]
+mod tests;
 use std::{
     path::PathBuf,
     sync::Arc,
@@ -211,6 +213,7 @@ impl DesktopApp {
                 settings,
             } => {
                 let _ = self.client.send(Command::Pause);
+                let _ = self.client.send(Command::NumberFrom(None));
                 self.training_client = None;
                 self.training_selection = None;
                 self.training_state = crate::training::Snapshot {
@@ -234,6 +237,7 @@ impl DesktopApp {
             Action::Command(command) => {
                 if matches!(command, client::Command::Next) {
                     let _ = self.client.send(Command::Pause);
+                    let _ = self.client.send(Command::NumberFrom(None));
                     self.training_selection = None;
                 }
                 if let Some(client) = &self.training_client
@@ -250,6 +254,7 @@ impl DesktopApp {
             Action::Back => {
                 self.training_client = None;
                 self.training_view.open = false;
+                let _ = self.client.send(Command::NumberFrom(None));
                 let _ = self.client.send(Command::PrepareTraining {
                     games: self
                         .sync_state
@@ -283,6 +288,7 @@ impl DesktopApp {
                 .and_then(|d| d.mainline.get(*index))
                 .copied()
         {
+            let _ = self.client.send(Command::NumberFrom(Some(node)));
             let _ = self.client.send(Command::Select(node));
             for point in line {
                 let _ = self.client.send(Command::Play(*point));

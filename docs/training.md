@@ -54,6 +54,8 @@ A fresh normal-model search returns principal variations up to 12 plies long. Ke
 
 A private review SGF contains the original game, saved attempts, and suggested branches. **Explore line 1/2/3** selects the end of that continuation; the regular tree, board, charts, and navigation support further exploration. **Exercise position** returns to the start. The original main line stays on top, and source SGFs are never rewritten. Normal review persistence saves further user variations. Repeating an exercise restores those saved branches before adding new attempts and lines.
 
+During exploration, stones played after the exercise position are numbered **1, 2, 3…**. The numbers follow the selected branch, including moves you add yourself; earlier stones remain unnumbered. Passes consume a number and captured stones disappear, so visible numbers can have gaps. Returning to ordinary review or opening another game clears the labels. These display labels do not modify the SGF.
+
 Progress is scoped to the named player. Completed attempts, their reports, and their branches live in `reviews.sqlite`, independently of the evictable analysis cache. Evaluations are keyed by full position history, engine/model/settings identity, grading semantics, and requested budget. Actual visits are stored and validated; deeper normal cached results are never downgraded. Exact-budget training results are reusable even if the engine's actual visit count slightly exceeds its requested budget.
 
 The derived candidate catalog lives in `analysis.sqlite` alongside evaluations. Its identity includes semantic SGF content, the frozen main line, player name and color, engine/model/settings identity, and discovery-policy version. Changed games or profiles cannot reuse an incompatible catalog. Clearing analysis also clears discovery results, including negative scans, without deleting attempts or review branches.
@@ -66,6 +68,14 @@ Routine tests require no account, model, GPU, or network service outside local l
 
 ```sh
 cargo test --test training --test training_catalog --test training_background --test training_worker --test training_ui --test pandanet_ui
+cargo test --test numbered_variations
+cargo test --lib explored_lines_number_stones
+```
+
+The desktop exploration test clicks the actual line, navigation, and board controls through the review worker. To also render its frame locally (requires a working GPU backend):
+
+```sh
+KATASTRO_NUMBERED_PREVIEW=local/numbered-exploration.png cargo test --lib explored_lines_number_stones
 ```
 
 Real model compatibility (requires KataGo >=1.15 and both downloaded models):

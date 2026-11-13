@@ -20,6 +20,7 @@ pub enum Command {
     Open(PathBuf),
     OpenAndAnalyze(PathBuf),
     Select(NodeId),
+    NumberFrom(Option<NodeId>),
     Play(Option<Point>),
     Step(bool),
     First,
@@ -38,6 +39,7 @@ pub enum Command {
 pub struct Snapshot {
     pub document: Option<Document>,
     pub board: Option<Board>,
+    pub move_numbers: Vec<Option<usize>>,
     pub values: BTreeMap<NodeId, Analysis>,
     pub source: Option<PathBuf>,
     pub config: EngineConfig,
@@ -55,6 +57,7 @@ impl Snapshot {
         Self {
             document: None,
             board: None,
+            move_numbers: Vec::new(),
             values: BTreeMap::new(),
             source: None,
             config,
@@ -132,6 +135,7 @@ struct Worker {
     engine: Option<Engine>,
     scheduler: Option<Scheduler>,
     generation: u64,
+    number_from: Option<NodeId>,
     unsupported_mainline: bool,
     discovery: discovery::Discovery,
 }
@@ -145,6 +149,7 @@ impl Worker {
             engine: None,
             scheduler: None,
             generation: 0,
+            number_from: None,
             unsupported_mainline: false,
             discovery: discovery::Discovery::new(reviews, cache),
         })
@@ -152,10 +157,19 @@ impl Worker {
     fn publish(&mut self, tx: &Sender<Snapshot>, wake: &Option<Arc<dyn Fn() + Send + Sync>>) {
         self.state.document = self.review.document().cloned();
         self.state.source = self.review.source().map(PathBuf::from);
-        self.state.board = self
+        let (board, numbers) = self
             .review
             .document()
-            .and_then(|doc| doc.board(doc.selected).ok());
+            .and_then(|doc| {
+                match self.number_from {
+                    Some(anchor) => doc.numbered_board(doc.selected, anchor),
+                    None => doc.board(doc.selected).map(|board| (board, Vec::new())),
+                }
+                .ok()
+            })
+            .unzip();
+        self.state.board = board;
+        self.state.move_numbers = numbers.unwrap_or_default();
         if let Some(scheduler) = &self.scheduler {
             self.state.values = scheduler.values.clone();
             self.state.coverage = scheduler.coverage();
@@ -230,6 +244,7 @@ impl Worker {
             Command::Open(path) | Command::OpenAndAnalyze(path) => {
                 // Validate import before stopping or replacing a working review.
                 self.review.import(&path)?;
+                self.number_from = None;
                 self.pause();
                 self.discovery.opened();
                 self.state.training_indexed = false;
@@ -245,6 +260,15 @@ impl Worker {
             Command::Select(id) => {
                 self.review.select(id)?;
                 self.changed_selection()?;
+            }
+            Command::NumberFrom(anchor) => {
+                if let Some(anchor) = anchor {
+                    self.review
+                        .document()
+                        .ok_or("Open an SGF first")?
+                        .path(anchor)?;
+                }
+                self.number_from = anchor;
             }
             Command::Play(point) => {
                 self.review.play(point)?;

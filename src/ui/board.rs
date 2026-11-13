@@ -35,6 +35,13 @@ pub(super) fn board_view(
     let extent = side - 2.0 * padding;
     let gap = extent / (doc.size - 1) as f32;
     let marker_radius = gap * 0.43;
+    let move_number = |point: Point| {
+        snapshot
+            .move_numbers
+            .get(point.y * doc.size + point.x)
+            .copied()
+            .flatten()
+    };
     let grid = Stroke::new(1.0, Color32::from_rgb(108, 81, 48));
     for i in 0..doc.size {
         let offset = i as f32 * gap;
@@ -253,7 +260,48 @@ pub(super) fn board_view(
             )
         });
     }
-    if let Some(point) = doc.nodes[doc.selected].played.and_then(|m| m.point) {
+    for (index, color) in board.cells.iter().enumerate() {
+        let point = Point::new(index % doc.size, index / doc.size);
+        if let Some(color) = color
+            && let Some(number) = move_number(point)
+        {
+            let center = start + Vec2::new(point.x as f32 * gap, point.y as f32 * gap);
+            painter.text(
+                center,
+                Align2::CENTER_CENTER,
+                number.to_string(),
+                FontId::proportional(gap * 0.42),
+                if *color == Color::Black {
+                    Color32::WHITE
+                } else {
+                    Color32::from_rgb(30, 32, 35)
+                },
+            );
+            ui.interact(
+                Rect::from_center_size(center, Vec2::splat(gap * 0.6)),
+                ui.id().with(("variation-move", index)),
+                Sense::hover(),
+            )
+            .widget_info(|| {
+                WidgetInfo::labeled(
+                    WidgetType::Other,
+                    true,
+                    format!(
+                        "Variation move {number}: {} {}",
+                        if *color == Color::Black {
+                            "Black"
+                        } else {
+                            "White"
+                        },
+                        point.gtp(doc.size)
+                    ),
+                )
+            });
+        }
+    }
+    if let Some(point) = doc.nodes[doc.selected].played.and_then(|m| m.point)
+        && move_number(point).is_none()
+    {
         let center = start + Vec2::new(point.x as f32 * gap, point.y as f32 * gap);
         painter.circle_stroke(
             center,

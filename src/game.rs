@@ -448,11 +448,16 @@ impl Document {
         }
         Ok(())
     }
-    fn replay(&self, node: NodeId) -> Result<(Board, BoardHistory)> {
+    fn replay(
+        &self,
+        node: NodeId,
+        mut visit: impl FnMut(NodeId, &Board),
+    ) -> Result<(Board, BoardHistory)> {
         let mut board = self.empty_board();
         let mut history = vec![(board.cells.clone(), board.next)];
         for id in self.path(node)? {
             self.apply_node(id, &mut board, &mut history)?;
+            visit(id, &board);
         }
         Ok((board, history))
     }
@@ -483,7 +488,48 @@ impl Document {
         line(self, 0, board, history)
     }
     pub fn board(&self, node: NodeId) -> Result<Board> {
-        Ok(self.replay(node)?.0)
+        Ok(self.replay(node, |_, _| {})?.0)
+    }
+    /// Number surviving moves after an anchor on this path. Passes count, but
+    /// setup stones and positions outside the anchor's descendants stay blank.
+    pub fn numbered_board(
+        &self,
+        node: NodeId,
+        anchor: NodeId,
+    ) -> Result<(Board, Vec<Option<usize>>)> {
+        let mut labels = vec![None; self.size * self.size];
+        let mut number = None;
+        let (board, _) = self.replay(node, |id, board| {
+            if id == anchor {
+                number = Some(0);
+            } else if let Some(number) = &mut number {
+                for (label, stone) in labels.iter_mut().zip(&board.cells) {
+                    if label.is_some_and(|(color, _)| Some(color) != *stone) {
+                        *label = None;
+                    }
+                }
+                let node = &self.nodes[id];
+                for property in ["AE", "AB", "AW"] {
+                    for point in node.props.get(property).into_iter().flatten() {
+                        if let Ok(Some(point)) = Point::parse(point, self.size) {
+                            labels[point.y * self.size + point.x] = None;
+                        }
+                    }
+                }
+                if let Some(played) = node.played {
+                    *number += 1;
+                    if let Some(point) = played.point
+                        && board.stone(point) == Some(played.color)
+                    {
+                        labels[point.y * self.size + point.x] = Some((played.color, *number));
+                    }
+                }
+            }
+        })?;
+        Ok((
+            board,
+            labels.into_iter().map(|v| v.map(|(_, n)| n)).collect(),
+        ))
     }
     /// Follow the imported game when present, otherwise this branch's first child.
     pub fn continuation(&self, node: NodeId) -> Option<NodeId> {
@@ -506,7 +552,7 @@ impl Document {
         )
     }
     pub fn append_move(&mut self, point: Option<Point>) -> Result<NodeId> {
-        let (mut board, history) = self.replay(self.selected)?;
+        let (mut board, history) = self.replay(self.selected, |_, _| {})?;
         let played = Move {
             color: board.next,
             point,
