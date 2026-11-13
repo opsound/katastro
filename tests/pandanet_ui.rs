@@ -5,12 +5,63 @@ use egui_kittest::{Harness, kittest::Queryable};
 use katastro::{
     desktop::DesktopApp,
     engine::EngineConfig,
-    pandanet::{Options, SystemClock},
+    pandanet::{Cancellation, Command, Options, Snapshot, SystemClock},
 };
 use std::{
+    path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
 };
+fn desktop(
+    root: &Path,
+    fixture: &support::Fixture,
+    vault: Arc<support::Vault>,
+    source: Option<PathBuf>,
+    height: f32,
+) -> Harness<'static, DesktopApp> {
+    Harness::builder()
+        .with_size(eframe::egui::vec2(1200., height))
+        .build_eframe(|cc| {
+            DesktopApp::with_sync(
+                &cc.egui_ctx,
+                root.join("reviews.sqlite"),
+                root.join("cache.sqlite"),
+                EngineConfig {
+                    executable: "missing".into(),
+                    model: "missing".into(),
+                },
+                source,
+                Options {
+                    root: root.join("Pandanet"),
+                    endpoint: fixture.endpoint.clone(),
+                    request_interval: Duration::ZERO,
+                    credentials: vault,
+                    clock: Arc::new(SystemClock),
+                },
+            )
+        })
+}
+
+fn sync(root: &Path, fixture: &support::Fixture, vault: Arc<support::Vault>) -> Snapshot {
+    let mut service = fixture.service(&root.join("Pandanet"), vault);
+    for (now, command) in [
+        (
+            100,
+            Command::Connect {
+                username: "example".into(),
+                password: "test-secret".into(),
+                remember: true,
+            },
+        ),
+        (101, Command::SetAutomatic(false)),
+    ] {
+        service
+            .execute(command, now, &Cancellation::default(), &mut |_| {})
+            .unwrap();
+    }
+    service.snapshot()
+}
+
 fn wait(h: &mut Harness<'_, DesktopApp>, done: impl Fn(&DesktopApp) -> bool) {
     let deadline = Instant::now() + Duration::from_secs(5);
     while !done(h.state()) {
@@ -46,27 +97,7 @@ fn desktop_signs_in_remembers_downloads_and_opens_a_game_without_disturbing_a_re
     let vault = Arc::new(support::Vault::default());
     let source = temp.path().join("original.sgf");
     std::fs::write(&source, b"(;SZ[9];B[cc];W[gg])").unwrap();
-    let mut h = Harness::builder()
-        .with_size(eframe::egui::vec2(1200., 860.))
-        .build_eframe(|cc| {
-            DesktopApp::with_sync(
-                &cc.egui_ctx,
-                temp.path().join("reviews.sqlite"),
-                temp.path().join("cache.sqlite"),
-                EngineConfig {
-                    executable: "missing".into(),
-                    model: "missing".into(),
-                },
-                Some(source),
-                Options {
-                    root: temp.path().join("Pandanet"),
-                    endpoint: fixture.endpoint.clone(),
-                    request_interval: Duration::ZERO,
-                    credentials: vault.clone(),
-                    clock: Arc::new(SystemClock),
-                },
-            )
-        });
+    let mut h = desktop(temp.path(), &fixture, vault.clone(), Some(source), 860.);
     wait(&mut h, |app| app.state.document.is_some());
     h.get_by_label("Pandanet").click();
     h.run_steps(3);
@@ -126,7 +157,6 @@ fn desktop_signs_in_remembers_downloads_and_opens_a_game_without_disturbing_a_re
 
 #[test]
 fn games_library_filters_synced_games_and_opens_the_selected_record_directly() {
-    use katastro::pandanet::{Cancellation, Command};
     let fixture = support::Fixture::new(|r| {
         if r.url.contains("mode=sgf") {
             (
@@ -138,51 +168,9 @@ fn games_library_filters_synced_games_and_opens_the_selected_record_directly() {
         }
     });
     let temp = tempfile::tempdir().unwrap();
-    let root = temp.path().join("Pandanet");
     let vault = Arc::new(support::Vault::default());
-    let mut service = fixture.service(&root, vault.clone());
-    service
-        .execute(
-            Command::Connect {
-                username: "example".into(),
-                password: "test-secret".into(),
-                remember: true,
-            },
-            100,
-            &Cancellation::default(),
-            &mut |_| {},
-        )
-        .unwrap();
-    service
-        .execute(
-            Command::SetAutomatic(false),
-            101,
-            &Cancellation::default(),
-            &mut |_| {},
-        )
-        .unwrap();
-    drop(service);
-    let mut h = Harness::builder()
-        .with_size(eframe::egui::vec2(1200., 860.))
-        .build_eframe(|cc| {
-            DesktopApp::with_sync(
-                &cc.egui_ctx,
-                temp.path().join("reviews.sqlite"),
-                temp.path().join("cache.sqlite"),
-                EngineConfig {
-                    executable: "missing".into(),
-                    model: "missing".into(),
-                },
-                None,
-                Options {
-                    root,
-                    endpoint: fixture.endpoint.clone(),
-                    request_interval: Duration::ZERO,
-                    credentials: vault,
-                    clock: Arc::new(SystemClock),
-                },
-            )
-        });
+    sync(temp.path(), &fixture, vault.clone());
+    let mut h = desktop(temp.path(), &fixture, vault, None, 860.);
     h.get_by_label("Games").click();
     h.run_steps(3);
     let first = "Review 2026/11/01 12:00: example 6k+ vs opponent 5k+";
@@ -223,7 +211,6 @@ fn games_library_filters_synced_games_and_opens_the_selected_record_directly() {
 // click handler tied to the old row index would break this workflow.
 #[test]
 fn library_table_sorts_every_column_and_opens_the_correct_game_after_filtering() {
-    use katastro::pandanet::{Cancellation, Command};
     let fixture = support::Fixture::new(|r| {
         if r.url.contains("mode=sgf") {
             let id = r
@@ -264,32 +251,10 @@ fn library_table_sorts_every_column_and_opens_the_correct_game_after_filtering()
         (200, html)
     });
     let temp = tempfile::tempdir().unwrap();
-    let root = temp.path().join("Pandanet");
     let vault = Arc::new(support::Vault::default());
-    let mut service = fixture.service(&root, vault.clone());
-    service
-        .execute(
-            Command::Connect {
-                username: "example".into(),
-                password: "test-secret".into(),
-                remember: true,
-            },
-            100,
-            &Cancellation::default(),
-            &mut |_| {},
-        )
-        .unwrap();
-    service
-        .execute(
-            Command::SetAutomatic(false),
-            101,
-            &Cancellation::default(),
-            &mut |_| {},
-        )
-        .unwrap();
+    let state = sync(temp.path(), &fixture, vault.clone());
     let labels: Vec<_> = (1..=5)
         .map(|id| {
-            let state = service.snapshot();
             let g = state
                 .games
                 .iter()
@@ -298,28 +263,7 @@ fn library_table_sorts_every_column_and_opens_the_correct_game_after_filtering()
             format!("Review {}: {} vs {}", g.date, g.white, g.black)
         })
         .collect();
-    drop(service);
-    let mut h = Harness::builder()
-        .with_size(eframe::egui::vec2(1200., 860.))
-        .build_eframe(|cc| {
-            DesktopApp::with_sync(
-                &cc.egui_ctx,
-                temp.path().join("reviews.sqlite"),
-                temp.path().join("cache.sqlite"),
-                EngineConfig {
-                    executable: "missing".into(),
-                    model: "missing".into(),
-                },
-                None,
-                Options {
-                    root,
-                    endpoint: fixture.endpoint.clone(),
-                    request_interval: Duration::ZERO,
-                    credentials: vault,
-                    clock: Arc::new(SystemClock),
-                },
-            )
-        });
+    let mut h = desktop(temp.path(), &fixture, vault, None, 860.);
     h.get_by_label("Games").click();
     let deadline = Instant::now() + Duration::from_secs(3);
     while h.query_by_label(&labels[0]).is_none() {
@@ -441,7 +385,6 @@ fn library_table_sorts_every_column_and_opens_the_correct_game_after_filtering()
 #[test]
 fn library_table_uses_extra_window_height_to_show_and_open_more_games() {
     use eframe::egui::vec2;
-    use katastro::pandanet::{Cancellation, Command};
     let fixture = support::Fixture::new(|r| {
         if r.url.contains("mode=sgf") {
             let id = r
@@ -463,49 +406,9 @@ fn library_table_uses_extra_window_height_to_show_and_open_more_games() {
         }
     });
     let temp = tempfile::tempdir().unwrap();
-    let root = temp.path().join("Pandanet");
     let vault = Arc::new(support::Vault::default());
-    let mut s = fixture.service(&root, vault.clone());
-    s.execute(
-        Command::Connect {
-            username: "example".into(),
-            password: "test-secret".into(),
-            remember: true,
-        },
-        100,
-        &Cancellation::default(),
-        &mut |_| {},
-    )
-    .unwrap();
-    s.execute(
-        Command::SetAutomatic(false),
-        101,
-        &Cancellation::default(),
-        &mut |_| {},
-    )
-    .unwrap();
-    drop(s);
-    let mut h = Harness::builder()
-        .with_size(vec2(1200., 1500.))
-        .build_eframe(|cc| {
-            DesktopApp::with_sync(
-                &cc.egui_ctx,
-                temp.path().join("reviews.sqlite"),
-                temp.path().join("cache.sqlite"),
-                EngineConfig {
-                    executable: "missing".into(),
-                    model: "missing".into(),
-                },
-                None,
-                Options {
-                    root,
-                    endpoint: fixture.endpoint.clone(),
-                    request_interval: Duration::ZERO,
-                    credentials: vault,
-                    clock: Arc::new(SystemClock),
-                },
-            )
-        });
+    sync(temp.path(), &fixture, vault.clone());
+    let mut h = desktop(temp.path(), &fixture, vault, None, 1500.);
     h.get_by_label("Games").click();
     let deadline = Instant::now() + Duration::from_secs(3);
     while h

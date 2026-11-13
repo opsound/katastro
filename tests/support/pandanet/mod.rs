@@ -74,11 +74,9 @@ impl Fixture {
         }
     }
     pub fn service(&self, root: &Path, vault: Arc<Vault>) -> Service {
-        {
-            let mut s = Service::open(root, &self.endpoint, vault).unwrap();
-            s.set_request_interval(std::time::Duration::ZERO);
-            s
-        }
+        let mut service = Service::open(root, &self.endpoint, vault).unwrap();
+        service.set_request_interval(std::time::Duration::ZERO);
+        service
     }
     pub fn downloads(&self) -> usize {
         self.requests
