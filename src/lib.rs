@@ -8,6 +8,7 @@ pub mod game;
 pub mod pandanet;
 pub mod review;
 pub mod scheduler;
+pub mod training;
 #[cfg(feature = "desktop")]
 pub mod ui;
 pub mod worker;

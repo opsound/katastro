@@ -39,6 +39,11 @@ pub struct DesktopApp {
     model_text: String,
     dialogs: Box<dyn FileDialogs>,
     pending_dialog: Option<PendingDialog>,
+    training_view: crate::training::view::View,
+    training_state: crate::training::Snapshot,
+    training_client: Option<crate::training::client::Client>,
+    training_databases: (PathBuf, PathBuf),
+    training_selection: Option<(PathBuf, usize, Vec<Option<crate::Point>>)>,
 }
 impl DesktopApp {
     pub fn with_sync(
@@ -121,6 +126,7 @@ impl DesktopApp {
             style.visuals.selection.bg_fill = egui::Color32::from_rgb(53, 109, 94);
             style.visuals.panel_fill = egui::Color32::from_rgb(26, 30, 36);
         });
+        let training_databases = (reviews.clone(), cache.clone());
         let wake = ctx.clone();
         let client = Client::spawn_with_wake(
             reviews,
@@ -143,6 +149,11 @@ impl DesktopApp {
             sync_view: crate::pandanet::view::View::default(),
             sync_folder,
             pending_dialog: None,
+            training_view: Default::default(),
+            training_state: Default::default(),
+            training_client: None,
+            training_databases,
+            training_selection: None,
         }
     }
     fn action(&mut self, action: Action, frame: &eframe::Frame) {
@@ -167,6 +178,13 @@ impl DesktopApp {
                 self.sync_view.show_library(&self.sync_state);
                 None
             }
+            Action::Training => {
+                self.training_client = None;
+                self.training_state = Default::default();
+                self.training_view.show(&self.sync_state);
+                self.sync_view.open = false;
+                Some(Command::Pause)
+            }
             Action::Pandanet => {
                 self.sync_view.show(&self.sync_state);
                 None
@@ -182,6 +200,81 @@ impl DesktopApp {
             && let Err(error) = self.client.send(command)
         {
             self.state.error = Some(error.to_string());
+        }
+    }
+    fn training_action(&mut self, action: crate::training::view::Action, ctx: &egui::Context) {
+        use crate::training::{client, view::Action};
+        match action {
+            Action::Start {
+                games,
+                account,
+                settings,
+            } => {
+                let _ = self.client.send(Command::Pause);
+                self.training_client = None;
+                self.training_selection = None;
+                self.training_state = crate::training::Snapshot {
+                    phase: crate::training::Phase::Searching,
+                    status: "Preparing training…".into(),
+                    ..Default::default()
+                };
+                let wake = ctx.clone();
+                self.training_client = Some(client::Client::spawn(
+                    client::Options::new(
+                        self.training_databases.0.clone(),
+                        self.training_databases.1.clone(),
+                        self.state.config.clone(),
+                    ),
+                    games,
+                    account,
+                    settings,
+                    Some(Arc::new(move || wake.request_repaint())),
+                ));
+            }
+            Action::Command(command) => {
+                if let Some(client) = &self.training_client
+                    && let Err(error) = client.send(command)
+                {
+                    self.training_state.error = Some(error.to_string());
+                }
+            }
+            Action::ExploreLine(line) => {
+                if let Some((path, index)) = &self.training_state.reveal {
+                    self.training_selection = Some((path.clone(), *index, line));
+                }
+            }
+            Action::Back => {
+                self.training_client = None;
+                self.training_view.open = false;
+            }
+        }
+    }
+    fn poll_training(&mut self) {
+        if let Some(client) = &self.training_client {
+            while let Ok(state) = client.snapshots.try_recv() {
+                if state.reveal != self.training_state.reveal
+                    && let Some((path, index)) = &state.reveal
+                {
+                    self.training_selection = Some((path.clone(), *index, Vec::new()));
+                    let _ = self.client.send(Command::OpenAndAnalyze(path.clone()));
+                }
+                self.training_state = state;
+            }
+        }
+        if let Some((path, index, line)) = &self.training_selection
+            && self.state.source.as_ref() == Some(path)
+            && let Some(node) = self
+                .state
+                .document
+                .as_ref()
+                .and_then(|d| d.mainline.get(*index))
+                .copied()
+        {
+            let _ = self.client.send(Command::Select(node));
+            for point in line {
+                let _ = self.client.send(Command::Play(*point));
+            }
+            self.training_selection = None;
         }
     }
     fn begin_dialog(&mut self, request: DialogRequest, frame: &eframe::Frame) {
@@ -275,6 +368,7 @@ impl eframe::App for DesktopApp {
         while let Ok(state) = self.sync_client.snapshots.try_recv() {
             self.sync_state = state;
         }
+        self.poll_training();
         let dropped = ui.input(|input| {
             input
                 .raw
@@ -283,11 +377,24 @@ impl eframe::App for DesktopApp {
                 .map(|file| file.path().to_path_buf())
                 .next()
         });
-        if let Some(path) = dropped {
+        if let Some(path) = dropped
+            && !self.training_view.open
+        {
             self.action(Action::Review(Command::OpenAndAnalyze(path)), frame);
         }
-        for action in ui::render(ui, &self.state) {
-            self.action(action, frame);
+        if self.training_view.open {
+            for action in self
+                .training_view
+                .render(ui, &self.training_state, &self.sync_state)
+            {
+                self.training_action(action, ui.ctx());
+            }
+        }
+        if !self.training_view.open || self.training_state.phase == crate::training::Phase::Revealed
+        {
+            for action in ui::render(ui, &self.state) {
+                self.action(action, frame);
+            }
         }
         if self.settings_open {
             self.settings(ui, frame);
@@ -300,6 +407,9 @@ impl eframe::App for DesktopApp {
                 && let Err(error) = self.sync_client.send(command)
             {
                 self.sync_state.error = Some(error.to_string());
+            }
+            if actions.train {
+                self.action(Action::Training, frame);
             }
             if let Some(path) = actions.review {
                 self.action(Action::Review(Command::OpenAndAnalyze(path)), frame);

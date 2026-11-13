@@ -459,3 +459,41 @@ fn library_table_uses_extra_window_height_to_show_and_open_more_games() {
         Some("2026-11-05")
     );
 }
+
+#[test]
+fn library_opens_training_setup_with_the_synced_account_and_returns_to_review() {
+    let fixture = support::Fixture::new(|r| {
+        if r.url.contains("mode=sgf") {
+            (200, support::sgf(1))
+        } else {
+            (200, support::page(1, 1, &[1]))
+        }
+    });
+    let temp = tempfile::tempdir().unwrap();
+    let vault = Arc::new(support::Vault::default());
+    sync(temp.path(), &fixture, vault.clone());
+    let mut h = desktop(temp.path(), &fixture, vault, None, 860.);
+    h.get_by_label("Games").click();
+    h.run_steps(3);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while h
+        .query_by_label("Review 2026/11/01 12:00: example 6k+ vs opponent 5k+")
+        .is_none()
+    {
+        h.step();
+        assert!(Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    h.get_by_label("Train from these games").click();
+    h.run_steps(3);
+    assert!(h.query_by_label("Start training").is_some());
+    assert!(
+        h.query_by_label("1 games available in your library")
+            .is_some()
+    );
+    assert!(h.query_by_label("Game library").is_none());
+    h.get_by_label("Back to review").click();
+    h.run_steps(3);
+    assert!(h.query_by_label("Games").is_some());
+    assert!(h.query_by_label("Start training").is_none());
+}

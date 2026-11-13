@@ -16,6 +16,7 @@ pub struct View {
 pub struct Actions {
     pub command: Option<Command>,
     pub review: Option<PathBuf>,
+    pub train: bool,
 }
 fn limit_label(limit: Option<usize>) -> String {
     limit.map_or_else(|| "All games".into(), |n| format!("Latest {n} games"))
@@ -35,6 +36,7 @@ impl View {
         let mut actions = Actions {
             command: None,
             review: None,
+            train: false,
         };
         let mut open = self.open;
         let mut close = false;
@@ -45,6 +47,16 @@ impl View {
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.heading(format!("{} synced games", state.games.len()));
+                    if ui
+                        .add_enabled(
+                            !state.games.is_empty(),
+                            egui::Button::new("Train from these games"),
+                        )
+                        .clicked()
+                    {
+                        actions.train = true;
+                        close = true;
+                    }
                     if ui.button("Sync settings").clicked() {
                         self.settings_open = !self.settings_open;
                     }

@@ -6,6 +6,7 @@ Native macOS Go review app in Rust, powered by KataGo.
 - Autosaved variations in a tree that preserves the original game.
 - AI move suggestions and optional group strength overlays.
 - Automatic Pandanet downloads and a searchable local game library.
+- Training from lost leads in your games, with a 1-dan opponent and blind retries.
 
 ## Run
 
@@ -43,9 +44,14 @@ Click **Games** in the toolbar to browse downloaded games in a table: date, Whit
 
 Downloads run two at a time. Existing game IDs with local SGFs are skipped, and failed downloads are retried. Routine checks stop at a fully downloaded archive page; a daily scan checks the selected history range for gaps. Downloaded originals are preserved separately from autosaved review variations.
 
+## Training
+
+Click **Train** or **Games → Train from these games**. Play five or ten moves against a 1-dan HumanSL opponent, then compare cumulative evaluation losses on your own moves with the recorded continuation. Opponent blunders and later gains do not cancel earlier mistakes. Retry without hints after a failed attempt; pass or give up to explore suggested lines using the normal reviewer. Setup defaults to searching your latest 20 games. The opponent model downloads once (99 MB); games stay local. See the [training policy and test instructions](docs/training.md).
+
 ## Storage
 
-- Reviews: `~/Library/Application Support/Katastro/reviews.sqlite`
+- Reviews and completed training attempts: `~/Library/Application Support/Katastro/reviews.sqlite`
+- Training review SGFs and opponent model: `~/Library/Application Support/Katastro/Training/` and `models/`
 - Pandanet originals and sync index: `~/Library/Application Support/Katastro/Pandanet/`
 - Remembered Pandanet password: macOS login Keychain
 - Analysis cache: `~/Library/Caches/Katastro/analysis.sqlite`

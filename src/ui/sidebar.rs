@@ -27,6 +27,7 @@ pub(super) fn review_controls(
                     Action::Export,
                 ),
                 ("Games", "Games", true, Action::Games),
+                ("Train", "Training", true, Action::Training),
                 ("Engine", "Engine settings", true, Action::Settings),
             ] {
                 let response = ui.add_enabled(enabled, egui::Button::new(visible));

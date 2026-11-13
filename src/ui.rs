@@ -19,6 +19,7 @@ pub enum Action {
     Settings,
     Pandanet,
     Games,
+    Training,
 }
 const ACCENT: Color32 = Color32::from_rgb(95, 206, 175);
 const SUGGESTION_BLUE: Color32 = Color32::from_rgb(65, 145, 255);
@@ -251,4 +252,28 @@ fn suggestion_color(analysis: &Analysis, rank: usize, player: Color) -> Color32 
     } else {
         color
     }
+}
+
+/// Training supplies only the played prefix, with no evaluations or future nodes.
+pub(crate) fn training_board(
+    ui: &mut egui::Ui,
+    doc: &crate::Document,
+    board: &crate::Board,
+    enabled: bool,
+) -> Option<Option<crate::Point>> {
+    let empty = Snapshot::empty(crate::engine::EngineConfig {
+        executable: Default::default(),
+        model: Default::default(),
+    });
+    let mut actions = Vec::new();
+    ui.add_enabled_ui(enabled, |ui| {
+        board_view(ui, doc, board, &empty, false, false, &mut actions)
+    });
+    actions.into_iter().find_map(|a| {
+        if let Action::Review(Command::Play(p)) = a {
+            Some(p)
+        } else {
+            None
+        }
+    })
 }

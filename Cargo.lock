@@ -2004,6 +2004,7 @@ dependencies = [
  "egui_kittest",
  "egui_plot",
  "encoding_rs",
+ "getrandom 0.4.3",
  "objc2 0.6.4",
  "reqwest",
  "rfd",
