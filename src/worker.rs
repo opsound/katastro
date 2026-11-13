@@ -123,6 +123,7 @@ struct Worker {
     engine: Option<Engine>,
     scheduler: Option<Scheduler>,
     generation: u64,
+    unsupported_mainline: bool,
 }
 impl Worker {
     fn new(reviews: PathBuf, cache: PathBuf, config: EngineConfig) -> Result<Self> {
@@ -134,6 +135,7 @@ impl Worker {
             engine: None,
             scheduler: None,
             generation: 0,
+            unsupported_mainline: false,
         })
     }
     fn publish(&mut self, tx: &Sender<Snapshot>, wake: &Option<Arc<dyn Fn() + Send + Sync>>) {
@@ -186,7 +188,7 @@ impl Worker {
         self.review.save_profile(&profile)?;
         self.generation += 1;
         let mut scheduler = Scheduler::new(self.generation, doc, profile, values);
-        scheduler.unsupported();
+        self.unsupported_mainline = scheduler.unsupported();
         self.scheduler = Some(scheduler);
         self.state.running = true;
         self.state.status = "Analyzing · quick chart first, then refinement".into();
@@ -198,9 +200,10 @@ impl Worker {
             let canceled = scheduler.select(doc);
             self.state.running = true;
             if let Some(engine) = self.engine.as_mut() {
-                for id in canceled {
+                for canceled in canceled {
                     engine.send(
-                        &json!({"id":format!("cancel-{id}"),"action":"terminate","terminateId":id}),
+                        &json!({"id":format!("cancel-{}",canceled.id),"action":"terminate",
+                        "terminateId":canceled.id,"turnNumbers":canceled.turns}),
                     )?;
                 }
             }
@@ -370,38 +373,41 @@ impl Worker {
                 }
             }
             if self.state.running {
-                let planned = self.scheduler.as_mut().map(Scheduler::next_request);
-                match planned {
-                    Some(Ok(Some(request))) => {
-                        self.state.analysis_target = Some(request.visits);
-                        self.state.status = format!(
-                            "Refining · target {} visits per position · variations autosave",
-                            request.visits
-                        );
-                        if self
-                            .review
-                            .document()
-                            .is_some_and(|d| d.mainline.iter().any(|id| d.position(*id).is_err()))
-                        {
-                            self.state
-                                .status
-                                .push_str(" · analysis unavailable after setup changes");
+                // Fill available positions in one dispatch, including after an
+                // individual completion, rather than one request per polling tick.
+                loop {
+                    let planned = self.scheduler.as_mut().map(Scheduler::next_request);
+                    match planned {
+                        Some(Ok(Some(request))) => {
+                            self.state.analysis_target = Some(request.visits);
+                            self.state.status = format!(
+                                "Refining · target {} visits per position · variations autosave",
+                                request.visits
+                            );
+                            if self.unsupported_mainline {
+                                self.state
+                                    .status
+                                    .push_str(" · analysis unavailable after setup changes");
+                            }
+                            if let Some(engine) = self.engine.as_mut()
+                                && let Err(error) = engine.send(&request.query)
+                            {
+                                self.pause();
+                                self.engine = None;
+                                self.state.error = Some(error.to_string());
+                                dirty = true;
+                                break;
+                            }
+                            dirty = true;
                         }
-                        if let Some(engine) = self.engine.as_mut()
-                            && let Err(error) = engine.send(&request.query)
-                        {
+                        Some(Err(error)) => {
                             self.pause();
-                            self.engine = None;
                             self.state.error = Some(error.to_string());
+                            dirty = true;
+                            break;
                         }
-                        dirty = true;
+                        _ => break,
                     }
-                    Some(Err(error)) => {
-                        self.pause();
-                        self.state.error = Some(error.to_string());
-                        dirty = true;
-                    }
-                    _ => {}
                 }
                 if self.scheduler.as_ref().is_some_and(Scheduler::is_complete) {
                     self.state.running = false;

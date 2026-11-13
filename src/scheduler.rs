@@ -1,3 +1,4 @@
+use crate::engine::ANALYSIS_THREADS;
 use crate::{Analysis, Document, EngineProfile, NodeId, Point, Result, SuggestedMove};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
@@ -12,6 +13,11 @@ pub struct Request {
     pub query: Value,
     pub targets: BTreeMap<usize, Vec<Target>>,
     pub visits: u64,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Cancellation {
+    pub id: String,
+    pub turns: Vec<usize>,
 }
 pub struct Scheduler {
     pub values: BTreeMap<NodeId, Analysis>,
@@ -84,9 +90,6 @@ impl Scheduler {
         Ok(request)
     }
     pub fn next_request(&mut self) -> Result<Option<Request>> {
-        if self.inflight.len() >= 2 {
-            return Ok(None);
-        }
         if let Some(node) = self.interactive.take() {
             let current = self.values.get(&node).map_or(0, |v| v.visits);
             let missing_ownership = self
@@ -114,9 +117,18 @@ impl Scheduler {
                     .map(Some);
             }
         }
-        if !self.inflight.is_empty() {
+        // The initial multi-position coverage request stays cheap and uninterrupted.
+        // Count unfinished positions, including individual turns of a shared query.
+        if self.inflight.values().any(|r| r.query["priority"] == 0)
+            || self.pending() >= ANALYSIS_THREADS
+        {
             return Ok(None);
         }
+        let pending: BTreeSet<_> = self
+            .inflight
+            .values()
+            .flat_map(|r| r.targets.values().flatten().map(|t| t.node))
+            .collect();
         let missing: Vec<_> = self
             .doc
             .mainline
@@ -125,30 +137,51 @@ impl Scheduler {
             .filter(|id| !self.values.contains_key(id) && !self.failed.contains(id))
             .collect();
         if !missing.is_empty() {
-            return self.request(&missing, 1, 0).map(Some);
+            let ready: Vec<_> = missing
+                .into_iter()
+                .filter(|id| !pending.contains(id))
+                .collect();
+            return if ready.is_empty() {
+                Ok(None)
+            } else {
+                self.request(&ready, 1, 0).map(Some)
+            };
+        }
+        // Existing peers finish, but don't add competition to quick foreground
+        // refinement. The cheap chart pass above remains independent of selection.
+        if self
+            .inflight
+            .values()
+            .any(|r| r.query["priority"] == 100 && r.visits <= 64)
+        {
+            return Ok(None);
         }
         for visits in budgets() {
+            let ready = |id: &NodeId| {
+                !self.failed.contains(id)
+                    && !pending.contains(id)
+                    && self.values.get(id).map_or(0, |v| v.visits) < visits
+            };
             let nodes: Vec<_> = self
                 .doc
                 .mainline
                 .iter()
                 .copied()
-                .filter(|id| {
-                    !self.failed.contains(id)
-                        && self.values.get(id).map_or(0, |v| v.visits) < visits
-                })
-                .take(8)
+                .filter(ready)
+                .take(ANALYSIS_THREADS - self.pending())
                 .collect();
             if !nodes.is_empty() {
                 return self.request(&nodes, visits, -10).map(Some);
             }
-            if let Some(node) = (0..self.doc.nodes.len()).find(|id| {
-                !self.doc.mainline.contains(id)
-                    && !self.failed.contains(id)
-                    && self.values.get(id).map_or(0, |v| v.visits) < visits
-            }) {
-                // A sibling branch must have its own history in the engine query.
+            if let Some(node) = (0..self.doc.nodes.len())
+                .filter(|id| !self.doc.mainline.contains(id))
+                .find(ready)
+            {
                 return self.request(&[node], visits, -10).map(Some);
+            }
+            // Finish reusable coverage before deeper searches compete with its tail.
+            if visits == 64 && self.inflight.values().any(|r| r.visits <= 64) {
+                return Ok(None);
             }
         }
         Ok(None)
@@ -244,24 +277,58 @@ impl Scheduler {
         }
         Ok(accepted)
     }
-    pub fn select(&mut self, doc: Document) -> Vec<String> {
-        let canceled: Vec<_> = self
-            .inflight
-            .values()
-            // Keep the fast original-game chart pass, but supersede interactive
-            // work even at one visit so it cannot occupy the new selection's slot.
-            .filter(|r| r.visits > 1 || r.query["priority"] == 100)
-            .map(|r| r.id.clone())
-            .collect();
-        for id in &canceled {
-            self.inflight.remove(id);
+    pub fn select(&mut self, doc: Document) -> Vec<Cancellation> {
+        let quick = self.values.get(&doc.selected).is_none_or(|v| v.visits < 64);
+        let mut canceled: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+        for request in self.inflight.values().filter(|r| r.query["priority"] != 0) {
+            let turns: Vec<_> = request
+                .targets
+                .iter()
+                .filter_map(|(turn, targets)| {
+                    (request.query["priority"] == 100
+                        || (quick && request.visits <= 8)
+                        || targets.iter().any(|t| t.node == doc.selected))
+                    .then_some(*turn)
+                })
+                .collect();
+            if !turns.is_empty() {
+                canceled.insert(request.id.clone(), turns);
+            }
         }
+        // Reclaim just one position when the retained searches fill the engine.
+        // Cancellation is per turn, so other positions in that query still finish.
+        if self.pending() - canceled.values().map(Vec::len).sum::<usize>() >= ANALYSIS_THREADS {
+            for request in self
+                .inflight
+                .values()
+                .rev()
+                .filter(|r| r.query["priority"] != 0)
+            {
+                if let Some(turn) = request.targets.keys().rev().find(|turn| {
+                    canceled
+                        .get(&request.id)
+                        .is_none_or(|turns| !turns.contains(turn))
+                }) {
+                    canceled.entry(request.id.clone()).or_default().push(*turn);
+                    break;
+                }
+            }
+        }
+        for (id, turns) in &canceled {
+            if let Some(request) = self.inflight.get_mut(id) {
+                request.targets.retain(|turn, _| !turns.contains(turn));
+            }
+        }
+        self.inflight.retain(|_, r| !r.targets.is_empty());
         self.interactive = Some(doc.selected);
         self.doc = doc;
         canceled
+            .into_iter()
+            .map(|(id, turns)| Cancellation { id, turns })
+            .collect()
     }
     pub fn pending(&self) -> usize {
-        self.inflight.len()
+        self.inflight.values().map(|r| r.targets.len()).sum()
     }
     pub fn request_ids(&self) -> Vec<String> {
         self.inflight.keys().cloned().collect()
@@ -287,12 +354,14 @@ impl Scheduler {
                         .is_some_and(|v| v.visits >= i64::MAX as u64)
             })
     }
-    pub fn unsupported(&mut self) {
+    /// Skip unsupported positions; report whether the played line contains any.
+    pub fn unsupported(&mut self) -> bool {
         for id in 0..self.doc.nodes.len() {
             if self.doc.position(id).is_err() {
                 self.failed.insert(id);
             }
         }
+        self.doc.mainline.iter().any(|id| self.failed.contains(id))
     }
 }
 

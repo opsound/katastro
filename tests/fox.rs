@@ -32,31 +32,35 @@ fn analyze_fox(config: EngineConfig, sgf: &str, komi: f64) {
     let mut engine = Engine::spawn(&config).unwrap();
     let deadline = Instant::now() + Duration::from_secs(60);
     for budget in [1, 8, 64] {
-        let request = scheduler.next_request().unwrap().unwrap();
-        assert_eq!(request.visits, budget);
-        assert_eq!(
-            request.query["komi"], komi,
-            "engine must receive point komi"
-        );
-        assert_eq!(request.query["rules"], "chinese");
-        engine.send(&request.query).unwrap();
-        while scheduler.pending() > 0 {
-            match engine
-                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-                .unwrap()
-            {
-                EngineEvent::Response(reply) => {
-                    for (target, value) in scheduler.accept(&reply).unwrap() {
-                        if reply["isDuringSearch"] == false {
-                            review.store_analysis(&target.key, &value).unwrap();
+        while scheduler.values.len() < doc.nodes.len()
+            || scheduler.values.values().any(|a| a.visits < budget)
+        {
+            let request = scheduler.next_request().unwrap().unwrap();
+            assert_eq!(request.visits, budget);
+            assert_eq!(
+                request.query["komi"], komi,
+                "engine must receive point komi"
+            );
+            assert_eq!(request.query["rules"], "chinese");
+            engine.send(&request.query).unwrap();
+            while scheduler.pending() > 0 {
+                match engine
+                    .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                    .unwrap()
+                {
+                    EngineEvent::Response(reply) => {
+                        for (target, value) in scheduler.accept(&reply).unwrap() {
+                            if reply["isDuringSearch"] == false {
+                                review.store_analysis(&target.key, &value).unwrap();
+                            }
                         }
                     }
+                    EngineEvent::Diagnostic(_) => {}
+                    event => panic!("unexpected engine event: {event:?}"),
                 }
-                EngineEvent::Diagnostic(_) => {}
-                event => panic!("unexpected engine event: {event:?}"),
             }
+            assert_eq!(scheduler.coverage(), (5, 5));
         }
-        assert_eq!(scheduler.coverage(), (5, 5));
         assert!(scheduler.values.values().all(|v| v.visits >= budget));
         assert!(
             scheduler.values[&0].score_lead.abs() < 20.0,

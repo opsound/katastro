@@ -13,7 +13,12 @@ use std::{
     thread,
     time::Duration,
 };
-pub const CONFIG: &str = "logToStderr = true\nreportAnalysisWinratesAs = BLACK\nnumAnalysisThreads = 8\nnumSearchThreadsPerAnalysisThread = 1\nnnMaxBatchSize = 8\nnnCacheSizePowerOfTwo = 18\nnnMutexPoolSizePowerOfTwo = 14\nnumNNServerThreadsPerModel = 1\nmetalDeviceToUseThread0 = 0\nmaxVisits = 64\nanalysisPVLen = 1\n";
+pub(crate) const ANALYSIS_THREADS: usize = 8;
+fn configuration() -> String {
+    format!(
+        "logToStderr = true\nreportAnalysisWinratesAs = BLACK\nnumAnalysisThreads = {ANALYSIS_THREADS}\nnumSearchThreadsPerAnalysisThread = 1\nnnMaxBatchSize = {ANALYSIS_THREADS}\nnnCacheSizePowerOfTwo = 18\nnnMutexPoolSizePowerOfTwo = 14\nnumNNServerThreadsPerModel = 1\nmetalDeviceToUseThread0 = 0\nmaxVisits = 64\nanalysisPVLen = 1\n"
+    )
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct EngineConfig {
     pub executable: PathBuf,
@@ -61,7 +66,7 @@ impl Engine {
             std::process::id(),
             SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ));
-        fs::write(&config_path, CONFIG)?;
+        fs::write(&config_path, configuration())?;
         let spawned = Command::new(&config.executable)
             .args(["analysis", "-config"])
             .arg(&config_path)
@@ -142,7 +147,7 @@ impl Engine {
         Ok(EngineProfile {
             model_sha256: digest(&fs::read(&config.model)?),
             engine_sha256: digest(&fs::read(&config.executable)?),
-            settings_digest: digest(CONFIG.as_bytes()),
+            settings_digest: digest(configuration().as_bytes()),
         })
     }
 }

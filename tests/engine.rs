@@ -123,39 +123,41 @@ fn live_scheduler_refines_to_256_and_round_trips_ranked_suggestions() {
     let mut review = Review::new(&temp.path().join("reviews"), &temp.path().join("cache")).unwrap();
     review.import(&source).unwrap();
     for budget in [1, 8, 64, 256] {
-        let request = scheduler.next_request().unwrap().unwrap();
-        assert_eq!(request.visits, budget);
-        engine.send(&request.query).unwrap();
-        while scheduler.pending() > 0 {
-            let reply = response(&engine);
-            for (target, value) in scheduler.accept(&reply).unwrap() {
-                let searched = reply["moveInfos"].as_array().map_or(0, Vec::len);
-                if searched > 0 {
-                    assert_eq!(
-                        value.suggestions.len(),
-                        searched,
-                        "the real engine's candidate list was truncated"
-                    );
-                } else if let Some(policy) = reply["policy"].as_array() {
-                    assert_eq!(
-                        value.suggestions.len(),
-                        policy
-                            .iter()
-                            .filter(|p| p.as_f64().is_some_and(|p| p >= 0.0))
-                            .count()
-                    );
-                }
-                if budget > 1 {
-                    let ownership: Vec<f64> =
-                        serde_json::from_value(reply["ownership"].clone()).unwrap();
-                    assert_eq!(ownership.len(), 81);
-                    assert_eq!(value.ownership, ownership);
-                    assert!(ownership.iter().all(|v| (-1.0..=1.0).contains(v)));
-                } else {
-                    assert!(value.ownership.is_empty());
-                }
-                if reply["isDuringSearch"] == false {
-                    review.store_analysis(&target.key, &value).unwrap();
+        while scheduler.values.len() < 3 || scheduler.values.values().any(|a| a.visits < budget) {
+            let request = scheduler.next_request().unwrap().unwrap();
+            assert_eq!(request.visits, budget);
+            engine.send(&request.query).unwrap();
+            while scheduler.pending() > 0 {
+                let reply = response(&engine);
+                for (target, value) in scheduler.accept(&reply).unwrap() {
+                    let searched = reply["moveInfos"].as_array().map_or(0, Vec::len);
+                    if searched > 0 {
+                        assert_eq!(
+                            value.suggestions.len(),
+                            searched,
+                            "the real engine's candidate list was truncated"
+                        );
+                    } else if let Some(policy) = reply["policy"].as_array() {
+                        assert_eq!(
+                            value.suggestions.len(),
+                            policy
+                                .iter()
+                                .filter(|p| p.as_f64().is_some_and(|p| p >= 0.0))
+                                .count()
+                        );
+                    }
+                    if budget > 1 {
+                        let ownership: Vec<f64> =
+                            serde_json::from_value(reply["ownership"].clone()).unwrap();
+                        assert_eq!(ownership.len(), 81);
+                        assert_eq!(value.ownership, ownership);
+                        assert!(ownership.iter().all(|v| (-1.0..=1.0).contains(v)));
+                    } else {
+                        assert!(value.ownership.is_empty());
+                    }
+                    if reply["isDuringSearch"] == false {
+                        review.store_analysis(&target.key, &value).unwrap();
+                    }
                 }
             }
         }
@@ -183,4 +185,46 @@ fn live_scheduler_refines_to_256_and_round_trips_ranked_suggestions() {
     println!(
         "Real KataGo: three positions refined to 256 visits, complete candidate counts {counts:?}, exact cached round trip"
     );
+}
+
+#[test]
+#[ignore = "Requires explicit local KataGo executable and model; run with --ignored"]
+fn live_partial_cancellation_preserves_other_turns_of_a_shared_query() {
+    let mut engine = Engine::spawn(&EngineConfig {
+        executable: std::env::var_os("KATASTRO_TEST_ENGINE")
+            .expect("engine")
+            .into(),
+        model: std::env::var_os("KATASTRO_TEST_MODEL")
+            .expect("model")
+            .into(),
+    })
+    .unwrap();
+    engine
+        .send(
+            &json!({"id":"batch","boardXSize":9,"boardYSize":9,"rules":"chinese",
+        "komi":7.5,"moves":[["B","D4"],["W","F6"]],"analyzeTurns":[0,1,2],"maxVisits":64}),
+        )
+        .unwrap();
+    engine
+        .send(&json!({"id":"cancel","action":"terminate","terminateId":"batch","turnNumbers":[1]}))
+        .unwrap();
+    let mut completed = std::collections::BTreeSet::new();
+    let mut ack = false;
+    while completed.len() < 3 || !ack {
+        let result = response(&engine);
+        assert!(result.get("error").is_none(), "{result}");
+        if result["action"] == "terminate" {
+            ack = true;
+            continue;
+        }
+        assert_eq!(result["id"], "batch");
+        if result["isDuringSearch"] == false {
+            let turn = result["turnNumber"].as_u64().unwrap();
+            if turn != 1 {
+                assert!(result["rootInfo"]["visits"].as_u64().unwrap() >= 64);
+            }
+            completed.insert(turn);
+        }
+    }
+    assert_eq!(completed, std::collections::BTreeSet::from([0, 1, 2]));
 }

@@ -50,6 +50,14 @@ fn main() {
         .windows(2)
         .find(|pair| pair[0] == "-model")
         .map(|pair| std::fs::read(&pair[1]).unwrap());
+    if let Some(address) = model
+        .as_deref()
+        .and_then(|bytes| std::str::from_utf8(bytes).ok())
+        .and_then(|text| text.strip_prefix("controlled:"))
+    {
+        controlled(address);
+        return;
+    }
     let invalid_evaluation = model.as_deref() == Some(b"bad-evaluation");
     let hold_final = model.as_deref() == Some(b"hold-final");
     let variation_fixture = model.as_deref() == Some(b"variation-hints");
@@ -127,5 +135,22 @@ fn main() {
             _ => emit(&query),
         }
         io::stdout().flush().unwrap();
+    }
+}
+
+// The integration test controls responses over a loopback socket. No timing sleeps:
+// requests and replies are explicit barriers, including unfinished/canceled work.
+fn controlled(address: &str) {
+    let mut stream = std::net::TcpStream::connect(address).unwrap();
+    stream.set_nodelay(true).unwrap();
+    let replies = stream.try_clone().unwrap();
+    std::thread::spawn(move || {
+        for line in io::BufReader::new(replies).lines() {
+            println!("{}", line.unwrap());
+            io::stdout().flush().unwrap();
+        }
+    });
+    for line in io::stdin().lock().lines() {
+        writeln!(stream, "{}", line.unwrap()).unwrap();
     }
 }

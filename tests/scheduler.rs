@@ -45,14 +45,16 @@ fn cheap_coverage_arrives_out_of_order_before_deep_work_and_survives_reopen() {
     assert_eq!(scheduler.coverage(), (4, 4));
     assert!(review.cached_analysis(&profile()).unwrap().is_empty());
     for budget in [8, 64] {
-        let deep = scheduler.next_request().unwrap().unwrap();
-        assert_eq!(deep.visits, budget);
-        for turn in [3, 1, 0, 2] {
-            for (target, value) in scheduler
-                .accept(&reply(&deep.id, turn, budget, false))
-                .unwrap()
-            {
-                review.store_analysis(&target.key, &value).unwrap();
+        while scheduler.values.values().any(|a| a.visits < budget) {
+            let deep = scheduler.next_request().unwrap().unwrap();
+            assert_eq!(deep.visits, budget);
+            for turn in deep.targets.keys().rev() {
+                for (target, value) in scheduler
+                    .accept(&reply(&deep.id, *turn, budget, false))
+                    .unwrap()
+                {
+                    review.store_analysis(&target.key, &value).unwrap();
+                }
             }
         }
     }
@@ -76,7 +78,7 @@ fn cheap_coverage_arrives_out_of_order_before_deep_work_and_survives_reopen() {
     );
 }
 #[test]
-fn selecting_a_new_variation_interrupts_deep_work_and_ignores_stale_replies() {
+fn selecting_a_new_variation_keeps_unrelated_work_and_ignores_retired_replies() {
     let mut cached = BTreeMap::new();
     for node in 0..4 {
         cached.insert(
@@ -97,7 +99,7 @@ fn selecting_a_new_variation_interrupts_deep_work_and_ignores_stale_replies() {
     let mut changed = doc();
     changed.selected = 1;
     let branch = changed.append_move(Some(Point::new(3, 3))).unwrap();
-    assert!(scheduler.select(changed).contains(&deep.id));
+    assert!(!scheduler.select(changed).iter().any(|c| c.id == deep.id));
     let selected = scheduler.next_request().unwrap().unwrap();
     assert_eq!(selected.visits, 1);
     assert_eq!(
@@ -117,16 +119,25 @@ fn selecting_a_new_variation_interrupts_deep_work_and_ignores_stale_replies() {
         .unwrap();
     assert!(scheduler.pending() > 0, "termination ack is not completion");
     scheduler.accept(&reply(&selected.id, 2, 1, false)).unwrap();
+    for turn in deep.targets.keys() {
+        scheduler
+            .accept(&reply(&deep.id, *turn, 64, false))
+            .unwrap();
+    }
+    assert_eq!(
+        scheduler.values[&0].visits, 64,
+        "background progress is retained"
+    );
     assert_eq!(scheduler.pending(), 0);
     let before = scheduler.values.clone();
     scheduler
         .accept(&reply("old-generation", 2, 999, false))
         .unwrap();
     assert_eq!(scheduler.values, before);
-    scheduler.accept(&reply(&deep.id, 2, 999, false)).unwrap();
+    scheduler.accept(&reply(&deep.id, 0, 999, false)).unwrap();
     assert_eq!(
         scheduler.values, before,
-        "canceled work must not modify the selected review"
+        "retired work must not modify the selected review"
     );
 }
 #[test]
@@ -152,9 +163,9 @@ fn successive_variation_moves_get_scored_hints_while_older_quick_requests_are_pe
     let current = scheduler.next_request().unwrap().expect(
         "the newest variation must be analyzed without waiting for superseded quick work or whole-game coverage",
     );
-    assert!(canceled.contains(&previous.id));
+    assert!(canceled.iter().any(|c| c.id == previous.id));
     assert!(
-        !canceled.contains(&coverage.id),
+        !canceled.iter().any(|c| c.id == coverage.id),
         "original-game coverage must continue"
     );
     assert_eq!(
@@ -394,26 +405,28 @@ fn ownership_refines_with_the_position_and_reopens_without_losing_deeper_results
         scheduler.accept(&reply(&cheap.id, turn, 1, false)).unwrap();
     }
     for visits in [8, 64, 256] {
-        let request = scheduler.next_request().unwrap().unwrap();
-        assert_eq!(request.visits, visits);
-        assert_eq!(
-            request.query["includeOwnership"], true,
-            "refinement must request group estimates"
-        );
-        for turn in [0, 1] {
-            let mut value = reply(&request.id, turn, visits, false);
-            let mut ownership = vec![0.0; 81];
-            ownership[10] = if visits == 256 { -0.9 } else { 0.9 };
-            ownership[60] = -0.95;
-            value["ownership"] = json!(ownership);
-            let accepted = scheduler.accept(&value).unwrap();
+        while scheduler.values.values().any(|a| a.visits < visits) {
+            let request = scheduler.next_request().unwrap().unwrap();
+            assert_eq!(request.visits, visits);
             assert_eq!(
-                accepted[0].1.ownership, ownership,
-                "ownership must reach the selected position, not be discarded"
+                request.query["includeOwnership"], true,
+                "refinement must request group estimates"
             );
-            review
-                .store_analysis(&accepted[0].0.key, &accepted[0].1)
-                .unwrap();
+            for turn in request.targets.keys().copied() {
+                let mut value = reply(&request.id, turn, visits, false);
+                let mut ownership = vec![0.0; 81];
+                ownership[10] = if visits == 256 { -0.9 } else { 0.9 };
+                ownership[60] = -0.95;
+                value["ownership"] = json!(ownership);
+                let accepted = scheduler.accept(&value).unwrap();
+                assert_eq!(
+                    accepted[0].1.ownership, ownership,
+                    "ownership must reach the selected position, not be discarded"
+                );
+                review
+                    .store_analysis(&accepted[0].0.key, &accepted[0].1)
+                    .unwrap();
+            }
         }
         if visits == 8 {
             assert!(review.cached_analysis(&profile()).unwrap().is_empty());
@@ -581,4 +594,270 @@ fn ownership_in_a_cheaper_stream_is_visible_while_a_deep_chart_is_kept() {
         scheduler.values[&1], before,
         "a later cheap map must not replace a deeper map"
     );
+}
+
+#[test]
+fn full_queue_reserves_selection_capacity_without_restarting_unrelated_positions() {
+    let moves: String = (0..20).map(|_| ";B[];W[]").collect();
+    let document = Document::parse(format!("(;SZ[9]{moves})").as_bytes()).unwrap();
+    let values = (0..document.nodes.len())
+        .map(|node| {
+            (
+                node,
+                Analysis {
+                    visits: 8,
+                    winrate: 0.5,
+                    score_lead: 0.,
+                    suggestions: vec![],
+                    ownership: vec![0.; 81],
+                    ownership_visits: 8,
+                },
+            )
+        })
+        .collect();
+    let mut scheduler = Scheduler::new(1, document.clone(), profile(), values);
+    let mut background = Vec::new();
+    while let Some(request) = scheduler.next_request().unwrap() {
+        background.push(request);
+        assert!(
+            scheduler.pending() <= 8,
+            "queue must be bounded by engine capacity"
+        );
+    }
+    assert_eq!(scheduler.pending(), 8);
+    let mut selected = document.clone();
+    selected.selected = 20;
+    let canceled = scheduler.select(selected);
+    assert_eq!(
+        canceled.len(),
+        1,
+        "only one slot is needed for the new selection"
+    );
+    let foreground = scheduler.next_request().unwrap().unwrap();
+    assert_eq!(foreground.query["priority"], 100);
+    assert!(scheduler.next_request().unwrap().is_none());
+    assert_eq!(scheduler.pending(), 8);
+    let mut selected = document;
+    selected.selected = 19;
+    assert_eq!(
+        scheduler
+            .select(selected)
+            .into_iter()
+            .map(|c| c.id)
+            .collect::<Vec<_>>(),
+        vec![foreground.id.clone()]
+    );
+    let latest = scheduler.next_request().unwrap().unwrap();
+    scheduler
+        .accept(&reply(&foreground.id, 20, 4096, false))
+        .unwrap();
+    scheduler.accept(&reply(&latest.id, 19, 64, false)).unwrap();
+    assert_eq!(
+        scheduler.values[&20].visits, 8,
+        "superseded replies remain discarded"
+    );
+    assert_eq!(scheduler.values[&19].visits, 64);
+    for (request, turn) in background
+        .iter()
+        .flat_map(|r| r.targets.keys().map(move |turn| (r, *turn)))
+        .filter(|(r, turn)| {
+            !canceled
+                .iter()
+                .any(|c| c.id == r.id && c.turns.contains(turn))
+        })
+    {
+        scheduler
+            .accept(&reply(&request.id, turn, 64, false))
+            .unwrap();
+        assert_eq!(
+            scheduler.values[&turn].visits, 64,
+            "existing background searches still complete"
+        );
+    }
+}
+
+// Existing peers can finish while quick foreground refinement takes priority
+// over replacement work; full background capacity returns afterward.
+#[test]
+fn quick_selection_limits_new_competition_then_restores_full_background_capacity() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("game.sgf");
+    std::fs::write(&source, format!("(;SZ[9]{})", ";B[];W[]".repeat(10))).unwrap();
+    let db = temp.path().join("reviews");
+    let cache = temp.path().join("cache");
+    let mut review = Review::new(&db, &cache).unwrap();
+    review.import(&source).unwrap();
+    let values = (0..21)
+        .map(|id| {
+            (
+                id,
+                Analysis {
+                    visits: 8,
+                    winrate: 0.5,
+                    score_lead: 0.,
+                    suggestions: vec![],
+                    ownership: vec![0.; 81],
+                    ownership_visits: 8,
+                },
+            )
+        })
+        .collect();
+    let mut scheduler = Scheduler::new(1, review.document().unwrap().clone(), profile(), values);
+    let peer = scheduler.next_request().unwrap().unwrap();
+    review.select(20).unwrap();
+    scheduler.select(review.document().unwrap().clone());
+    let foreground = scheduler.next_request().unwrap().unwrap();
+    assert!(
+        scheduler.next_request().unwrap().is_none(),
+        "quick selection must not compete with seven newly started searches"
+    );
+    let turn = *peer.targets.keys().next().unwrap();
+    for (target, value) in scheduler.accept(&reply(&peer.id, turn, 64, false)).unwrap() {
+        review.store_analysis(&target.key, &value).unwrap();
+    }
+    assert!(
+        scheduler.next_request().unwrap().is_none(),
+        "quick selection should finish before admitting replacement work"
+    );
+    for (target, value) in scheduler
+        .accept(&reply(&foreground.id, 20, 64, false))
+        .unwrap()
+    {
+        review.store_analysis(&target.key, &value).unwrap();
+    }
+    while scheduler.next_request().unwrap().is_some() {
+        assert!(scheduler.pending() <= 8);
+    }
+    assert_eq!(
+        scheduler.pending(),
+        8,
+        "full throughput resumes after the quick selected result"
+    );
+    let mut reopened = Review::new(&db, &cache).unwrap();
+    reopened.import(&source).unwrap();
+    let saved = reopened.cached_analysis(&profile()).unwrap();
+    assert_eq!(saved[&20].visits, 64);
+    assert_eq!(saved[&turn].visits, 64);
+    assert_eq!(reopened.document().unwrap().selected, 20);
+}
+
+// Finish the first reusable pass before spending idle tail slots on much deeper
+// searches that would compete with its final positions.
+#[test]
+fn first_persisted_pass_finishes_before_background_deepening() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("game.sgf");
+    std::fs::write(&source, b"(;SZ[9];B[cc];W[gg];B[cg])").unwrap();
+    let db = temp.path().join("reviews");
+    let cache = temp.path().join("cache");
+    let mut review = Review::new(&db, &cache).unwrap();
+    review.import(&source).unwrap();
+    review.select(3).unwrap();
+    for id in 0..3 {
+        review
+            .store_analysis(
+                &review.analysis_key(id, &profile()).unwrap(),
+                &Analysis {
+                    visits: 64,
+                    winrate: 0.5,
+                    score_lead: 0.,
+                    suggestions: vec![],
+                    ownership: vec![0.; 81],
+                    ownership_visits: 64,
+                },
+            )
+            .unwrap();
+    }
+    let mut values = review.cached_analysis(&profile()).unwrap();
+    let mut shallow = values[&0].clone();
+    shallow.visits = 8;
+    shallow.ownership_visits = 8;
+    values.insert(3, shallow);
+    let mut scheduler = Scheduler::new(1, review.document().unwrap().clone(), profile(), values);
+    let tail = scheduler.next_request().unwrap().unwrap();
+    assert_eq!(tail.visits, 64);
+    assert!(
+        scheduler.next_request().unwrap().is_none(),
+        "finish reusable coverage before starting expensive background refinement"
+    );
+    scheduler.accept(&reply(&tail.id, 3, 64, true)).unwrap();
+    assert!(
+        scheduler.next_request().unwrap().is_none(),
+        "a streamed estimate is not a completed reusable result"
+    );
+    for (target, value) in scheduler.accept(&reply(&tail.id, 3, 64, false)).unwrap() {
+        review.store_analysis(&target.key, &value).unwrap();
+    }
+    let deeper = scheduler.next_request().unwrap().unwrap();
+    assert_eq!(deeper.visits, 256);
+    let mut reopened = Review::new(&db, &cache).unwrap();
+    reopened.import(&source).unwrap();
+    let saved = reopened.cached_analysis(&profile()).unwrap();
+    assert!((0..4).all(|id| saved[&id].visits >= 64));
+    assert_eq!(reopened.document().unwrap().selected, 3);
+}
+
+#[test]
+fn quick_selection_retires_cheap_peers_but_keeps_deeper_work_reusable() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("game.sgf");
+    std::fs::write(&source, format!("(;SZ[9]{})", ";B[];W[]".repeat(10))).unwrap();
+    let db = temp.path().join("reviews");
+    let cache = temp.path().join("cache");
+    let mut review = Review::new(&db, &cache).unwrap();
+    review.import(&source).unwrap();
+    let values = (0..21)
+        .map(|id| {
+            (
+                id,
+                Analysis {
+                    visits: if id < 3 { 1 } else { 8 },
+                    winrate: 0.5,
+                    score_lead: 0.,
+                    suggestions: vec![],
+                    ownership: vec![0.; 81],
+                    ownership_visits: 1,
+                },
+            )
+        })
+        .collect();
+    let mut scheduler = Scheduler::new(1, review.document().unwrap().clone(), profile(), values);
+    let mut peers = Vec::new();
+    while let Some(q) = scheduler.next_request().unwrap() {
+        peers.push(q);
+    }
+    review.select(20).unwrap();
+    scheduler.select(review.document().unwrap().clone());
+    let foreground = scheduler.next_request().unwrap().unwrap();
+    for q in peers {
+        for turn in q.targets.keys() {
+            let visits = if q.visits <= 8 { 4096 } else { 64 };
+            for (target, value) in scheduler
+                .accept(&reply(&q.id, *turn, visits, false))
+                .unwrap()
+            {
+                review.store_analysis(&target.key, &value).unwrap();
+            }
+        }
+    }
+    assert!(
+        (0..3).all(|id| scheduler.values[&id].visits == 1),
+        "retire cheap competing searches when an under-refined selection needs the engine"
+    );
+    for (target, value) in scheduler
+        .accept(&reply(&foreground.id, 20, 64, false))
+        .unwrap()
+    {
+        review.store_analysis(&target.key, &value).unwrap();
+    }
+    let mut reopened = Review::new(&db, &cache).unwrap();
+    reopened.import(&source).unwrap();
+    let saved = reopened.cached_analysis(&profile()).unwrap();
+    assert!((0..3).all(|id| !saved.contains_key(&id)));
+    assert!(
+        (3..8).all(|id| saved[&id].visits == 64),
+        "deeper peers must still finish and persist"
+    );
+    assert_eq!(saved[&20].visits, 64);
+    assert_eq!(reopened.document().unwrap().selected, 20);
 }
