@@ -462,3 +462,22 @@ KATASTRO_PANDANET_TABLE_PREVIEW=local/pandanet-table.png cargo test --test panda
 Seven targeted mutations each produced a behavioral failure: ignoring the selected column, preventing direction reversal, sorting point margins as text, sorting ranks as text, replacing resignation with an incorrect condition, opening the original first record instead of the clicked sorted record, and keeping player/rank text combined. All mutations were restored. Logs are under ignored `local/pandanet-table-mutation-*.log`.
 
 Final verification passed: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` (104 passed; 12 opt-in tests excluded by default). The optional synthetic GPU table render also passed and was inspected. The optimized bundle at `local/Katastro.app` was rebuilt and passed `codesign --verify --deep --strict`. Native Keychain, live Pandanet transfers, real KataGo, and AppKit file-sheet checks were not rerun for this display-only change.
+
+
+## Compact ranks, win markers, and library resizing (2026-11-13)
+
+The table now has five sortable columns, with ranks directly beside the White and Black player names. Player columns retain name-based ordering. A small gold vector trophy before the date marks wins by the synced account, whether that account played White or Black. Losses and unknown outcomes get no trophy. The compact marker and inline ranks take inspiration from the user's supplied OGS game-history page, inspected read-only; no profile or game content was copied into fixtures. The table now fills the available vertical space when the library window is resized, including with sync settings open. This supersedes the separate-rank-column layout above.
+
+The existing public UI integration test was updated first and failed because separate rank headings remained. A subsequent pre-implementation run found zero win markers instead of two. The strengthened test now asserts combined name/rank cells, all five sortable columns in both directions, visible gold trophy geometry on the correct two rows, no markers for losses/unknown results, normalized search, and opening the intended actual SGF after sorting/filtering. The new resize integration test first reproduced the fixed-height restriction: dragging the window left its height and 12 visible rows unchanged. It now verifies a stable initial size, performs an actual pointer drag on the resize corner, observes more visible rows (8 to 20 in the checked run), opens settings without restoring the old 240-pixel cap, and opens a newly exposed game through the existing review worker. Screenshots of the synthetic compact and enlarged views supplement those outcome checks.
+
+```sh
+cargo test --test pandanet_ui
+# Optional GPU renders require a working wgpu adapter; all content is synthetic.
+KATASTRO_PANDANET_TABLE_PREVIEW=local/pandanet-inline-trophy.png KATASTRO_PANDANET_TALL_PREVIEW=local/pandanet-height.png cargo test --test pandanet_ui
+```
+
+Four temporary mutations were detected by behavioral failures: hiding inline ranks, putting trophies on non-wins, making the painted trophy invisible while retaining its accessible label, and restoring a 400-pixel body cap. All were restored before final checks. `cargo fmt --all --check`, strict workspace Clippy, and `cargo test --workspace` passed (105 tests; 12 opt-in checks excluded by default). Synthetic GPU views were inspected; native Keychain, live Pandanet transfers, real KataGo, and AppKit sheets were not rerun for these UI changes.
+
+The pre-push credential audit used local Gitleaks 8.30.1 with redaction and allow-comments disabled, scanning all reachable Git history and an isolated copy of all 51 tracked working files plus commit messages. Both scans reported zero findings. A separate inspection of all 165 existing historical blobs checked Pandanet session-bearing URL literals, literal login-form passwords, embedded URL credentials, and private artifact paths. The only matches were explicit synthetic fixture values; no captured game files, archive responses, SQLite databases, private keys, or client packages were tracked in any revision. The outgoing login code reads credentials at runtime from Keychain or local UI input; diagnostic tools did not retrieve the real password. Audit reports and screenshots remain in ignored `local/`. The final committed tree and history are scanned again immediately before pushing.
+
+The optimized `local/Katastro.app` bundle was rebuilt and passed `codesign --verify --deep --strict`.

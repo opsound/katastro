@@ -3,15 +3,7 @@ use eframe::egui::{self, Color32, RichText, WidgetInfo, WidgetType};
 use egui_extras::{Column, TableBuilder};
 use std::{cmp::Ordering, path::PathBuf};
 
-const HEADINGS: [&str; 7] = [
-    "Date",
-    "White",
-    "White rank",
-    "Black",
-    "Black rank",
-    "Winner",
-    "Win condition",
-];
+const HEADINGS: [&str; 5] = ["Date", "White", "Black", "Winner", "Win condition"];
 
 pub(super) struct Sort {
     column: usize,
@@ -38,43 +30,43 @@ impl Sort {
 
 struct Row<'a> {
     game: &'a Game,
-    cells: [String; 7],
+    cells: [String; 5],
+    names: [&'a str; 2],
     condition: u8,
     points: f64,
 }
 impl<'a> Row<'a> {
     fn new(game: &'a Game) -> Self {
-        let (white, white_rank) = player(&game.white);
-        let (black, black_rank) = player(&game.black);
+        let (white, _) = player(&game.white);
+        let (black, _) = player(&game.black);
         let (winner, condition, kind, points) = outcome(&game.result);
         Self {
             game,
             cells: [
                 game.date.clone(),
-                white.into(),
-                white_rank.into(),
-                black.into(),
-                black_rank.into(),
+                game.white.clone(),
+                game.black.clone(),
                 winner.into(),
                 condition,
             ],
+            names: [white, black],
             condition: kind,
             points,
         }
     }
     fn compare(&self, other: &Self, column: usize) -> Ordering {
         let primary = match column {
-            2 | 4 => rank(&self.cells[column])
-                .unwrap_or(i32::MAX)
-                .cmp(&rank(&other.cells[column]).unwrap_or(i32::MAX)),
-            6 => self
+            1 | 2 => self.names[column - 1]
+                .to_lowercase()
+                .cmp(&other.names[column - 1].to_lowercase()),
+            4 => self
                 .condition
                 .cmp(&other.condition)
                 .then_with(|| self.points.total_cmp(&other.points))
                 .then_with(|| {
-                    self.cells[6]
+                    self.cells[4]
                         .to_lowercase()
-                        .cmp(&other.cells[6].to_lowercase())
+                        .cmp(&other.cells[4].to_lowercase())
                 }),
             _ => self.cells[column]
                 .to_lowercase()
@@ -151,7 +143,6 @@ pub(super) fn show(
     state: &Snapshot,
     query: &str,
     sort: &mut Sort,
-    max_height: f32,
 ) -> Option<PathBuf> {
     let query = query.trim().to_lowercase();
     let mut rows: Vec<_> = state
@@ -172,27 +163,36 @@ pub(super) fn show(
             "No matching games."
         });
     }
-    let width = ui.available_width().max(880.);
+    let width = ui.available_width().max(800.);
+    // Reserve the header, row count and the window's close controls; the body
+    // consumes the remaining height instead of imposing a fixed pixel cap.
+    let body_height = (ui.available_height()
+        - 32.
+        - ui.text_style_height(&egui::TextStyle::Small)
+        - (ui.text_style_height(&egui::TextStyle::Body) + 2. * ui.spacing().button_padding.y)
+            .max(ui.spacing().interact_size.y)
+        - 6.
+        - 5. * ui.spacing().item_spacing.y)
+        .max(0.);
     egui::ScrollArea::horizontal()
         .id_salt("library-table-horizontal")
+        .content_margin(0.)
         .show(ui, |ui| {
             ui.set_width(width);
             TableBuilder::new(ui)
-                .id_salt("synced-games-table")
+                .id_salt("synced-games-table-inline-ranks")
                 .striped(true)
                 .resizable(true)
                 .sense(egui::Sense::click())
                 .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                .column(Column::initial(160.).at_least(150.).clip(true))
-                .column(Column::initial(130.).at_least(80.).clip(true))
-                .column(Column::initial(86.).at_least(74.).clip(true))
-                .column(Column::initial(130.).at_least(80.).clip(true))
-                .column(Column::initial(86.).at_least(74.).clip(true))
+                .column(Column::initial(185.).at_least(180.).clip(true))
+                .column(Column::initial(200.).at_least(120.).clip(true))
+                .column(Column::initial(200.).at_least(120.).clip(true))
                 .column(Column::initial(78.).at_least(65.).clip(true))
                 .column(Column::remainder().at_least(130.).clip(true))
-                .max_scroll_height(max_height)
-                .min_scrolled_height(160.)
-                .auto_shrink([false, true])
+                .max_scroll_height(body_height)
+                .min_scrolled_height(0.)
+                .auto_shrink([false, false])
                 .header(32., |mut header| {
                     for (column, heading) in HEADINGS.iter().enumerate() {
                         header.col(|ui| {
@@ -249,6 +249,12 @@ pub(super) fn show(
                         for (column, value) in entry.cells.iter().enumerate() {
                             row.col(|ui| {
                                 if column == 0 {
+                                    let won = (entry.cells[3] == "White"
+                                        && entry.names[0].eq_ignore_ascii_case(&state.username))
+                                        || (entry.cells[3] == "Black"
+                                            && entry.names[1]
+                                                .eq_ignore_ascii_case(&state.username));
+                                    trophy(ui, won, &entry.game.date);
                                     let response = ui.add(egui::Button::new(value).frame(false));
                                     response.widget_info(|| {
                                         WidgetInfo::labeled(
@@ -265,14 +271,42 @@ pub(super) fn show(
                                     }
                                     return;
                                 }
-                                let text = RichText::new(value);
-                                let text = if matches!(column, 2 | 4) {
-                                    text.color(Color32::from_gray(165))
+                                if matches!(column, 1 | 2) {
+                                    let (name, rating) = player(value);
+                                    let mut text = egui::text::LayoutJob::default();
+                                    let font_id = egui::TextStyle::Body.resolve(ui.style());
+                                    text.append(
+                                        name,
+                                        0.,
+                                        egui::TextFormat {
+                                            font_id: font_id.clone(),
+                                            color: Color32::from_gray(220),
+                                            ..Default::default()
+                                        },
+                                    );
+                                    if rating != "—" {
+                                        text.append(
+                                            &format!(" {rating}"),
+                                            0.,
+                                            egui::TextFormat {
+                                                font_id,
+                                                color: Color32::from_gray(165),
+                                                ..Default::default()
+                                            },
+                                        );
+                                    }
+                                    ui.add(egui::Label::new(text).truncate().selectable(false))
+                                        .on_hover_text(value);
                                 } else {
-                                    text.color(Color32::from_gray(220))
-                                };
-                                ui.add(egui::Label::new(text).truncate().selectable(false))
+                                    ui.add(
+                                        egui::Label::new(
+                                            RichText::new(value).color(Color32::from_gray(220)),
+                                        )
+                                        .truncate()
+                                        .selectable(false),
+                                    )
                                     .on_hover_text(value);
+                                }
                             });
                         }
                         let response = row.response();
@@ -291,4 +325,51 @@ pub(super) fn show(
         state.games.len()
     ));
     open
+}
+
+fn trophy(ui: &mut egui::Ui, won: bool, date: &str) {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(16., 18.), egui::Sense::hover());
+    if !won {
+        return;
+    }
+    let gold = Color32::from_rgb(230, 183, 44);
+    let origin = rect.min;
+    let point = |x, y| origin + egui::vec2(x, y);
+    let painter = ui.painter();
+    for points in [
+        vec![point(4., 3.), point(1., 3.), point(1., 6.), point(5., 9.)],
+        vec![
+            point(12., 3.),
+            point(15., 3.),
+            point(15., 6.),
+            point(11., 9.),
+        ],
+    ] {
+        painter.add(egui::Shape::line(points, egui::Stroke::new(1.5, gold)));
+    }
+    painter.add(egui::Shape::convex_polygon(
+        vec![
+            point(3., 2.),
+            point(13., 2.),
+            point(12., 7.),
+            point(9., 10.),
+            point(7., 10.),
+            point(4., 7.),
+        ],
+        gold,
+        egui::Stroke::NONE,
+    ));
+    painter.rect_filled(
+        egui::Rect::from_min_max(point(7., 9.), point(9., 14.)),
+        0.,
+        gold,
+    );
+    painter.rect_filled(
+        egui::Rect::from_min_max(point(4., 14.), point(12., 16.)),
+        1.,
+        gold,
+    );
+    response
+        .widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, format!("You won on {date}")));
+    response.on_hover_text("You won this game");
 }

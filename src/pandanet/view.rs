@@ -173,13 +173,7 @@ impl View {
                         .desired_width(f32::INFINITY),
                 )
                 .labelled_by(label.id);
-                if let Some(path) = table::show(
-                    ui,
-                    state,
-                    &self.search,
-                    &mut self.sort,
-                    if self.settings_open { 240. } else { 400. },
-                ) {
+                if let Some(path) = table::show(ui, state, &self.search, &mut self.sort) {
                     actions.review = Some(path);
                     close = true;
                 }

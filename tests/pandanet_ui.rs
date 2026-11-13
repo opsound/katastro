@@ -219,7 +219,7 @@ fn games_library_filters_synced_games_and_opens_the_selected_record_directly() {
 }
 
 // Benefit: compare one field at a time and open the intended game after sorting.
-// A cosmetic header with unchanged row order, text-sorted margins/ranks, or a
+// A cosmetic header with unchanged row order, text-sorted margins, or a
 // click handler tied to the old row index would break this workflow.
 #[test]
 fn library_table_sorts_every_column_and_opens_the_correct_game_after_filtering() {
@@ -338,12 +338,38 @@ fn library_table_sorts_every_column_and_opens_the_correct_game_after_filtering()
         rows.into_iter().map(|r| r.0).collect::<Vec<_>>()
     };
     assert_eq!(order(&h), [5, 4, 3, 2, 1], "default is newest first");
+    let won_dates = h.query_all_by_label_contains("You won on ").count();
+    assert_eq!(
+        won_dates, 2,
+        "only the synced account's two wins get trophies"
+    );
+    for day in [3, 4] {
+        let trophy = h
+            .get_by_label(&format!("You won on 2026/11/{day:02} 12:00"))
+            .rect();
+        assert!(h.output().shapes.iter().any(|shape| matches!(&shape.shape,
+            eframe::egui::Shape::Path(path) if path.closed && path.fill.r() > 180 && path.fill.g() > 120 && path.fill.b() < 80
+            && !path.points.is_empty() && path.points.iter().all(|p| trophy.contains(*p))
+        )), "a visible gold trophy must be painted on a win");
+
+        assert!(
+            (trophy.center().y - h.get_by_label(&labels[day - 1]).rect().center().y).abs() < 1.
+        );
+    }
+
+    assert!(
+        h.query_by_label("Sort by White rank").is_none(),
+        "rank belongs beside the White player name"
+    );
+    assert!(
+        h.query_by_label("Sort by Black rank").is_none(),
+        "rank belongs beside the Black player name"
+    );
+
     for (column, ascending) in [
         ("Date", vec![1, 2, 3, 4, 5]),
         ("White", vec![2, 4, 5, 3, 1]),
-        ("White rank", vec![1, 4, 5, 2, 3]),
         ("Black", vec![3, 4, 2, 5, 1]),
-        ("Black rank", vec![3, 2, 4, 1, 5]),
         ("Winner", vec![4, 1, 3, 2, 5]),
         ("Win condition", vec![2, 1, 3, 4, 5]),
     ] {
@@ -365,8 +391,8 @@ fn library_table_sorts_every_column_and_opens_the_correct_game_after_filtering()
         "Resignation",
         "Time",
         "Game unfinished",
-        "Zebra",
-        "10k",
+        "Zebra 1d",
+        "example 10k",
     ] {
         assert!(
             h.query_all_by_label(text).next().is_some(),
@@ -375,8 +401,8 @@ fn library_table_sorts_every_column_and_opens_the_correct_game_after_filtering()
     }
     assert!(h.query_by_label("Black won by 10.5").is_none());
     for (text, column, next) in [
-        ("alpha", "White", "White rank"),
-        ("Zebra", "Black", "Black rank"),
+        ("alpha 2k", "White", "Black"),
+        ("Zebra 1d", "Black", "Winner"),
     ] {
         let cell = h.get_by_label(text).rect();
         assert!(cell.left() >= h.get_by_label(&format!("Sort by {column}")).rect().left());
@@ -408,4 +434,125 @@ fn library_table_sorts_every_column_and_opens_the_correct_game_after_filtering()
         Some("2026-11-03")
     );
     assert_eq!(h.state().state.document.as_ref().unwrap().mainline.len(), 4);
+}
+
+// Benefit: making the library taller reveals more games, including with settings
+// open. A fixed body-height cap leaves empty space instead of usable rows.
+#[test]
+fn library_table_uses_extra_window_height_to_show_and_open_more_games() {
+    use eframe::egui::vec2;
+    use katastro::pandanet::{Cancellation, Command};
+    let fixture = support::Fixture::new(|r| {
+        if r.url.contains("mode=sgf") {
+            let id = r
+                .url
+                .split("v1=game")
+                .nth(1)
+                .unwrap()
+                .split('&')
+                .next()
+                .unwrap()
+                .parse()
+                .unwrap();
+            (200, support::sgf(id))
+        } else {
+            (
+                200,
+                support::page(1, 1, &(1..=20).rev().collect::<Vec<_>>()),
+            )
+        }
+    });
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("Pandanet");
+    let vault = Arc::new(support::Vault::default());
+    let mut s = fixture.service(&root, vault.clone());
+    s.execute(
+        Command::Connect {
+            username: "example".into(),
+            password: "test-secret".into(),
+            remember: true,
+        },
+        100,
+        &Cancellation::default(),
+        &mut |_| {},
+    )
+    .unwrap();
+    s.execute(
+        Command::SetAutomatic(false),
+        101,
+        &Cancellation::default(),
+        &mut |_| {},
+    )
+    .unwrap();
+    drop(s);
+    let mut h = Harness::builder()
+        .with_size(vec2(1200., 1500.))
+        .build_eframe(|cc| {
+            DesktopApp::with_sync(
+                &cc.egui_ctx,
+                temp.path().join("reviews.sqlite"),
+                temp.path().join("cache.sqlite"),
+                EngineConfig {
+                    executable: "missing".into(),
+                    model: "missing".into(),
+                },
+                None,
+                Options {
+                    root,
+                    endpoint: fixture.endpoint.clone(),
+                    request_interval: Duration::ZERO,
+                    credentials: vault,
+                    clock: Arc::new(SystemClock),
+                },
+            )
+        });
+    h.get_by_label("Games").click();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while h
+        .query_by_label("Review 2026/11/20 12:00: example 6k+ vs opponent 5k+")
+        .is_none()
+    {
+        h.step();
+        assert!(Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    h.run_steps(3);
+    let before = h.query_all_by_label_contains("Review 2026/11/").count();
+    let window = h.get_by_label("Game library").rect();
+    h.run_steps(10);
+    assert!(
+        (h.get_by_label("Game library").rect().height() - window.height()).abs() < 1.,
+        "the library must not grow by itself between frames"
+    );
+
+    let from = window.right_bottom() - vec2(2., 2.);
+    let to = from + vec2(0., 600.);
+    h.hover_at(from);
+    h.run_steps(2);
+    h.drag_at(from);
+    h.step();
+    h.hover_at(to);
+    h.step();
+    h.drop_at(to);
+    h.run_steps(4);
+    assert!(
+        h.query_all_by_label_contains("Review 2026/11/").count() >= before + 6,
+        "a taller window must reveal more games instead of blank space"
+    );
+    h.get_by_label("Sync settings").click();
+    h.run_steps(3);
+    assert!(
+        h.query_all_by_label_contains("Review 2026/11/").count() >= 16,
+        "settings must not impose a separate short table cap"
+    );
+    if let Some(path) = std::env::var_os("KATASTRO_PANDANET_TALL_PREVIEW") {
+        h.render().unwrap().save(path).unwrap();
+    }
+    h.get_by_label("Review 2026/11/05 12:00: example 6k+ vs opponent 5k+")
+        .click();
+    wait(&mut h, |app| app.state.document.is_some());
+    assert_eq!(
+        h.state().state.document.as_ref().unwrap().nodes[0].property("DT"),
+        Some("2026-11-05")
+    );
 }
