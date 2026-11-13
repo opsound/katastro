@@ -5,6 +5,7 @@ pub mod desktop;
 pub mod dialogs;
 pub mod engine;
 pub mod game;
+pub mod pandanet;
 pub mod review;
 pub mod scheduler;
 #[cfg(feature = "desktop")]

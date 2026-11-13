@@ -19,13 +19,18 @@ encoding_rs = "0.8"
 eframe = { version = "=0.36.2", optional = true, default-features = false, features = ["accesskit", "default_fonts", "wgpu"] }
 egui_plot = { version = "=0.37.0", optional = true }
 rfd = { version = "0.17", optional = true }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "cookies"] }
+scraper = "0.24"
+zeroize = "1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = { version = "0.6", optional = true }
+security-framework = "3"
 
 [dev-dependencies]
 tempfile = "3"
 egui_kittest = { version = "=0.36.2", features = ["eframe", "wgpu"] }
+tiny_http = "0.12"
 
 [[bin]]
 name = "katastro"

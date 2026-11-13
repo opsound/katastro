@@ -13,6 +13,8 @@ pub enum Action {
     Open,
     Export,
     Settings,
+    Pandanet,
+    Games,
 }
 const ACCENT: Color32 = Color32::from_rgb(95, 206, 175);
 const SUGGESTION_BLUE: Color32 = Color32::from_rgb(65, 145, 255);
@@ -105,8 +107,15 @@ pub fn render(ui: &mut egui::Ui, snapshot: &Snapshot) -> Vec<Action> {
                             if snapshot.running { ACCENT } else { MUTED },
                         )
                     };
-                    ui.add(egui::Label::new(RichText::new(text).color(color)).truncate())
-                        .on_hover_text(text);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.small_button("Pandanet").clicked() {
+                            out.push(Action::Pandanet);
+                        }
+                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                            ui.add(egui::Label::new(RichText::new(text).color(color)).truncate())
+                                .on_hover_text(text);
+                        });
+                    });
                 });
             if let Some(doc) = &snapshot.document {
                 egui::Panel::bottom("review-tree")
@@ -214,17 +223,22 @@ fn review_controls(
     ui.scope(|ui| {
         ui.spacing_mut().button_padding = Vec2::new(7.0, 5.0);
         ui.horizontal_wrapped(|ui| {
-            if ui.button("Open SGF").clicked() {
-                out.push(Action::Open);
-            }
-            if ui
-                .add_enabled(snapshot.document.is_some(), egui::Button::new("Export SGF"))
-                .clicked()
-            {
-                out.push(Action::Export);
-            }
-            if ui.button("Engine settings").clicked() {
-                out.push(Action::Settings);
+            for (visible, label, enabled, action) in [
+                ("Open", "Open SGF", true, Action::Open),
+                (
+                    "Export",
+                    "Export SGF",
+                    snapshot.document.is_some(),
+                    Action::Export,
+                ),
+                ("Games", "Games", true, Action::Games),
+                ("Engine", "Engine settings", true, Action::Settings),
+            ] {
+                let response = ui.add_enabled(enabled, egui::Button::new(visible));
+                response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, enabled, label));
+                if response.on_hover_text(label).clicked() {
+                    out.push(action);
+                }
             }
         });
     });

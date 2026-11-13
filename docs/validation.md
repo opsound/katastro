@@ -393,3 +393,54 @@ KATASTRO_TEST_ENGINE=/opt/homebrew/bin/katago KATASTRO_TEST_MODEL="$HOME/katrain
 # Set KATASTRO_TEST_SGF to the affected private SGF's full path.
 KATASTRO_TEST_ENGINE=/opt/homebrew/bin/katago KATASTRO_TEST_MODEL="$HOME/katrain/katrain/models/b10c384h6nbttflrs.bin.gz" cargo test --test fox live_local_fox_worker_import_and_analysis -- --ignored --nocapture
 ```
+
+
+## Pandanet sync and game library (2026-11-12)
+
+The user can connect Pandanet once, remember the login in macOS Keychain, and browse synced games directly from **Games**. Automatic checks run on startup and every 15 minutes while the app is open. The recent-history cap defaults to 200; increasing it backfills, and lowering it preserves older downloads. Two downloads can overlap. A malformed individual response is recorded for retry while other games continue. Originals and saved review variations remain separate.
+
+Regressions would include fetching only the first archive page, re-downloading on each login, suppressing failed older records behind a known page, silently losing cancellation progress, blocking review input during a request, or requiring a file picker to open an already synced game. Tests exercise the public sync service with real temporary SQLite databases and SGF parsing, the threaded client with an injected clock, and actual egui input through DesktopApp. Synthetic local HTTP fixtures supply archive pages, authentication failures, redirects, malformed SGFs, and transient failures. Gates/channels control concurrent requests and startup shutdown; routine tests do not assert network speed or use arbitrary sleeps.
+
+### Red, green, and mutation evidence
+
+The initial service interfaces compiled before the behavioral implementation: pagination/persistence, scheduling, cancellation/retry, authentication errors, session-only login/forgetting, and redirects failed through missing downloads or accepted invalid responses. The initial background worker did not publish a completed sync, the desktop had no Pandanet action, and the Keychain stub returned no saved password. Each test passed after its production behavior was implemented.
+
+Follow-up failures established the requested changes: the history-cap test downloaded three games instead of two; gated downloads admitted only one request before release; an HTML response prevented the other valid game from being saved; and the library test could not find Games. Additional red tests exposed automatic-sync preference loss after interruption, failed manual-login recovery, an older failed record hidden by a known page (three games instead of four), and a fresh request starting after the app closed during worker startup. Those cases are now green. A characterization test also confirms that changing the session-bearing links causes zero duplicate transfers and deleting one original causes exactly one replacement transfer, which imports successfully.
+
+The original 11 temporary mutations were detected behaviorally: one-page pagination, duplicate fetches, ignoring the timer deadline, ignoring cancellation, disabling automatic sync after cancellation, accepting malformed archive HTML, skipping SGF validation, disabling the daily sweep, failing to clear login-needed state, omitting Keychain save, and removing the desktop entry. Ten final mutations checked the revised implementation: ignoring the cap, serializing the concurrent batch, aborting after a bad game, removing the Games action, ignoring search text, skipping older failed retries, allowing a sync after startup shutdown, duplicate fetches, ignoring missing files, and including the session token in game identity. Every mutation caused an outcome assertion to fail and was restored before final checks. Final mutation logs are in ignored `local/pandanet-mutation-*.log`.
+
+### Authenticated and native evidence
+
+The user signed into the Pandanet website and the native preview locally, then confirmed that the native download started. The initial build saved 34 actual originals and remembered the login preference. Its generic invalid-SGF failure could not be reconstructed because that body was discarded. Retrying the next missing record through the authenticated browser returned a valid 229-move SGF, which passed the public Review import/replay check using temporary databases. This supports retrying transient responses; it does not prove the original response's exact cause. Browser inspection also verified a second archive page, matching record identities across independent sessions, and a session-bearing SGF URL working without cookies.
+
+The disposable macOS Keychain test saved, reloaded, updated, and deleted its own test item. It does not inspect the user's password. UI integration tests sign in, remember the login, keep review navigation and variation creation usable while HTTP is gated, then open a synced game. The Games test filters two records by date, selects the intended record, and checks the loaded SGF and intact main line. An optional GPU render of that synthetic library was inspected; the interaction assertions, not the screenshot alone, establish behavior.
+
+A six-game live download spot check used the same authenticated archive links and fresh temporary stores for each mode:
+
+| Mode | Elapsed | Imported games | Total SGF bytes |
+| --- | ---: | ---: | ---: |
+| Serial with the original one-second spacing | 12.244 s | 6 | 19,871 |
+| Two concurrent transfers, no artificial spacing | 1.807 s | 6 | 19,871 |
+
+The games contained 50–260 moves. This measures HTTPS downloads, SGF validation, and local persistence for that sample; authenticated listing was supplied by a localhost fixture and excluded. There was one run per mode, with serial first, so server/cache/network effects may contribute. It is evidence for this spot check, not a promised general speedup or optimal rate. The bounded-overlap integration test separately establishes concurrent behavior without a timing assertion. Live HTML/SGF responses and session URLs remain outside Git.
+
+Reproduce the focused checks and optional native checks:
+
+```sh
+cargo test --test pandanet --test pandanet_background --test pandanet_ui
+# macOS login Keychain; creates only a disposable test item and may prompt for access.
+cargo test --test pandanet_keychain -- --ignored
+# Private SGF downloaded through an authenticated Pandanet session; input is read-only.
+KATASTRO_PANDANET_SGF=/path/to/private/game.sgf cargo test --test pandanet_live live_pandanet_download_imports_and_replays -- --ignored
+# Optional synthetic GPU preview; requires a working wgpu adapter.
+KATASTRO_PANDANET_UI_PREVIEW=local/pandanet-library.png cargo test --test pandanet_ui games_library_filters
+# Live benchmark: private HTML with exactly six authenticated SGF links, whose session must still be valid.
+# This downloads that six-game sample twice. Do not commit the HTML or URLs.
+KATASTRO_PANDANET_ARCHIVE_HTML=/path/to/private/archive.html KATASTRO_PANDANET_USERNAME=your-account cargo test --test pandanet_live live_download_batch_compares_serial_pacing_with_two_parallel_transfers -- --ignored --nocapture
+```
+
+The HTML archive is an undocumented interface. Controlled fixtures cannot guarantee future compatibility with Pandanet; the authenticated checks above supplement them. Real KataGo and AppKit sheet checks were not rerun for this sync/library change; their existing prerequisites and explicit invocations above remain applicable.
+
+Final automated checks passed: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` (103 passed; 12 opt-in tests excluded by default). The disposable Keychain test also passed explicitly. The release bundle at ignored `local/Katastro.app` was rebuilt and passed `codesign --verify --deep --strict`. The rebuilt app migrated the existing sync configuration to the 200-game default and requested macOS Keychain access for its changed local signature.
+
+After the user granted the rebuilt app Keychain access, native automatic sync resumed from the existing 34 records and completed at exactly 200 games. The sync index recorded a completed check with zero failed records, and all 200 local SGFs matched their stored SHA-256 values. No password was retrieved by diagnostic tools or written into repository artifacts.

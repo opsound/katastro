@@ -128,3 +128,14 @@ Implement these slices in order, each through a red and green integration-test c
 6. Release-mode corpus measurements, macOS file/menu/keyboard integration, and app packaging checks.
 
 The first implementation deliverable is a failing behavioral integration test for import, variation creation, and save/reopen, followed by the minimum production implementation. No production feature is complete without its corroborating test and counterfactual failure evidence.
+
+
+## Pandanet archive sync
+
+`pandanet::Service` owns the archive transport, SQLite sync index, and incremental download policy independently of egui. `pandanet::Client` runs it on a dedicated thread with a supplied clock and cancellation tokens. The desktop receives snapshots and opens chosen local paths through the existing review worker. Network requests, Keychain access, parsing, and sync database operations stay off the UI thread. Closing cancels queued/current work without changing the saved automatic-sync preference; an in-flight HTTP request has a bounded timeout.
+
+Original SGFs live below Application Support/Katastro/Pandanet, outside the evictable analysis cache. The account and the hash of the server's `v1`/`v2` record identifiers identify each original; session tokens and download URLs are not stored. A known ID with an existing file is skipped without re-hashing its contents. Missing files can be fetched when their pages are scanned. A validated download is atomically published without overwriting an existing original, then indexed; a crash between these steps can safely recover on retry. Reviews and analysis retain their existing, separate identities and stores.
+
+Initial sync, changed history scope, outstanding failed downloads, and daily sweeps scan the chosen recent range. Other checks stop at the first completely known page. The default cap is 200 records; lowering it never deletes files. Two bounded transfers run concurrently, with individual failures persisted for retry; a server 429/503 stops the cycle. Scheduled checks run every 15 minutes while the app is open. Manual sync is available even when automatic checks are paused. A completed archive check is required before saving a newly entered login to Keychain; only username and preferences enter the sync database.
+
+The Games toolbar action opens a searchable, newest-first library; selecting an entry invokes the existing open-and-analyze command. Sync settings are available in that window and from the Pandanet status button. Synthetic HTTP fixtures, temporary SQLite databases, an injected clock, and actual egui input validate these behaviors without requiring a personal login. Optional Keychain and authenticated tests supplement the fixtures.

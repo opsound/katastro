@@ -23,9 +23,17 @@ impl Wake for DialogWake {
         self.0.request_repaint();
     }
 }
+struct Services {
+    dialogs: Box<dyn FileDialogs>,
+    sync: crate::pandanet::Options,
+}
 pub struct DesktopApp {
     pub state: Snapshot,
     pub client: Client,
+    sync_client: crate::pandanet::Client,
+    sync_state: crate::pandanet::Snapshot,
+    sync_view: crate::pandanet::view::View,
+    sync_folder: PathBuf,
     settings_open: bool,
     executable_text: String,
     model_text: String,
@@ -33,6 +41,26 @@ pub struct DesktopApp {
     pending_dialog: Option<PendingDialog>,
 }
 impl DesktopApp {
+    pub fn with_sync(
+        ctx: &egui::Context,
+        reviews: PathBuf,
+        cache: PathBuf,
+        config: EngineConfig,
+        initial: Option<PathBuf>,
+        sync: crate::pandanet::Options,
+    ) -> Self {
+        Self::with_services(
+            ctx,
+            reviews,
+            cache,
+            config,
+            initial,
+            Services {
+                dialogs: Box::new(NativeDialogs),
+                sync,
+            },
+        )
+    }
     pub fn new(
         ctx: &egui::Context,
         reviews: PathBuf,
@@ -57,6 +85,35 @@ impl DesktopApp {
         initial: Option<PathBuf>,
         dialogs: Box<dyn FileDialogs>,
     ) -> Self {
+        let sync = crate::pandanet::Options::new(
+            reviews
+                .parent()
+                .unwrap_or(std::path::Path::new("."))
+                .join("Pandanet"),
+        );
+        Self::with_services(
+            ctx,
+            reviews,
+            cache,
+            config,
+            initial,
+            Services { dialogs, sync },
+        )
+    }
+    fn with_services(
+        ctx: &egui::Context,
+        reviews: PathBuf,
+        cache: PathBuf,
+        config: EngineConfig,
+        initial: Option<PathBuf>,
+        services: Services,
+    ) -> Self {
+        let sync_folder = services.sync.root.clone();
+        let sync_wake = ctx.clone();
+        let sync_client = crate::pandanet::Client::spawn(
+            services.sync,
+            Some(Arc::new(move || sync_wake.request_repaint())),
+        );
         ctx.set_visuals(egui::Visuals::dark());
         ctx.global_style_mut(|style| {
             style.spacing.item_spacing = egui::vec2(10.0, 8.0);
@@ -80,7 +137,11 @@ impl DesktopApp {
             settings_open: false,
             executable_text: String::new(),
             model_text: String::new(),
-            dialogs,
+            dialogs: services.dialogs,
+            sync_client,
+            sync_state: crate::pandanet::Snapshot::default(),
+            sync_view: crate::pandanet::view::View::default(),
+            sync_folder,
             pending_dialog: None,
         }
     }
@@ -100,6 +161,14 @@ impl DesktopApp {
                     .map(|stem| format!("{}.review.sgf", stem.to_string_lossy()))
                     .unwrap_or("review.sgf".into());
                 self.begin_dialog(DialogRequest::ExportGame { filename }, frame);
+                None
+            }
+            Action::Games => {
+                self.sync_view.show_library(&self.sync_state);
+                None
+            }
+            Action::Pandanet => {
+                self.sync_view.show(&self.sync_state);
                 None
             }
             Action::Settings => {
@@ -203,6 +272,9 @@ impl eframe::App for DesktopApp {
         while let Ok(state) = self.client.snapshots.try_recv() {
             self.state = state;
         }
+        while let Ok(state) = self.sync_client.snapshots.try_recv() {
+            self.sync_state = state;
+        }
         let dropped = ui.input(|input| {
             input
                 .raw
@@ -219,6 +291,19 @@ impl eframe::App for DesktopApp {
         }
         if self.settings_open {
             self.settings(ui, frame);
+        }
+        if self.sync_view.open {
+            let actions = self
+                .sync_view
+                .render(ui.ctx(), &self.sync_state, &self.sync_folder);
+            if let Some(command) = actions.command
+                && let Err(error) = self.sync_client.send(command)
+            {
+                self.sync_state.error = Some(error.to_string());
+            }
+            if let Some(path) = actions.review {
+                self.action(Action::Review(Command::OpenAndAnalyze(path)), frame);
+            }
         }
         self.poll_dialog(ui.ctx(), frame);
     }
