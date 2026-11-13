@@ -54,6 +54,56 @@ impl<'a> Row<'a> {
             points,
         }
     }
+    fn show_cell(&self, ui: &mut egui::Ui, column: usize, username: &str) -> bool {
+        let value = &self.cells[column];
+        if column == 0 {
+            let won = (self.cells[3] == "White" && self.names[0].eq_ignore_ascii_case(username))
+                || (self.cells[3] == "Black" && self.names[1].eq_ignore_ascii_case(username));
+            trophy(ui, won, &self.game.date);
+            let response = ui.add(egui::Button::new(value).frame(false));
+            response.widget_info(|| {
+                WidgetInfo::labeled(
+                    WidgetType::Button,
+                    true,
+                    format!(
+                        "Review {}: {} vs {}",
+                        self.game.date, self.game.white, self.game.black
+                    ),
+                )
+            });
+            return response.clicked();
+        }
+        if matches!(column, 1 | 2) {
+            let (name, rating) = player(value);
+            let mut text = egui::text::LayoutJob::default();
+            let suffix = if rating == "—" {
+                String::new()
+            } else {
+                format!(" {rating}")
+            };
+            for (part, gray) in [(name, 220), (suffix.as_str(), 165)] {
+                text.append(
+                    part,
+                    0.,
+                    egui::TextFormat {
+                        font_id: egui::TextStyle::Body.resolve(ui.style()),
+                        color: Color32::from_gray(gray),
+                        ..Default::default()
+                    },
+                );
+            }
+            ui.add(egui::Label::new(text).truncate().selectable(false))
+                .on_hover_text(value);
+        } else {
+            ui.add(
+                egui::Label::new(RichText::new(value).color(Color32::from_gray(220)))
+                    .truncate()
+                    .selectable(false),
+            )
+            .on_hover_text(value);
+        }
+        false
+    }
     fn compare(&self, other: &Self, column: usize) -> Ordering {
         let primary = match column {
             1 | 2 => self.names[column - 1]
@@ -246,66 +296,10 @@ pub(super) fn show(
                     });
                     body.rows(30., rows.len(), |mut row| {
                         let entry = &rows[row.index()];
-                        for (column, value) in entry.cells.iter().enumerate() {
+                        for column in 0..HEADINGS.len() {
                             row.col(|ui| {
-                                if column == 0 {
-                                    let won = (entry.cells[3] == "White"
-                                        && entry.names[0].eq_ignore_ascii_case(&state.username))
-                                        || (entry.cells[3] == "Black"
-                                            && entry.names[1]
-                                                .eq_ignore_ascii_case(&state.username));
-                                    trophy(ui, won, &entry.game.date);
-                                    let response = ui.add(egui::Button::new(value).frame(false));
-                                    response.widget_info(|| {
-                                        WidgetInfo::labeled(
-                                            WidgetType::Button,
-                                            true,
-                                            format!(
-                                                "Review {}: {} vs {}",
-                                                entry.game.date, entry.game.white, entry.game.black
-                                            ),
-                                        )
-                                    });
-                                    if response.clicked() {
-                                        open = Some(entry.game.path.clone());
-                                    }
-                                    return;
-                                }
-                                if matches!(column, 1 | 2) {
-                                    let (name, rating) = player(value);
-                                    let mut text = egui::text::LayoutJob::default();
-                                    let font_id = egui::TextStyle::Body.resolve(ui.style());
-                                    text.append(
-                                        name,
-                                        0.,
-                                        egui::TextFormat {
-                                            font_id: font_id.clone(),
-                                            color: Color32::from_gray(220),
-                                            ..Default::default()
-                                        },
-                                    );
-                                    if rating != "—" {
-                                        text.append(
-                                            &format!(" {rating}"),
-                                            0.,
-                                            egui::TextFormat {
-                                                font_id,
-                                                color: Color32::from_gray(165),
-                                                ..Default::default()
-                                            },
-                                        );
-                                    }
-                                    ui.add(egui::Label::new(text).truncate().selectable(false))
-                                        .on_hover_text(value);
-                                } else {
-                                    ui.add(
-                                        egui::Label::new(
-                                            RichText::new(value).color(Color32::from_gray(220)),
-                                        )
-                                        .truncate()
-                                        .selectable(false),
-                                    )
-                                    .on_hover_text(value);
+                                if entry.show_cell(ui, column, &state.username) {
+                                    open = Some(entry.game.path.clone());
                                 }
                             });
                         }

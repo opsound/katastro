@@ -130,6 +130,12 @@ Implement these slices in order, each through a red and green integration-test c
 The first implementation deliverable is a failing behavioral integration test for import, variation creation, and save/reopen, followed by the minimum production implementation. No production feature is complete without its corroborating test and counterfactual failure evidence.
 
 
+## Implementation organization
+
+The desktop rendering entry point is `ui::render`. Its private `board`, `charts`, `sidebar`, and `tree` modules own their respective controls and painting; shared caption styling and candidate colors stay in `ui`. `ui::chart_points` remains a public re-export, and chart series share one assessment conversion so missing values and numeric zero remain distinct. The Pandanet table owns its row rendering separately from table sizing, sorting, and scrolling.
+
+`Review` owns the review database connection privately. Engine configuration and analysis profiles use the same typed JSON settings accessors; the worker sends review commands without issuing SQL. Setting keys and on-disk formats are unchanged.
+
 ## Pandanet archive sync
 
 `pandanet::Service` owns the archive transport, SQLite sync index, and incremental download policy independently of egui. `pandanet::Client` runs it on a dedicated thread with a supplied clock and cancellation tokens. The desktop receives snapshots and opens chosen local paths through the existing review worker. Network requests, Keychain access, parsing, and sync database operations stay off the UI thread. Closing cancels queued/current work without changing the saved automatic-sync preference; an in-flight HTTP request has a bounded timeout.
