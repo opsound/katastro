@@ -4,6 +4,7 @@ use crate::{
     scheduler::Scheduler,
 };
 use serde_json::json;
+mod discovery;
 use std::{
     collections::BTreeMap,
     path::PathBuf,
@@ -27,6 +28,10 @@ pub enum Command {
     Start,
     Pause,
     Configure(EngineConfig),
+    PrepareTraining {
+        games: Vec<PathBuf>,
+        account: String,
+    },
     Shutdown,
 }
 #[derive(Clone, Debug)]
@@ -40,6 +45,8 @@ pub struct Snapshot {
     pub error: Option<String>,
     pub diagnostic: Option<String>,
     pub running: bool,
+    pub preparing_training: bool,
+    pub training_indexed: bool,
     pub coverage: (usize, usize),
     pub analysis_target: Option<u64>,
 }
@@ -55,6 +62,8 @@ impl Snapshot {
             error: None,
             diagnostic: None,
             running: false,
+            preparing_training: false,
+            training_indexed: false,
             coverage: (0, 0),
             analysis_target: None,
         }
@@ -124,6 +133,7 @@ struct Worker {
     scheduler: Option<Scheduler>,
     generation: u64,
     unsupported_mainline: bool,
+    discovery: discovery::Discovery,
 }
 impl Worker {
     fn new(reviews: PathBuf, cache: PathBuf, config: EngineConfig) -> Result<Self> {
@@ -136,6 +146,7 @@ impl Worker {
             scheduler: None,
             generation: 0,
             unsupported_mainline: false,
+            discovery: discovery::Discovery::new(reviews, cache),
         })
     }
     fn publish(&mut self, tx: &Sender<Snapshot>, wake: &Option<Arc<dyn Fn() + Send + Sync>>) {
@@ -160,6 +171,8 @@ impl Worker {
         send_snapshot(&self.state, tx, wake);
     }
     fn pause(&mut self) {
+        self.discovery.pause();
+        self.state.preparing_training = false;
         if let Some(scheduler) = self.scheduler.take() {
             self.state.values = scheduler.values;
         }
@@ -174,6 +187,7 @@ impl Worker {
         let doc = self.review.document().cloned().ok_or("Open an SGF first")?;
         let profile = Engine::profile(&self.state.config)?;
         let mut values = self.review.cached_analysis(&profile)?;
+        self.discovery.started(profile.clone(), &values);
         if self.review.last_profile()?.as_ref() == Some(&profile) {
             for (node, value) in &self.state.values {
                 let combined = values
@@ -217,6 +231,8 @@ impl Worker {
                 // Validate import before stopping or replacing a working review.
                 self.review.import(&path)?;
                 self.pause();
+                self.discovery.opened();
+                self.state.training_indexed = false;
                 self.generation += 1;
                 self.state.values = if let Some(profile) = self.review.last_profile()? {
                     self.review.cached_analysis(&profile)?
@@ -267,13 +283,17 @@ impl Worker {
                 self.state.status = format!("Exported {}", path.display());
             }
             Command::Start => {
-                if !self.state.running {
+                if self.review.document().is_none() {
+                    self.discovery.resume();
+                } else if !self.state.running {
                     self.start()?;
                 }
             }
             Command::Pause => self.pause(),
             Command::Configure(config) => {
                 self.pause();
+                self.discovery.reconfigure();
+                self.state.training_indexed = false;
                 self.engine = None;
                 self.review.save_setting("engine", &config)?;
                 self.state.config = config;
@@ -281,6 +301,7 @@ impl Worker {
                     "Engine settings saved · cached review remains available".into();
             }
             Command::Shutdown => {}
+            Command::PrepareTraining { games, account } => self.discovery.library(games, account),
         }
         Ok(())
     }
@@ -329,6 +350,12 @@ impl Worker {
                 };
                 match event {
                     EngineEvent::Response(reply) => {
+                        if let Some(trainer) = &mut self.discovery.trainer
+                            && let Err(error) = trainer.accept(&reply, 0.5)
+                        {
+                            self.pause();
+                            self.state.error = Some(error.to_string());
+                        }
                         if let Some(scheduler) = self.scheduler.as_mut() {
                             match scheduler.accept(&reply) {
                                 Ok(results) => {
@@ -340,6 +367,8 @@ impl Worker {
                                             self.review.store_analysis(&target.key, &value)
                                         {
                                             self.state.error = Some(error.to_string());
+                                        } else {
+                                            self.discovery.completed(target.node, value.visits);
                                         }
                                     }
                                 }
@@ -421,6 +450,35 @@ impl Worker {
                     };
                     dirty = true;
                 }
+            }
+            let discovery = (|| -> Result<()> {
+                if let (Some(source), Some(doc)) = (self.review.source(), self.review.document()) {
+                    self.discovery.index_review(source, doc)?;
+                    let indexed = self.discovery.indexed();
+                    dirty |= self.state.training_indexed != indexed;
+                    self.state.training_indexed = indexed;
+                } else {
+                    self.discovery.start_idle(&self.state.config)?;
+                    if let Some(trainer) = &mut self.discovery.trainer {
+                        while let Some(query) = trainer.next_request()? {
+                            if self.engine.is_none() {
+                                self.engine = Some(Engine::spawn(&self.state.config)?);
+                            }
+                            self.engine.as_mut().unwrap().send(&query)?;
+                        }
+                        let snapshot = trainer.snapshot();
+                        self.state.preparing_training =
+                            snapshot.phase == crate::training::Phase::Searching;
+                        dirty |= self.state.status != snapshot.status;
+                        self.state.status = snapshot.status;
+                    }
+                }
+                Ok(())
+            })();
+            if let Err(error) = discovery {
+                self.pause();
+                self.state.error = Some(error.to_string());
+                dirty = true;
             }
             if dirty && last_publish.elapsed() >= Duration::from_millis(30) {
                 self.publish(&snapshots, &wake);

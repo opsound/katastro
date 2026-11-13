@@ -232,6 +232,10 @@ impl DesktopApp {
                 ));
             }
             Action::Command(command) => {
+                if matches!(command, client::Command::Next) {
+                    let _ = self.client.send(Command::Pause);
+                    self.training_selection = None;
+                }
                 if let Some(client) = &self.training_client
                     && let Err(error) = client.send(command)
                 {
@@ -246,6 +250,15 @@ impl DesktopApp {
             Action::Back => {
                 self.training_client = None;
                 self.training_view.open = false;
+                let _ = self.client.send(Command::PrepareTraining {
+                    games: self
+                        .sync_state
+                        .games
+                        .iter()
+                        .map(|g| g.path.clone())
+                        .collect(),
+                    account: self.sync_state.username.clone(),
+                });
             }
         }
     }
@@ -366,6 +379,19 @@ impl eframe::App for DesktopApp {
             self.state = state;
         }
         while let Ok(state) = self.sync_client.snapshots.try_recv() {
+            if !self.training_view.open
+                && (state.username != self.sync_state.username
+                    || !state.games.iter().map(|g| &g.path).eq(self
+                        .sync_state
+                        .games
+                        .iter()
+                        .map(|g| &g.path)))
+            {
+                let _ = self.client.send(Command::PrepareTraining {
+                    games: state.games.iter().map(|g| g.path.clone()).collect(),
+                    account: state.username.clone(),
+                });
+            }
             self.sync_state = state;
         }
         self.poll_training();

@@ -48,6 +48,7 @@ impl Options {
 pub enum Command {
     Play(Option<Point>),
     Retry,
+    Next,
     Reveal,
     Cancel,
 }
@@ -120,6 +121,7 @@ impl Client {
                             let result = match command {
                                 Command::Play(point) => trainer.play(point),
                                 Command::Retry => trainer.retry(),
+                                Command::Next => trainer.next_problem(),
                                 Command::Reveal => {
                                     if let Some(engine) = &mut engine {
                                         engine.send(&serde_json::json!({"id":"training-cancel","action":"terminate_all"}))?;

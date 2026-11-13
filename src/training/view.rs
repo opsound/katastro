@@ -1,6 +1,7 @@
 use super::{Phase, Settings, Snapshot, client::Command};
 use eframe::egui::{self, RichText};
 use std::path::PathBuf;
+mod charts;
 pub struct View {
     pub open: bool,
     account: String,
@@ -72,8 +73,8 @@ impl View {
                             out.push(Action::ExploreLine(line.clone()));
                         }
                     }
-                    if ui.button("Next exercise").clicked() {
-                        out.push(self.start(library));
+                    if ui.button("Next problem").clicked() {
+                        out.push(Action::Command(Command::Next));
                     }
                 }
             });
@@ -165,6 +166,11 @@ impl View {
                 if state.phase == Phase::Failed && ui.button("Retry without hints").clicked() {
                     out.push(Action::Command(Command::Retry));
                 }
+                if matches!(state.phase, Phase::Passed | Phase::Failed)
+                    && ui.button("Next problem").clicked()
+                {
+                    out.push(Action::Command(Command::Next));
+                }
                 if state.phase == Phase::Passed {
                     if ui.button("Explore suggested lines").clicked() {
                         out.push(Action::Command(Command::Reveal));
@@ -186,6 +192,12 @@ impl View {
                     ui.colored_label(egui::Color32::LIGHT_RED, error);
                 }
             });
+        if let Some(report) = &state.report {
+            egui::Panel::bottom("training-report-comparison")
+                .resizable(true)
+                .default_size(200.0)
+                .show(ui, |ui| charts::show(ui, &report.comparison));
+        }
         egui::CentralPanel::default().show(ui, |ui| {
             if let (Some(doc), Some(board)) = (&state.document, &state.board) {
                 if let Some(point) =

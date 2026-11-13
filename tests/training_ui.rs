@@ -14,6 +14,7 @@ struct State {
     view: View,
     library: katastro::pandanet::Snapshot,
     settle: bool,
+    good: bool,
 }
 impl State {
     fn render(&mut self, ui: &mut eframe::egui::Ui) {
@@ -27,6 +28,7 @@ impl State {
                 Action::Command(command) => match command {
                     Command::Play(p) => self.trainer.play(p).unwrap(),
                     Command::Retry => self.trainer.retry().unwrap(),
+                    Command::Next => self.trainer.next_problem().unwrap(),
                     Command::Reveal => self.trainer.reveal().unwrap(),
                     Command::Cancel => self.trainer.cancel(),
                 },
@@ -43,7 +45,7 @@ impl State {
             }
         }
         if self.settle {
-            support::settle(&mut self.trainer, false, false);
+            support::settle(&mut self.trainer, false, self.good);
         }
         self.snapshot = self.trainer.snapshot();
     }
@@ -76,6 +78,7 @@ fn training_screen_plays_grades_and_retries_without_leaking_review_hints() {
         view,
         library,
         settle: true,
+        good: false,
     };
     let mut h = Harness::builder()
         .with_size(eframe::egui::vec2(1200., 820.))
@@ -162,6 +165,7 @@ fn waiting_keeps_the_board_bright_and_still_without_allowing_extra_moves() {
         view: View::default(),
         library: Default::default(),
         settle: false,
+        good: true,
     };
     let mut h = Harness::builder()
         .with_size(eframe::egui::vec2(1200., 820.))
@@ -215,4 +219,173 @@ fn waiting_keeps_the_board_bright_and_still_without_allowing_extra_moves() {
             .stone(katastro::Point::new(1, 4)),
         Some(katastro::Color::Black)
     );
+}
+
+// Benefit: every completed attempt has a visible way forward, including while
+// exploring. Regression: the button is missing or repeats the same problem.
+#[test]
+fn next_problem_advances_after_pass_fail_and_exploration() {
+    for outcome in [Phase::Passed, Phase::Failed, Phase::Revealed] {
+        let temp = tempfile::tempdir().unwrap();
+        let source = support::fixture(temp.path(), false);
+        let other = temp.path().join("other.sgf");
+        std::fs::write(
+            &other,
+            std::fs::read_to_string(&source)
+                .unwrap()
+                .replace("KM[6.5]", "KM[7.5]"),
+        )
+        .unwrap();
+        let mut trainer = support::trainer(temp.path());
+        trainer
+            .begin(
+                vec![source, other],
+                "me".into(),
+                katastro::training::Settings {
+                    moves: 1,
+                    include_completed: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        support::settle(&mut trainer, false, true);
+        let state = State {
+            snapshot: trainer.snapshot(),
+            trainer,
+            review: katastro::Review::new(&temp.path().join("reviews"), &temp.path().join("cache"))
+                .unwrap(),
+            view: View::default(),
+            library: Default::default(),
+            settle: true,
+            good: outcome == Phase::Passed,
+        };
+        let mut h = Harness::builder()
+            .with_size(eframe::egui::vec2(1200., 820.))
+            .build_ui_state(|ui, state: &mut State| state.render(ui), state);
+        if outcome == Phase::Revealed {
+            h.get_by_label("Give up and explore").click();
+            h.run_steps(3);
+            h.get_by_label("Explore line 1").click();
+        } else {
+            h.get_by_label("Play A5").click();
+        }
+        h.run_steps(3);
+        assert_eq!(h.state().snapshot.phase, outcome);
+        if outcome == Phase::Failed {
+            assert!(h.query_by_label("Retry without hints").is_some());
+        }
+        h.get_by_label("Next problem").click();
+        h.run_steps(3);
+        assert_eq!(h.state().snapshot.phase, Phase::YourTurn);
+        assert_eq!(h.state().snapshot.document.as_ref().unwrap().komi, 7.5);
+        assert_eq!(h.state().snapshot.played, 0);
+        assert!(h.state().snapshot.report.is_none() && h.state().snapshot.reveal.is_none());
+        h.get_by_label("Play B5").click();
+        h.run_steps(3);
+        assert_eq!(h.state().snapshot.played, 1);
+    }
+}
+
+// Benefit: after real board play, two report charts visibly overlay the attempt
+// and recorded continuation. They are absent during blind play and after retry.
+#[test]
+fn report_draws_both_evaluation_overlays_and_retry_hides_them() {
+    use eframe::egui::{Color32, Shape, epaint::ColorMode};
+    let temp = tempfile::tempdir().unwrap();
+    let mut trainer = support::trainer(temp.path());
+    trainer
+        .begin(
+            vec![support::fixture(temp.path(), false)],
+            "me".into(),
+            Default::default(),
+        )
+        .unwrap();
+    support::settle(&mut trainer, false, true);
+    let state = State {
+        snapshot: trainer.snapshot(),
+        trainer,
+        review: katastro::Review::new(&temp.path().join("reviews"), &temp.path().join("cache"))
+            .unwrap(),
+        view: View::default(),
+        library: Default::default(),
+        settle: true,
+        good: true,
+    };
+    let mut h = Harness::builder()
+        .with_size(eframe::egui::vec2(1200., 820.))
+        .build_ui_state(|ui, s: &mut State| s.render(ui), state);
+    assert!(h.query_by_label("Training winrate comparison").is_none());
+    for point in ["A5", "B5", "C5", "D5", "E5"] {
+        h.get_by_label(&format!("Play {point}")).click();
+        h.run_steps(3);
+    }
+    assert_eq!(h.state().snapshot.phase, Phase::Passed);
+    for label in ["Training score comparison", "Training winrate comparison"] {
+        let plot = h
+            .query_by_label(label)
+            .expect("report must show both comparison charts")
+            .rect();
+        let paths: Vec<_> = h
+            .output()
+            .shapes
+            .iter()
+            .filter_map(|s| match &s.shape {
+                Shape::Path(p)
+                    if p.points.len() == 11 && p.points.iter().all(|v| plot.contains(*v)) =>
+                {
+                    Some(p)
+                }
+                _ => None,
+            })
+            .collect();
+        let recorded = paths
+            .iter()
+            .find(|p| p.stroke.color == ColorMode::Solid(Color32::from_rgb(126, 167, 244)))
+            .expect("recorded line is visible");
+        let attempt = paths
+            .iter()
+            .find(|p| p.stroke.color == ColorMode::Solid(Color32::from_rgb(90, 190, 156)))
+            .expect("attempt overlay is visible");
+        assert!(
+            (recorded.points[0].y - attempt.points[0].y).abs() < 0.1,
+            "same starting evaluation"
+        );
+        assert!(
+            recorded.points[10].y > attempt.points[10].y + 5.0,
+            "recorded loss is visible below the clean attempt"
+        );
+        assert!((attempt.points[0].y - attempt.points[10].y).abs() < 0.1);
+    }
+    if let Some(folder) = std::env::var_os("KATASTRO_TRAINING_PREVIEW") {
+        h.render()
+            .unwrap()
+            .save(std::path::PathBuf::from(folder).join("report.png"))
+            .unwrap();
+    }
+    // A fresh failed attempt also shows the chart, but blind retry removes it.
+    h.state_mut()
+        .trainer
+        .begin(
+            vec![support::fixture(temp.path(), false)],
+            "me".into(),
+            katastro::training::Settings {
+                include_completed: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    h.state_mut().good = false;
+    h.run_steps(3);
+    for point in ["A4", "B4", "C4", "D4", "E4"] {
+        h.get_by_label(&format!("Play {point}")).click();
+        h.run_steps(3);
+    }
+    assert_eq!(h.state().snapshot.phase, Phase::Failed);
+    assert!(h.query_by_label("Training winrate comparison").is_some());
+    h.get_by_label("Retry without hints").click();
+    h.run_steps(3);
+    assert!(h.query_by_label("Training winrate comparison").is_none());
+    h.get_by_label("Play A5").click();
+    h.run_steps(3);
+    assert_eq!(h.state().snapshot.played, 1);
 }

@@ -38,6 +38,26 @@ pub(super) fn review_controls(
             }
         });
     });
+    if snapshot.document.is_none() {
+        let preparing = snapshot.preparing_training;
+        if ui
+            .button(if preparing {
+                "Pause preparation"
+            } else {
+                "Prepare training"
+            })
+            .clicked()
+        {
+            command(
+                out,
+                if preparing {
+                    Command::Pause
+                } else {
+                    Command::Start
+                },
+            );
+        }
+    }
     if let Some(source) = &snapshot.source {
         ui.add(
             egui::Label::new(caption(

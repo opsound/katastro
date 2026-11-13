@@ -6,6 +6,47 @@ use serde_json::json;
 #[path = "support/training.rs"]
 mod support;
 use support::*;
+// Benefit: report curves compare the complete attempted and recorded continuations
+// on the same move axis and from our perspective, including the final AI reply.
+#[test]
+fn report_compares_every_position_from_the_exercise_in_either_player_color() {
+    for white in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let mut t = trainer(temp.path());
+        t.begin(
+            vec![fixture(temp.path(), white)],
+            "me".into(),
+            Settings::default(),
+        )
+        .unwrap();
+        settle(&mut t, white, true);
+        assert!(t.snapshot().report.is_none());
+        for i in 0..5 {
+            t.play(Some(Point::new(i, 4))).unwrap();
+            settle(&mut t, white, true);
+        }
+        let report = t.snapshot().report.unwrap();
+        assert!(report.passed);
+        assert_eq!(report.comparison.recorded.len(), 11);
+        assert_eq!(report.comparison.attempt.len(), 11);
+        for (index, (recorded, attempt)) in report
+            .comparison
+            .recorded
+            .iter()
+            .zip(&report.comparison.attempt)
+            .enumerate()
+        {
+            assert!((attempt.winrate - 0.8).abs() < 1e-9);
+            assert_eq!(attempt.score, 8.0);
+            assert!((recorded.winrate - if index == 0 { 0.8 } else { 0.4 }).abs() < 1e-9);
+            assert_eq!(recorded.score, if index == 0 { 8.0 } else { -2.0 });
+        }
+        assert_eq!(
+            report.attempt_loss.winrate, 0.0,
+            "charts must not change own-move grading"
+        );
+    }
+}
 // Benefit: an AI reply immediately opens the next turn, even with a backlog of
 // grading searches. Regression: waiting for evaluations, starving HumanSL, or
 // reporting a pass before the held evaluations have actually arrived.

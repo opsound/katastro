@@ -1,6 +1,8 @@
 #![cfg(feature = "desktop")]
 #[path = "support/pandanet/mod.rs"]
 mod support;
+#[path = "support/training.rs"]
+mod training_support;
 use egui_kittest::{Harness, kittest::Queryable};
 use katastro::{
     desktop::DesktopApp,
@@ -72,6 +74,96 @@ fn wait(h: &mut Harness<'_, DesktopApp>, done: impl Fn(&DesktopApp) -> bool) {
         );
         std::thread::yield_now();
     }
+}
+// Benefit: a synced library actually starts preparing in an empty window, and
+// the user can pause it or enter training without competing background work.
+#[test]
+fn empty_desktop_prepares_the_synced_library_and_yields_to_training() {
+    use std::io::{BufRead, BufReader, Write};
+    fn next(engine: &mut BufReader<std::net::TcpStream>) -> serde_json::Value {
+        let mut line = String::new();
+        engine.read_line(&mut line).unwrap();
+        serde_json::from_str(&line).unwrap()
+    }
+    let fixture = support::Fixture::new(|r| {
+        if r.url.contains("mode=sgf") {
+            (200, support::sgf(1))
+        } else {
+            (200, support::page(1, 1, &[1]))
+        }
+    });
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let vault = Arc::new(support::Vault::default());
+    let library = sync(root, &fixture, vault.clone());
+    let source = training_support::fixture(root, false);
+    std::fs::write(
+        &library.games[0].path,
+        std::fs::read_to_string(source)
+            .unwrap()
+            .replace("PB[me]", "PB[example]"),
+    )
+    .unwrap();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let model = root.join("model");
+    std::fs::write(
+        &model,
+        format!("controlled:{}", listener.local_addr().unwrap()),
+    )
+    .unwrap();
+    let mut h = Harness::builder()
+        .with_size(eframe::egui::vec2(1200., 820.))
+        .build_eframe(|cc| {
+            DesktopApp::with_sync(
+                &cc.egui_ctx,
+                root.join("reviews.sqlite"),
+                root.join("cache.sqlite"),
+                EngineConfig {
+                    executable: env!("CARGO_BIN_EXE_katastro-test-engine").into(),
+                    model,
+                },
+                None,
+                Options {
+                    root: root.join("Pandanet"),
+                    endpoint: fixture.endpoint.clone(),
+                    request_interval: Duration::ZERO,
+                    credentials: vault,
+                    clock: Arc::new(SystemClock),
+                },
+            )
+        });
+    wait(&mut h, |app| app.state.preparing_training);
+    let (engine, _) = listener.accept().unwrap();
+    engine
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let mut engine = BufReader::new(engine);
+    let held = (0..8).map(|_| next(&mut engine)).collect::<Vec<_>>();
+    h.get_by_label("Pause preparation").click();
+    wait(&mut h, |app| !app.state.preparing_training);
+    assert_eq!(next(&mut engine)["action"], "terminate_all");
+    for query in &held {
+        writeln!(
+            engine.get_mut(),
+            "{}",
+            training_support::reply(query, false, true)
+        )
+        .unwrap();
+    }
+    h.run_steps(3);
+    h.get_by_label("Prepare training").click();
+    wait(&mut h, |app| app.state.preparing_training);
+    let restarted = next(&mut engine);
+    assert_ne!(restarted["id"], held[0]["id"]);
+    assert_eq!(
+        restarted["moves"].as_array().unwrap().len(),
+        0,
+        "canceled replies must not populate the cache or advance preparation"
+    );
+    h.get_by_label("Training").click();
+    wait(&mut h, |app| !app.state.preparing_training);
+    h.run_steps(3);
+    assert!(h.query_by_label("Start training").is_some());
 }
 #[test]
 fn desktop_signs_in_remembers_downloads_and_opens_a_game_without_disturbing_a_review() {

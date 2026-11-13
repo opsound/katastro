@@ -4,9 +4,11 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
 };
+mod catalog;
 pub mod client;
 #[cfg(feature = "desktop")]
 pub mod view;
@@ -45,12 +47,24 @@ pub struct MoveLoss {
     pub winrate: f64,
     pub score: f64,
 }
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub struct Evaluation {
+    pub winrate: f64,
+    pub score: f64,
+}
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct Comparison {
+    pub recorded: Vec<Evaluation>,
+    pub attempt: Vec<Evaluation>,
+}
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Report {
     pub passed: bool,
     pub recorded_loss: MoveLoss,
     pub attempt_loss: MoveLoss,
     pub major_mistake: bool,
+    #[serde(default)]
+    pub comparison: Comparison,
 }
 impl Report {
     pub fn winrate_saved(&self) -> f64 {
@@ -72,11 +86,6 @@ pub struct Snapshot {
     pub report: Option<Report>,
     pub reveal: Option<(PathBuf, usize)>,
     pub lines: Vec<Vec<Option<Point>>>,
-}
-struct Game {
-    doc: Document,
-    candidates: VecDeque<usize>,
-    screened: bool,
 }
 struct Problem {
     doc: Document,
@@ -107,15 +116,20 @@ pub struct Trainer {
     settings: Settings,
     account: String,
     games: VecDeque<PathBuf>,
-    game: Option<Game>,
+    game: Option<catalog::Game>,
     confirming: Option<usize>,
     problem: Option<Problem>,
     memo: HashMap<String, Analysis>,
     queue: VecDeque<Job>,
     pending: HashMap<String, Job>,
     sequence: u64,
+    instance: u64,
     scanned: usize,
     skipped: usize,
+    library: Vec<PathBuf>,
+    seen: HashSet<String>,
+    preparing: bool,
+    refresh: bool,
 }
 impl Trainer {
     pub fn new(
@@ -124,6 +138,7 @@ impl Trainer {
         output: &Path,
         profile: EngineProfile,
     ) -> Result<Self> {
+        static INSTANCE: AtomicU64 = AtomicU64::new(0);
         let db = crate::review::connection(reviews)?;
         db.execute_batch("CREATE TABLE IF NOT EXISTS training_attempts (id INTEGER PRIMARY KEY, problem TEXT NOT NULL, outcome TEXT NOT NULL, report TEXT, document TEXT NOT NULL);")?;
         let review = Review::new(reviews, cache)?;
@@ -143,8 +158,13 @@ impl Trainer {
             queue: VecDeque::new(),
             pending: HashMap::new(),
             sequence: 0,
+            instance: INSTANCE.fetch_add(1, Ordering::Relaxed),
             scanned: 0,
             skipped: 0,
+            library: Vec::new(),
+            seen: HashSet::new(),
+            preparing: false,
+            refresh: false,
         })
     }
     pub fn snapshot(&self) -> Snapshot {
@@ -161,6 +181,31 @@ impl Trainer {
         account: String,
         settings: Settings,
     ) -> Result<()> {
+        self.seen.clear();
+        self.initialize(games, account, settings)?;
+        self.find_prepared()
+    }
+    pub fn next_problem(&mut self) -> Result<()> {
+        if !matches!(
+            self.state.phase,
+            Phase::Passed | Phase::Failed | Phase::Revealed
+        ) {
+            return Err("Finish this attempt before continuing".into());
+        }
+        self.seen.insert(self.problem.as_ref().unwrap().key.clone());
+        self.initialize(
+            self.library.clone(),
+            self.account.clone(),
+            self.settings.clone(),
+        )?;
+        self.find_prepared()
+    }
+    fn initialize(
+        &mut self,
+        games: Vec<PathBuf>,
+        account: String,
+        settings: Settings,
+    ) -> Result<()> {
         if account.trim().is_empty() {
             return Err("Enter the player name used in your game records".into());
         }
@@ -170,12 +215,28 @@ impl Trainer {
         self.cancel();
         self.account = account.trim().into();
         self.settings = settings;
+        self.library = games.clone();
         self.games = games.into();
+        self.preparing = false;
+        self.refresh = false;
         self.scanned = 0;
         self.skipped = 0;
         self.state.target = self.settings.moves;
         self.state.phase = Phase::Searching;
-        self.advance()
+        Ok(())
+    }
+    fn start_problem(&mut self, doc: Document, index: usize) -> Result<()> {
+        self.problem = Some(Problem {
+            prefix: prefix(&doc, doc.mainline[index])?,
+            color: player_color(&doc, &self.account).unwrap(),
+            key: self.problem_key(&doc, index)?,
+            index,
+            doc: doc.clone(),
+        });
+        self.reset_attempt();
+        // Discovery may have used a deeper review result. Obtain the grading
+        // budget in the background without delaying the first playable board.
+        self.need(&doc, doc.mainline[index], GRADE_VISITS)
     }
     pub fn next_request(&mut self) -> Result<Option<Value>> {
         self.advance()?;
@@ -193,7 +254,7 @@ impl Trainer {
     fn query(&mut self, doc: &Document, node: usize, visits: u64) -> Result<Value> {
         let mut q = serde_json::to_value(doc.position(node)?)?;
         self.sequence += 1;
-        q["id"] = json!(format!("training-{}", self.sequence));
+        q["id"] = json!(format!("training-{}-{}", self.instance, self.sequence));
         q["maxVisits"] = json!(visits);
         q["analyzeTurns"] = json!([q["moves"].as_array().unwrap().len()]);
         Ok(q)
@@ -216,30 +277,33 @@ impl Trainer {
         {
             return Ok(());
         }
-        let stored: Option<String> = self
-            .review
-            .cache
-            .query_row("SELECT result FROM analysis WHERE key=?1", [&key], |r| {
-                r.get(0)
-            })
-            .optional()?;
-        let same_budget = stored.is_some();
-        let cached: Option<String> = if same_budget {
-            stored
-        } else {
-            self.review
+        let read = |k: &str| -> Result<Option<String>> {
+            Ok(self
+                .review
                 .cache
                 .query_row(
                     "SELECT result FROM analysis WHERE key=?1 AND visits>=?2",
-                    params![position, visits as i64],
+                    params![k, visits as i64],
                     |r| r.get(0),
                 )
-                .optional()?
+                .optional()?)
+        };
+        let first = if self.preparing { &position } else { &key };
+        let second = if self.preparing { &key } else { &position };
+        let stored = read(first)?;
+        let same_budget = if stored.is_some() {
+            first == &key
+        } else {
+            second == &key
+        };
+        let cached = match stored {
+            Some(value) => Some(value),
+            None => read(second)?,
         };
         if let Some(value) = cached {
             let a: Analysis = serde_json::from_str(&value)?;
             a.validate()?;
-            if same_budget || visits == SCREEN_VISITS || a.visits == visits {
+            if self.preparing || same_budget || visits == SCREEN_VISITS || a.visits == visits {
                 self.memo.insert(key, a);
                 return Ok(());
             }
@@ -318,96 +382,10 @@ impl Trainer {
     fn advance(&mut self) -> Result<()> {
         while self.queue.is_empty() && self.pending.is_empty() {
             match self.state.phase {
-                Phase::Searching => {
-                    if self.game.is_none() {
-                        let Some(path) = self.games.pop_front() else {
-                            self.state.phase = Phase::Idle;
-                            self.state.status = format!(
-                                "No more qualifying positions in {} games ({} unreadable, unsupported, or for another player). Try more recent games or a shorter attempt.",
-                                self.scanned, self.skipped
-                            );
-                            break;
-                        };
-                        self.scanned += 1;
-                        self.state.status = format!(
-                            "Finding lost leads · game {} · {GRADE_VISITS}-visit confirmation",
-                            self.scanned
-                        );
-                        let doc = match std::fs::read(path)
-                            .map_err(Into::into)
-                            .and_then(|bytes| Document::parse(&bytes))
-                        {
-                            Ok(doc)
-                                if player_color(&doc, &self.account).is_some()
-                                    && doc.position(*doc.mainline.last().unwrap()).is_ok() =>
-                            {
-                                doc
-                            }
-                            _ => {
-                                self.skipped += 1;
-                                continue;
-                            }
-                        };
-                        for &node in &doc.mainline {
-                            self.need(&doc, node, SCREEN_VISITS)?;
-                        }
-                        self.game = Some(Game {
-                            doc,
-                            candidates: VecDeque::new(),
-                            screened: false,
-                        });
-                        continue;
-                    }
-                    let doc = self.game.as_ref().unwrap().doc.clone();
-                    let color = player_color(&doc, &self.account).unwrap();
-                    if let Some(index) = self.confirming.take()
-                        && self.qualifies(&doc, index, color, GRADE_VISITS, 0.65, 0.15)?
-                    {
-                        let key = self.problem_key(&doc, index)?;
-                        let prefix = prefix(&doc, doc.mainline[index])?;
-                        self.problem = Some(Problem {
-                            doc,
-                            index,
-                            color,
-                            key,
-                            prefix,
-                        });
-                        self.reset_attempt();
-                        break;
-                    }
-                    if !self.game.as_ref().unwrap().screened {
-                        let mut candidates = Vec::new();
-                        for index in 0..doc.mainline.len().saturating_sub(1) {
-                            if horizon(&doc, index, 2 * self.settings.moves).is_some()
-                                && self.qualifies(&doc, index, color, SCREEN_VISITS, 0.60, 0.10)?
-                                && (self.settings.include_completed
-                                    || !self.completed(&self.problem_key(&doc, index)?)?)
-                            {
-                                let a = self.value(&doc, doc.mainline[index], SCREEN_VISITS)?;
-                                let b = self.value(&doc, doc.mainline[index + 1], SCREEN_VISITS)?;
-                                candidates.push((
-                                    index,
-                                    perspective(a, color).0 - perspective(b, color).0,
-                                ));
-                            }
-                        }
-                        candidates.sort_by(|a, b| b.1.total_cmp(&a.1));
-                        let game = self.game.as_mut().unwrap();
-                        game.candidates = candidates.into_iter().map(|(i, _)| i).collect();
-                        game.screened = true;
-                    }
-                    if let Some(index) = self.game.as_mut().unwrap().candidates.pop_front() {
-                        self.confirming = Some(index);
-                        for node in [doc.mainline[index], doc.mainline[index + 1]] {
-                            self.need(&doc, node, GRADE_VISITS)?;
-                        }
-                    } else {
-                        self.game = None;
-                    }
-                }
+                Phase::Searching => self.search_next()?,
                 Phase::Grading => {
                     let p = self.problem.as_ref().unwrap();
-                    let doc = self.state.document.as_ref().unwrap();
+                    let doc = self.state.document.as_ref().unwrap().clone();
                     let plies = doc.path(doc.selected)?.len() - p.prefix.nodes.len();
                     let original = p.doc.clone();
                     let end = horizon(&original, p.index, plies)
@@ -418,6 +396,10 @@ impl Trainer {
                         self.need(&original, before, GRADE_VISITS)?;
                         self.need(&original, after, GRADE_VISITS)?;
                     }
+                    // Complete both curves through the final reply. These endpoint
+                    // values are for the report; opponent moves never enter the grade.
+                    self.need(&original, end, GRADE_VISITS)?;
+                    self.need(&doc, doc.selected, GRADE_VISITS)?;
                     if !self.queue.is_empty() {
                         break;
                     }
@@ -505,6 +487,15 @@ impl Trainer {
             attempt_loss,
             major_mistake,
             passed: false,
+            comparison: Comparison {
+                recorded: self.comparison_line(
+                    &p.doc,
+                    p.doc.mainline[p.index],
+                    original_end,
+                    p.color,
+                )?,
+                attempt: self.comparison_line(doc, p.prefix.selected, doc.selected, p.color)?,
+            },
         };
         report.passed = (report.winrate_saved() >= 0.10 || report.score_saved() >= 3.0)
             && report.winrate_saved() >= -0.02
@@ -547,6 +538,28 @@ impl Trainer {
             major |= winrate >= 0.15 || score >= 3.0;
         }
         Ok((loss, major))
+    }
+    fn comparison_line(
+        &self,
+        doc: &Document,
+        start: usize,
+        end: usize,
+        color: Color,
+    ) -> Result<Vec<Evaluation>> {
+        let path = doc.path(end)?;
+        let first = path
+            .iter()
+            .position(|id| *id == start)
+            .ok_or("Missing exercise position")?;
+        path[first..]
+            .iter()
+            .enumerate()
+            .filter(|(i, node)| *i == 0 || doc.nodes[**node].played.is_some())
+            .map(|(_, node)| {
+                let (winrate, score) = perspective(self.value(doc, *node, GRADE_VISITS)?, color);
+                Ok(Evaluation { winrate, score })
+            })
+            .collect()
     }
     fn record(&self, outcome: &str) -> Result<()> {
         self.db.execute(

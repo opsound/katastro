@@ -1,14 +1,20 @@
 # Training from the game library
 
-Open **Train**, or **Games → Train from these games**. The player name defaults to the synced account and is matched case-insensitively against SGF `PB`/`PW`. Search the latest 20 library games by default; increase the limit in setup. Choose five or ten of your moves per attempt. Passed and given-up exercises are skipped unless **Include completed exercises** is checked. Failed attempts remain eligible.
+Open **Train**, or **Games → Train from these games**. The player name defaults to the synced account and is matched case-insensitively against SGF `PB`/`PW`. Use the latest 20 library games by default; increase the limit in setup. Choose five or ten of your moves per attempt. Ready candidates across that selection take precedence over starting a new discovery pass. Passed and given-up exercises are skipped unless **Include completed exercises** is checked. Failed attempts remain eligible.
 
-The application pauses review analysis while training. All SGF reads, SQLite access, model verification/downloads, and engine work run on the training worker. Its queue keeps up to eight independent positions outstanding. During the player's turn, at most seven grading requests run, leaving a slot for the next HumanSL reply; opponent requests go to the front of the queue. Searching and final grading can use all eight slots. Going back cancels the session; the UI does not wait for a network request to finish. Leaving an unfinished attempt does not mark the exercise complete.
+The application pauses review analysis and background discovery while training. All SGF reads, SQLite access, model verification/downloads, and engine work run on worker threads. The training queue keeps up to eight independent positions outstanding. During the player's turn, at most seven grading requests run, leaving a slot for the next HumanSL reply; opponent requests go to the front of the queue. Searching and final grading can use all eight slots. Going back cancels the session; the UI does not wait for a network request to finish. Leaving an unfinished attempt does not mark the exercise complete.
 
 ## Finding turning points
 
-Search original main-line moves made by the named player. Reuse compatible cached analysis at 64 visits or deeper for screening: at least 60% winrate before the move and a drop of at least 10 percentage points. Confirm candidates at a requested 512 visits. A confirmed exercise requires **at least 65% winrate, a positive score, and a drop of at least 15 percentage points**. Values are converted from the engine's fixed Black perspective to the player's perspective.
+With no game open, the review worker prepares the synced library using the normal model and its existing engine process; HumanSL is not loaded for discovery. **Pause preparation** stops this work, and **Prepare training** resumes it. Opening a game or entering training cancels pending discovery requests. Compatible completed results remain reusable; late canceled replies cannot become results for another preparation session.
+
+Review refinement has no practical final endpoint. After a complete, durably cached main-line pass at 512 visits or more (currently the 1024-visit tier), candidates are indexed directly from those evaluations without extra engine requests. The index refreshes after later complete fourfold-deeper passes. Unfinished streamed estimates never trigger indexing. Review interaction keeps priority; new engine work for unreviewed library games runs only with no game open.
+
+Search original main-line moves made by the named player. Reuse compatible cached analysis at 64 visits or deeper for screening: at least 60% winrate before the move and a drop of at least 10 percentage points. Confirm candidates at a requested 512 visits, or reuse the latest compatible review results at 512 visits or deeper during background preparation. A confirmed exercise requires **at least 65% winrate, a positive score, and a drop of at least 15 percentage points**. Values are converted from the engine's fixed Black perspective to the player's perspective.
 
 Candidates in each game are considered from largest screened winrate loss downward, with newer games searched first. The recorded continuation must contain enough moves for the selected attempt length. Unreadable records, unknown players, and unsupported positions are skipped. This bounded, screened search can miss turning points that only become clear with deeper analysis; it is not an exhaustive tactical proof.
+
+Confirmed candidates become available immediately, even while the rest of the library is still being prepared. A completed scan also records games with no qualifying positions. Starting training checks these database records first, so a newer unprepared game cannot hold up an older ready exercise in the selected library. If nothing suitable is ready, foreground discovery remains available. A candidate found using deeper review results can open immediately while its exact-budget starting evaluation is obtained in the background for grading.
 
 The attempt receives only the position's ancestry and moves made during the attempt. Future original moves, comments, annotations, results, evaluations, charts, navigation controls, and suggestions are not exposed by the training screen. Illegal moves leave the attempt unchanged. The board keeps its normal brightness while the opponent thinks, with a quiet text status beside it. Extra moves are blocked until the reply arrives, then play resumes immediately while evaluations continue in the background. There is no per-move spinner. Final grading waits for every required evaluation before displaying a report.
 
@@ -28,7 +34,7 @@ improvement  = recorded loss - attempt loss
 
 Accumulate the two metrics independently. Opponent moves are excluded. A later improvement, even on the player's own move, never cancels an earlier loss. For example, an original move losing 30 percentage points still contributes 30 to the baseline when the opponent immediately gives them back. Several smaller mistakes also accumulate; five losses of 10 points of winrate count as 50, regardless of opponent gifts between them. These sums are losses in percentage points, not a final win probability, and can exceed 100.
 
-Two consecutive passes end an attempt early and shorten the recorded window accordingly. Only the player's moves inside that window count. The final opponent reply is played but needs no evaluation for grading. Before/after evaluations around the recorded player's moves are requested in parallel when grading begins, reusing compatible cached results.
+Two consecutive passes end an attempt early and shorten the recorded window accordingly. Only the player's moves inside that window count. Before/after evaluations around the recorded player's moves are requested in parallel when grading begins, reusing compatible cached results. The final position of both lines is also evaluated to complete the report charts; an opponent's final move still does not enter the grade.
 
 A pass requires:
 
@@ -38,6 +44,10 @@ A pass requires:
 
 These are explicit training thresholds, not statistical confidence intervals or proof of understanding. Evaluations remain estimates, and opponent replies are stochastic. The report shows recorded and attempted loss totals, the reduction in each metric, and whether a major mistake occurred. A failed attempt offers **Retry without hints**; success or **Give up and explore** unlocks the review.
 
+The report includes score and winrate graphs with **Recorded** and **Attempt** overlaid from the exercise position through the final reply, aligned by moves from the start and shown from the player's perspective. Both players' moves appear in the graphs; only the player's losses affect the pass/fail result. The chart area is resizable and stays hidden during an attempt and after blind retry.
+
+**Next problem** is available after pass, fail, and while exploring. It skips the current position for this session, including when completed exercises are enabled, and resets the board, report, and reveal state. Skipping a failed problem does not mark it passed or given up; it remains eligible in a later session. If the selection is exhausted, setup explains that no further qualifying position is available.
+
 ## Review and persistence
 
 A fresh normal-model search returns principal variations up to 12 plies long. Keep up to three legal multi-move lines with at least 16 visits, within 5 percentage points and 2 points of the most-visited candidate from the player's perspective. Do not pad the list with clearly weak moves when fewer lines qualify.
@@ -46,6 +56,8 @@ A private review SGF contains the original game, saved attempts, and suggested b
 
 Progress is scoped to the named player. Completed attempts, their reports, and their branches live in `reviews.sqlite`, independently of the evictable analysis cache. Evaluations are keyed by full position history, engine/model/settings identity, grading semantics, and requested budget. Actual visits are stored and validated; deeper normal cached results are never downgraded. Exact-budget training results are reusable even if the engine's actual visit count slightly exceeds its requested budget.
 
+The derived candidate catalog lives in `analysis.sqlite` alongside evaluations. Its identity includes semantic SGF content, the frozen main line, player name and color, engine/model/settings identity, and discovery-policy version. Changed games or profiles cannot reuse an incompatible catalog. Clearing analysis also clears discovery results, including negative scans, without deleting attempts or review branches.
+
 The app's data directory holds `models/b18c384nbt-humanv0.bin.gz` and generated `Training/*.sgf` reviews. None belong in Git. Active attempts are currently held in memory; reopening the app starts a new attempt. Session setup choices are not yet persisted.
 
 ## Explicit integration checks
@@ -53,7 +65,7 @@ The app's data directory holds `models/b18c384nbt-humanv0.bin.gz` and generated 
 Routine tests require no account, model, GPU, or network service outside local loopback fixtures:
 
 ```sh
-cargo test --test training --test training_worker --test training_ui --test pandanet_ui
+cargo test --test training --test training_catalog --test training_background --test training_worker --test training_ui --test pandanet_ui
 ```
 
 Real model compatibility (requires KataGo >=1.15 and both downloaded models):
@@ -79,7 +91,16 @@ This check also reports elapsed time from each player move to the AI reply and t
 
 For repeated latency comparisons, `KATASTRO_TRAINING_SCREENING_CACHE` can point to a private copy of an analysis cache containing only results below 512 visits. The check copies it into its temporary directory and rejects any retained grading results. Use the same seed in both versions to avoid repeating the full screening pass while still performing confirmation and grading. Never edit the application's live cache to prepare a benchmark seed.
 
-Optional synthetic GPU previews require a working wgpu adapter and an existing output directory:
+The background-preparation check uses only the normal model. It measures time to the first ready exercise from an empty temporary cache, then measures opening that candidate in a fresh application-layer session without a discovery request. It also verifies source hashes and a legal first training move. This is preparation versus cached-start latency, not engine throughput or displayed-frame latency:
+
+```sh
+KATASTRO_TRAINING_LIBRARY=/path/to/Pandanet \
+KATASTRO_TEST_ENGINE=/path/to/katago \
+KATASTRO_TEST_MODEL=/path/to/normal.bin.gz \
+cargo test --test training_preparation_real -- --ignored --nocapture
+```
+
+Optional synthetic GPU previews, including `report.png`, require a working wgpu adapter and an existing output directory:
 
 ```sh
 mkdir -p local/training-preview

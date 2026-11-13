@@ -275,6 +275,7 @@ fn real_library_exercise_plays_grades_and_reveals_legal_lines() {
         }
     };
     let mut state = wait(|s| s.phase == Phase::YourTurn);
+    let exercise_start = state.board.as_ref().unwrap().move_number;
     let mut timings = Vec::new();
     for _ in 0..5 {
         let doc = state.document.as_ref().unwrap();
@@ -313,6 +314,12 @@ fn real_library_exercise_plays_grades_and_reveals_legal_lines() {
     }
     eprintln!("Training turn timings: {}", json!(timings));
     assert!(state.report.is_some());
+    let comparison = &state.report.as_ref().unwrap().comparison;
+    assert_eq!(
+        comparison.attempt.len(),
+        state.board.as_ref().unwrap().move_number - exercise_start + 1
+    );
+    assert_eq!(comparison.recorded.len(), comparison.attempt.len());
     client.send(Command::Reveal).unwrap();
     state = wait(|s| s.phase == Phase::Revealed);
     assert!(!state.lines.is_empty());

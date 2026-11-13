@@ -225,7 +225,8 @@ impl Review {
         Ok(results)
     }
     pub fn clear_analysis(&mut self) -> Result<()> {
-        self.cache.execute("DELETE FROM analysis", [])?;
+        self.cache
+            .execute_batch("BEGIN; DELETE FROM analysis; DELETE FROM training_games; COMMIT;")?;
         Ok(())
     }
     pub fn save_profile(&self, profile: &EngineProfile) -> Result<()> {
