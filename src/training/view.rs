@@ -50,7 +50,7 @@ impl View {
                     self.open = false;
                     out.push(Action::Back);
                 }
-                ui.heading("Hold the lead");
+                ui.heading("Learn from mistakes");
                 if state.phase == Phase::Revealed {
                     ui.label(&state.status);
                     if ui.button("Exercise position").clicked() {
@@ -99,7 +99,7 @@ impl View {
                     Phase::Failed => "Not yet",
                     Phase::Searching => "Finding an exercise",
                     Phase::Revealing => "Preparing the review",
-                    _ => "Keep your advantage",
+                    _ => "Find a better continuation",
                 });
                 ui.add_space(12.);
                 ui.label(&state.status);
@@ -141,25 +141,15 @@ impl View {
                         ui.label("Recorded");
                         ui.label("This attempt");
                         ui.end_row();
-                        ui.label("Winrate lost");
-                        ui.label(format!("{:.1} pp", report.recorded_loss.winrate * 100.0));
-                        ui.label(format!("{:.1} pp", report.attempt_loss.winrate * 100.0));
-                        ui.end_row();
                         ui.label("Score lost");
                         ui.label(format!("{:.1} points", report.recorded_loss.score));
                         ui.label(format!("{:.1} points", report.attempt_loss.score));
                         ui.end_row();
                     });
-                    ui.label(format!(
-                        "Reduction: {:+.1} pp · {:+.1} points",
-                        report.winrate_saved() * 100.0,
-                        report.score_saved()
-                    ));
+                    ui.label(format!("Reduction: {:+.1} points", report.score_saved()));
                     ui.label("Gains and opponent moves do not cancel your mistakes.");
                     if report.major_mistake {
-                        ui.label(
-                            "At least one of your moves lost 15 percentage points or 3 points.",
-                        );
+                        ui.label("At least one of your moves lost 5 points or more.");
                     }
                     ui.add_space(16.);
                 }
@@ -228,7 +218,7 @@ impl View {
     ) {
         ui.add_space(35.0);
         ui.vertical_centered(|ui| {
-            ui.heading("Find the move that keeps your advantage");
+            ui.heading("Find a better continuation");
             ui.label("Practice turning points from your own games against a 1-dan opponent.");
         });
         ui.add_space(24.0);
@@ -252,8 +242,8 @@ impl View {
                 ui.checkbox(&mut self.strict, "Require no further major mistake");
                 ui.checkbox(&mut self.include_completed, "Include completed exercises");
                 ui.add_space(12.0);
-                ui.label("Exercises start where you had at least a 65% winrate and a positive score, then lost at least 15 percentage points on your move.");
-                ui.label("Pass by reducing the sum of losses on your moves by 10 percentage points of winrate or 3 points of score compared with your recorded moves, without materially worsening the other measure. Gains and opponent moves never cancel your losses. A major mistake loses 15 percentage points or 3 points on one move.");
+                ui.label("Exercises start before one of your moves that lost at least 5 points, whether you were ahead or behind.");
+                ui.label("Pass by reducing the sum of points lost on your moves by at least 3 points compared with your recorded moves. Gains and opponent moves never cancel your losses. A major mistake loses at least 5 points on one move.");
                 ui.label("Hints and the recorded continuation stay hidden. After a failed attempt, you can retry without seeing a solution. Pass or give up to explore up to three suggested lines.");
                 ui.add_space(12.0);
                 ui.label(RichText::new("Opponent: 1 dan · HumanSL\nApproximate human rank. The 99 MB model downloads once, if needed. Games stay on this Mac.").small().weak());

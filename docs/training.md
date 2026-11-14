@@ -10,9 +10,9 @@ With no game open, the review worker prepares the synced library using the norma
 
 Review refinement has no practical final endpoint. After a complete, durably cached main-line pass at 512 visits or more (currently the 1024-visit tier), candidates are indexed directly from those evaluations without extra engine requests. The index refreshes after later complete fourfold-deeper passes. Unfinished streamed estimates never trigger indexing. Review interaction keeps priority; new engine work for unreviewed library games runs only with no game open.
 
-Search original main-line moves made by the named player. Reuse compatible cached analysis at 64 visits or deeper for screening: at least 60% winrate before the move and a drop of at least 10 percentage points. Confirm candidates at a requested 512 visits, or reuse the latest compatible review results at 512 visits or deeper during background preparation. A confirmed exercise requires **at least 65% winrate, a positive score, and a drop of at least 15 percentage points**. Values are converted from the engine's fixed Black perspective to the player's perspective.
+Search original main-line moves made by the named player. Reuse compatible cached analysis at 64 visits or deeper for screening: a loss of at least 3 points, giving the coarse pass a wider net. Confirm candidates at a requested 512 visits, or reuse the latest compatible review results at 512 visits or deeper during background preparation. A confirmed exercise requires a loss of **at least 5 points on one of your moves**, whether you were ahead or behind. Winrate does not affect selection, grading, suggested-line filtering, or training reports. Values are converted from the engine's fixed Black perspective to the player's perspective.
 
-Candidates in each game are considered from largest screened winrate loss downward, with newer games searched first. The recorded continuation must contain enough moves for the selected attempt length. Unreadable records, unknown players, and unsupported positions are skipped. This bounded, screened search can miss turning points that only become clear with deeper analysis; it is not an exhaustive tactical proof.
+Candidates in each game are considered from largest screened point loss downward, with newer games searched first. The recorded continuation must contain enough moves for the selected attempt length. Unreadable records, unknown players, and unsupported positions are skipped. This bounded, screened search can miss turning points that only become clear with deeper analysis; it is not an exhaustive tactical proof.
 
 Confirmed candidates become available immediately, even while the rest of the library is still being prepared. A completed scan also records games with no qualifying positions. Starting training checks these database records first, so a newer unprepared game cannot hold up an older ready exercise in the selected library. If nothing suitable is ready, foreground discovery remains available.
 
@@ -29,36 +29,34 @@ The 99,066,230-byte model comes from the [official v1.15.0 release](https://gith
 The normal model, without a HumanSL override, assesses all grading positions at a requested **512 visits**. Both lines cover the same number of plies. For **each of the player's own moves**, calculate the change between its immediate before/after evaluations, from that player's perspective:
 
 ```text
-winrate loss = sum(max(0, winrate before - winrate after))
 score loss   = sum(max(0, score before - score after))
 improvement  = recorded loss - attempt loss
 ```
 
-Accumulate the two metrics independently. Opponent moves are excluded. A later improvement, even on the player's own move, never cancels an earlier loss. For example, an original move losing 30 percentage points still contributes 30 to the baseline when the opponent immediately gives them back. Several smaller mistakes also accumulate; five losses of 10 points of winrate count as 50, regardless of opponent gifts between them. These sums are losses in percentage points, not a final win probability, and can exceed 100.
+Opponent moves are excluded. A later improvement, even on the player's own move, never cancels an earlier loss. For example, an original move losing 8 points still contributes 8 to the baseline when the opponent immediately gives them back. Smaller mistakes also accumulate: five 2-point losses count as 10 points, regardless of opponent gifts between them. The 5-point threshold selects exercises and flags major mistakes; losses below it still count toward grading.
 
 Two consecutive passes end an attempt early and shorten the recorded window accordingly. Only the player's moves inside that window count. The recorded window is requested before play, reusing compatible cached results. Attempt evaluations are queued as moves arrive, including the position after the final AI reply. That final opponent position completes the chart but never enters the grade.
 
 A pass requires:
 
-- A **reduction in cumulative own-move loss** of at least **10 percentage points** of winrate, or **3 points** of score.
-- Neither cumulative loss is worse than the recorded line by more than **2 percentage points** or **1 point**, respectively.
-- With the default strict setting, none of the player's own moves loses **15 percentage points** or **3 points** between its before/after evaluations. An overall reduction does not excuse another major mistake.
+- A **reduction in cumulative own-move point loss** of at least **3 points**.
+- With the default strict setting, none of the player's own moves loses **5 points or more** between its before/after evaluations. An overall reduction does not excuse another major mistake.
 
-These are explicit training thresholds, not statistical confidence intervals or proof of understanding. Evaluations remain estimates, and opponent replies are stochastic. The report shows recorded and attempted loss totals, the reduction in each metric, and whether a major mistake occurred. A failed attempt offers **Retry without hints**; success or **Give up and explore** unlocks the review.
+These are explicit training thresholds, not statistical confidence intervals or proof of understanding. Evaluations remain estimates, and opponent replies are stochastic. The report shows recorded and attempted loss totals, the reduction in points, and whether a major mistake occurred. A failed attempt offers **Retry without hints**; success or **Give up and explore** unlocks the review.
 
-The report includes score and winrate graphs with **Recorded** and **Attempt** overlaid from the exercise position through the final reply, aligned by moves from the start and shown from the player's perspective. Both players' moves appear in the graphs; only the player's losses affect the pass/fail result. Pass/fail and the report controls are available as soon as grading is complete. Any remaining endpoints appear later under **Finishing comparison…**, on a fixed move axis; missing values are omitted, never plotted as zero. Completion updates the same saved attempt without changing its grade. Leaving the report cancels remaining work, so its saved curves can remain partial. The chart area is resizable and stays hidden during an attempt and after blind retry.
+The report includes a score graph with **Recorded** and **Attempt** overlaid from the exercise position through the final reply, aligned by moves from the start and shown from the player's perspective. Both players' moves appear in the graph; only the player's losses affect the pass/fail result. Pass/fail and the report controls are available as soon as grading is complete. Any remaining endpoints appear later under **Finishing comparison…**, on a fixed move axis; missing values are omitted, never plotted as zero. Completion updates the same saved attempt without changing its grade. Leaving the report cancels remaining work, so its saved curves can remain partial. The chart area is resizable and stays hidden during an attempt and after blind retry.
 
 **Next problem** is available after pass, fail, and while exploring. It skips the current position for this session, including when completed exercises are enabled, and resets the board, report, and reveal state. Skipping a failed problem does not mark it passed or given up; it remains eligible in a later session. If the selection is exhausted, setup explains that no further qualifying position is available.
 
 ## Review and persistence
 
-A fresh normal-model search returns principal variations up to 12 plies long. Keep up to three legal multi-move lines with at least 16 visits, within 5 percentage points and 2 points of the most-visited candidate from the player's perspective. Do not pad the list with clearly weak moves when fewer lines qualify.
+A fresh normal-model search returns principal variations up to 12 plies long. Keep up to three legal multi-move lines with at least 16 visits, within 2 score points of the most-visited candidate from the player's perspective. Do not pad the list with clearly weak moves when fewer lines qualify.
 
 A private review SGF contains the original game, saved attempts, and suggested branches. **Explore line 1/2/3** selects the end of that continuation; the regular tree, board, charts, and navigation support further exploration. **Exercise position** returns to the start. The original main line stays on top, and source SGFs are never rewritten. Normal review persistence saves further user variations. Repeating an exercise restores those saved branches before adding new attempts and lines.
 
 During exploration, stones played after the exercise position are numbered **1, 2, 3…**. The numbers follow the selected branch, including moves you add yourself; earlier stones remain unnumbered. Passes consume a number and captured stones disappear, so visible numbers can have gaps. Returning to ordinary review or opening another game clears the labels. These display labels do not modify the SGF.
 
-Progress is scoped to the named player. Completed attempts, their reports, and their branches live in `reviews.sqlite`, independently of the evictable analysis cache. Evaluations are keyed by full position history, engine/model/settings identity, grading semantics, and requested budget. Actual visits are stored and validated; deeper normal cached results are never downgraded. Exact-budget training results are reusable even if the engine's actual visit count slightly exceeds its requested budget.
+Progress is scoped to the named player and training-policy version. The score-only policy uses a new catalog and progress identity: old winrate-selected indexes and completions cannot suppress or qualify its exercises. Existing attempts and generated reviews remain stored; compatible position evaluations are reused. Ordinary review charts retain both score and winrate. Completed attempts, their reports, and their branches live in `reviews.sqlite`, independently of the evictable analysis cache. Evaluations are keyed by full position history, engine/model/settings identity, grading semantics, and requested budget. Actual visits are stored and validated; deeper normal cached results are never downgraded. Exact-budget training results are reusable even if the engine's actual visit count slightly exceeds its requested budget.
 
 The derived candidate catalog lives in `analysis.sqlite` alongside evaluations. Its identity includes semantic SGF content, the frozen main line, player name and color, engine/model/settings identity, and discovery-policy version. Changed games or profiles cannot reuse an incompatible catalog. Clearing analysis also clears discovery results, including negative scans, without deleting attempts or review branches.
 
@@ -69,7 +67,7 @@ The app's data directory holds `models/b18c384nbt-humanv0.bin.gz` and generated 
 Routine tests require no account, model, GPU, or network service outside local loopback fixtures:
 
 ```sh
-cargo test --test training --test training_grading --test training_catalog --test training_background --test training_worker --test training_ui --test pandanet_ui
+cargo test --test training --test training_score --test training_grading --test training_catalog --test training_background --test training_worker --test training_ui --test pandanet_ui
 cargo test --test numbered_variations
 cargo test --lib explored_lines_number_stones
 ```

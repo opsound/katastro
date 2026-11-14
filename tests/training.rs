@@ -36,13 +36,11 @@ fn report_compares_every_position_from_the_exercise_in_either_player_color() {
             .zip(&report.comparison.attempt)
             .enumerate()
         {
-            assert!((attempt.winrate - 0.8).abs() < 1e-9);
             assert_eq!(attempt.score, 8.0);
-            assert!((recorded.winrate - if index == 0 { 0.8 } else { 0.4 }).abs() < 1e-9);
             assert_eq!(recorded.score, if index == 0 { 8.0 } else { -2.0 });
         }
         assert_eq!(
-            report.attempt_loss.winrate, 0.0,
+            report.attempt_loss.score, 0.0,
             "charts must not change own-move grading"
         );
     }
@@ -98,12 +96,10 @@ fn human_replies_keep_play_moving_while_grading_is_pending() {
     let state = t.snapshot();
     assert_eq!(state.phase, Phase::Passed);
     let report = state.report.unwrap();
-    assert_eq!(report.attempt_loss.winrate, 0.0);
     assert_eq!(report.attempt_loss.score, 0.0);
-    assert!((report.recorded_loss.winrate - 0.4).abs() < 1e-9);
     assert_eq!(report.recorded_loss.score, 10.0);
 }
-// Benefit: train only on our own loss of a lead, without leaking the recorded move.
+// Benefit: train only on our own point losses, without leaking the recorded move.
 // Regression: reversed perspective, opponent mistakes, or a future child in the snapshot.
 #[test]
 fn library_mining_hides_future_moves_and_uses_the_players_perspective() {
@@ -209,7 +205,7 @@ fn improving_attempt_passes_for_either_color_and_completed_exercise_is_not_repea
         let s = t.snapshot();
         assert_eq!(s.phase, Phase::Passed);
         let r = s.report.unwrap();
-        assert!(r.passed && r.winrate_saved() > 0.39 && r.score_saved() > 9.9);
+        assert!(r.passed && r.score_saved() > 9.9);
         let mut t = trainer(temp.path());
         t.begin(vec![source], "me".into(), Settings::default())
             .unwrap();
@@ -261,7 +257,7 @@ fn a_lucky_opponent_blunder_does_not_erase_a_major_mistake() {
             settle_with(&mut t, respond);
         }
         let r = t.snapshot().report.unwrap();
-        assert!(r.winrate_saved() > 0.49 && r.score_saved() > 9.9 && r.major_mistake);
+        assert!(r.score_saved() > 9.9 && r.major_mistake);
         assert_eq!(
             r.passed, !strict,
             "an overall reduction does not excuse another major mistake when the guard is enabled"
@@ -391,9 +387,8 @@ fn two_passes_grade_at_the_matching_recorded_ply_instead_of_the_full_horizon() {
         "ignore recorded mistakes beyond the early finish"
     );
     let r = t.snapshot().report.unwrap();
-    assert!((r.recorded_loss.winrate - 0.4).abs() < 1e-9);
     assert!((r.recorded_loss.score - 10.0).abs() < 1e-9);
-    assert!((r.attempt_loss.winrate - 0.4).abs() < 1e-9);
+    assert_eq!(r.attempt_loss.score, 10.0);
 }
 #[test]
 fn screening_never_substitutes_for_confirmation_and_cache_identity_includes_the_model() {
@@ -606,7 +601,7 @@ fn reducing_cumulative_own_move_losses_passes_even_when_the_opponent_restored_th
         let n = moves.len();
         let attempt = moves.iter().any(|m| m[1].as_str().unwrap().ends_with('5'));
         let (wr, score) = if attempt {
-            // Each of our moves loses 5 pp and 1 point. Opponent replies are
+            // Each of our moves loses 1 point. Opponent replies are
             // deliberately strong; their effect is not our move quality.
             let ours = n.div_ceil(2) as f64;
             let theirs = (n / 2) as f64;
@@ -634,16 +629,14 @@ fn reducing_cumulative_own_move_losses_passes_even_when_the_opponent_restored_th
     assert_eq!(
         t.snapshot().phase,
         Phase::Passed,
-        "25 pp of our losses improves on 60 pp, despite a worse final evaluation"
+        "5 points of our losses improves on 14 points, despite a worse final evaluation"
     );
     let r = t.snapshot().report.unwrap();
     assert!(
-        (r.attempt_loss.winrate - 0.25).abs() < 1e-9 && (r.attempt_loss.score - 5.0).abs() < 1e-9,
+        (r.attempt_loss.score - 5.0).abs() < 1e-9,
         "opponent-caused drops are excluded"
     );
-    assert!(
-        (r.recorded_loss.winrate - 0.6).abs() < 1e-9 && (r.recorded_loss.score - 14.0).abs() < 1e-9
-    );
+    assert!((r.recorded_loss.score - 14.0).abs() < 1e-9);
 }
 #[test]
 fn many_small_player_mistakes_cannot_be_paid_back_by_ai_blunders() {
@@ -659,7 +652,7 @@ fn many_small_player_mistakes_cannot_be_paid_back_by_ai_blunders() {
             let mut r = reply(&q, false, true);
             let moves = q["moves"].as_array().unwrap();
             if moves.iter().any(|m| m[1].as_str().unwrap().ends_with('5')) {
-                // Five individually sub-threshold mistakes total 50 pp.
+                // Five individually sub-threshold mistakes total 10 points.
                 // Every AI reply gives the entire loss back.
                 let (wr, score) = if moves.len() % 2 == 1 {
                     (0.7, 6.0)
@@ -675,7 +668,7 @@ fn many_small_player_mistakes_cannot_be_paid_back_by_ai_blunders() {
     assert_eq!(
         t.snapshot().phase,
         Phase::Failed,
-        "our 50 pp loss is worse than the recorded 40 pp; the AI's gifts do not count"
+        "our 10-point loss does not improve on the recorded 10 points; the AI's gifts do not count"
     );
     assert!(
         !t.snapshot().report.unwrap().major_mistake,
@@ -684,7 +677,7 @@ fn many_small_player_mistakes_cannot_be_paid_back_by_ai_blunders() {
 }
 
 #[test]
-fn good_player_moves_do_not_cancel_earlier_losses_and_each_metric_is_accumulated_separately() {
+fn good_player_moves_do_not_cancel_earlier_point_losses() {
     let temp = tempfile::tempdir().unwrap();
     let source = fixture(temp.path(), false);
     let mut t = trainer(temp.path());
@@ -712,10 +705,6 @@ fn good_player_moves_do_not_cancel_earlier_losses_and_each_metric_is_accumulated
     }
     let r = t.snapshot().report.unwrap();
     assert!(r.passed);
-    assert!(
-        (r.attempt_loss.winrate - 0.1).abs() < 1e-9,
-        "the later winrate gain must not cancel the first loss"
-    );
     assert!(
         (r.attempt_loss.score - 2.0).abs() < 1e-9,
         "positive score changes do not cancel earlier losses; a score loss also counts when winrate is flat"

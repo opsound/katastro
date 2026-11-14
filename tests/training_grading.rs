@@ -70,7 +70,7 @@ fn recorded_window_is_prepared_before_play_and_reused_after_restart() {
         assert!(report.passed);
         assert_eq!(report.comparison.recorded.len(), 11);
         assert_eq!(report.comparison.attempt.len(), 11);
-        assert!((report.recorded_loss.winrate - 0.4).abs() < 1e-9);
+        assert_eq!(report.recorded_loss.score, 10.0);
     }
 }
 
@@ -171,10 +171,7 @@ fn grading_finishes_before_chart_endpoints_then_updates_one_saved_report() {
     let final_report = t.snapshot().report.unwrap();
     assert_eq!(final_report.comparison.recorded.len(), 11);
     assert_eq!(final_report.comparison.attempt.len(), 11);
-    assert_eq!(
-        final_report.attempt_loss.winrate,
-        report.attempt_loss.winrate
-    );
+    assert_eq!(final_report.attempt_loss.score, report.attempt_loss.score);
     assert_eq!(final_report.recorded_loss.score, report.recorded_loss.score);
     assert_eq!(final_report.comparison.attempt[10].score, -40.0);
     let (count, json) = saved();

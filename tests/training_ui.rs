@@ -53,11 +53,11 @@ fn report_keeps_controls_available_while_comparison_finishes() {
     h.run();
     h.get_by_label("Passed");
     h.get_by_label("Finishing comparison…");
-    for name in ["Training score comparison", "Training winrate comparison"] {
-        h.get_by_label(name);
-    }
+    h.get_by_label("Training score comparison");
+    assert!(h.query_by_label("Training winrate comparison").is_none());
+    assert!(h.query_by_label("Winrate lost").is_none());
     let plotted = |h: &Harness<'_, ReportView>| {
-        let bounds = h.get_by_label("Training winrate comparison").rect();
+        let bounds = h.get_by_label("Training score comparison").rect();
         h.output()
             .shapes
             .iter()
@@ -97,14 +97,12 @@ fn report_keeps_controls_available_while_comparison_finishes() {
             .any(|a| matches!(a, Action::Command(Command::Next)))
     );
     let comparison = &mut h.state_mut().snapshot.report.as_mut().unwrap().comparison;
-    comparison.attempt.push(katastro::training::Evaluation {
-        winrate: 0.8,
-        score: 8.0,
-    });
-    comparison.recorded.push(katastro::training::Evaluation {
-        winrate: 0.4,
-        score: -2.0,
-    });
+    comparison
+        .attempt
+        .push(katastro::training::Evaluation { score: 8.0 });
+    comparison
+        .recorded
+        .push(katastro::training::Evaluation { score: -2.0 });
     h.run();
     assert!(h.query_by_label("Finishing comparison…").is_none());
     h.get_by_label("Passed");
@@ -197,6 +195,7 @@ fn training_screen_plays_grades_and_retries_without_leaking_review_hints() {
             .save(std::path::PathBuf::from(folder).join("setup.png"))
             .unwrap();
     }
+    h.get_by_label("Exercises start before one of your moves that lost at least 5 points, whether you were ahead or behind.");
     h.get_by_label("Start training").click();
     h.run_steps(3);
     assert_eq!(h.state().snapshot.phase, Phase::YourTurn);
@@ -397,7 +396,7 @@ fn next_problem_advances_after_pass_fail_and_exploration() {
 // Benefit: after real board play, two report charts visibly overlay the attempt
 // and recorded continuation. They are absent during blind play and after retry.
 #[test]
-fn report_draws_both_evaluation_overlays_and_retry_hides_them() {
+fn report_draws_score_overlays_without_winrate_and_retry_hides_them() {
     use eframe::egui::{Color32, Shape, epaint::ColorMode};
     let temp = tempfile::tempdir().unwrap();
     let mut trainer = support::trainer(temp.path());
@@ -428,10 +427,13 @@ fn report_draws_both_evaluation_overlays_and_retry_hides_them() {
         h.run_steps(3);
     }
     assert_eq!(h.state().snapshot.phase, Phase::Passed);
-    for label in ["Training score comparison", "Training winrate comparison"] {
+    assert!(h.query_by_label("Training winrate comparison").is_none());
+    assert!(h.query_by_label("Winrate lost").is_none());
+    {
+        let label = "Training score comparison";
         let plot = h
             .query_by_label(label)
-            .expect("report must show both comparison charts")
+            .expect("report must show the score comparison")
             .rect();
         let paths: Vec<_> = h
             .output()
@@ -489,7 +491,8 @@ fn report_draws_both_evaluation_overlays_and_retry_hides_them() {
         h.run_steps(3);
     }
     assert_eq!(h.state().snapshot.phase, Phase::Failed);
-    assert!(h.query_by_label("Training winrate comparison").is_some());
+    assert!(h.query_by_label("Training score comparison").is_some());
+    assert!(h.query_by_label("Training winrate comparison").is_none());
     h.get_by_label("Retry without hints").click();
     h.run_steps(3);
     assert!(h.query_by_label("Training winrate comparison").is_none());

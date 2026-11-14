@@ -17,7 +17,7 @@ pub(super) struct Entry {
 impl Entry {
     pub fn key(doc: &Document, account: &str, profile: &EngineProfile) -> Result<String> {
         Ok(digest(&serde_json::to_vec(&(
-            "training-candidates-v1",
+            POLICY,
             doc.source_identity()?,
             &doc.mainline,
             account.to_lowercase(),
@@ -105,7 +105,7 @@ impl Trainer {
             };
             self.scanned += 1;
             self.state.status = format!(
-                "Finding lost leads · game {} · {GRADE_VISITS}-visit confirmation",
+                "Finding point losses · game {} · {GRADE_VISITS}-visit confirmation",
                 self.scanned
             );
             let Some(doc) = self.read_game(&path) else {
@@ -138,7 +138,7 @@ impl Trainer {
         let doc = self.game.as_ref().unwrap().doc.clone();
         let color = player_color(&doc, &self.account).unwrap();
         if let Some(index) = self.confirming.take()
-            && self.qualifies(&doc, index, color, GRADE_VISITS, 0.65, 0.15)?
+            && self.qualifies(&doc, index, color, GRADE_VISITS, MAJOR_LOSS)?
         {
             let game = self.game.as_mut().unwrap();
             if !game.entry.candidates.contains(&index) {
@@ -151,14 +151,15 @@ impl Trainer {
             }
         }
         if !self.game.as_ref().unwrap().screened {
+            // Coarse estimates get a wider net; confirmation requires five points.
             let mut candidates = Vec::new();
             for index in 0..doc.mainline.len().saturating_sub(1) {
                 if horizon(&doc, index, 2).is_some()
-                    && self.qualifies(&doc, index, color, SCREEN_VISITS, 0.60, 0.10)?
+                    && self.qualifies(&doc, index, color, SCREEN_VISITS, 3.0)?
                 {
                     let a = self.value(&doc, doc.mainline[index], SCREEN_VISITS)?;
                     let b = self.value(&doc, doc.mainline[index + 1], SCREEN_VISITS)?;
-                    candidates.push((index, perspective(a, color).0 - perspective(b, color).0));
+                    candidates.push((index, score(a, color) - score(b, color)));
                 }
             }
             candidates.sort_by(|a, b| b.1.total_cmp(&a.1));

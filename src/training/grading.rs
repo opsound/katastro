@@ -16,10 +16,8 @@ impl Trainer {
             passed: false,
             comparison: self.comparison(original_end)?,
         };
-        report.passed = (report.winrate_saved() >= 0.10 || report.score_saved() >= 3.0)
-            && report.winrate_saved() >= -0.02
-            && report.score_saved() >= -1.0
-            && (!self.settings.strict || !report.major_mistake);
+        report.passed =
+            report.score_saved() >= 3.0 && (!self.settings.strict || !report.major_mistake);
         self.state.phase = if report.passed {
             Phase::Passed
         } else {
@@ -109,13 +107,11 @@ impl Trainer {
         let mut loss = MoveLoss::default();
         let mut major = false;
         for (before, after) in own_moves(doc, start, end, color)? {
-            let a = perspective(self.value(doc, before, GRADE_VISITS)?, color);
-            let b = perspective(self.value(doc, after, GRADE_VISITS)?, color);
-            let winrate = (a.0 - b.0).max(0.0);
-            let score = (a.1 - b.1).max(0.0);
-            loss.winrate += winrate;
+            let a = score(self.value(doc, before, GRADE_VISITS)?, color);
+            let b = score(self.value(doc, after, GRADE_VISITS)?, color);
+            let score = (a - b).max(0.0);
             loss.score += score;
-            major |= winrate >= 0.15 || score >= 3.0;
+            major |= score >= MAJOR_LOSS;
         }
         Ok((loss, major))
     }
@@ -140,8 +136,9 @@ impl Trainer {
             let Some(value) = self.memo.get(&self.keys(doc, *node, GRADE_VISITS)?.0) else {
                 break;
             };
-            let (winrate, score) = perspective(value, color);
-            values.push(Evaluation { winrate, score });
+            values.push(Evaluation {
+                score: score(value, color),
+            });
         }
         Ok(values)
     }

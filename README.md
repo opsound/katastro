@@ -46,7 +46,7 @@ Downloads run two at a time. Existing game IDs with local SGFs are skipped, and 
 
 ## Training
 
-Click **Train** or **Games → Train from these games**. Exercises are prepared from completed review analysis and from the synced library while no game is open, then cached for quick starts. Setup uses your latest 20 games by default. Play five or ten moves against a 1-dan HumanSL opponent, then compare the attempt with the recorded continuation in overlaid score and winrate graphs. Passing depends on cumulative losses on your own moves; opponent blunders and later gains do not cancel earlier mistakes.
+Click **Train** or **Games → Train from these games**. Exercises are prepared from completed review analysis and from the synced library while no game is open, then cached for quick starts. Setup uses your latest 20 games by default. Play five or ten moves against a 1-dan HumanSL opponent, on positions where one of your moves lost at least 5 points, then compare the attempt with the recorded continuation in an overlaid score graph. Training uses points only. Passing depends on reducing cumulative point losses on your own moves; opponent blunders and later gains do not cancel earlier mistakes.
 
 Retry without hints after a failure, choose **Next problem** after any result or while exploring, or pass/give up to explore suggested lines in the normal reviewer. The opponent model downloads once (99 MB); games stay local. See the [training policy and test instructions](docs/training.md).
 

@@ -14,6 +14,8 @@ mod grading;
 #[cfg(feature = "desktop")]
 pub mod view;
 const SCREEN_VISITS: u64 = 64;
+const POLICY: &str = "training-score-v2";
+const MAJOR_LOSS: f64 = 5.0;
 pub const GRADE_VISITS: u64 = 512;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Phase {
@@ -45,12 +47,10 @@ impl Default for Settings {
 }
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct MoveLoss {
-    pub winrate: f64,
     pub score: f64,
 }
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct Evaluation {
-    pub winrate: f64,
     pub score: f64,
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -76,9 +76,6 @@ pub struct Report {
     pub comparison: Comparison,
 }
 impl Report {
-    pub fn winrate_saved(&self) -> f64 {
-        self.recorded_loss.winrate - self.attempt_loss.winrate
-    }
     pub fn score_saved(&self) -> f64 {
         self.recorded_loss.score - self.attempt_loss.score
     }
@@ -442,7 +439,6 @@ impl Trainer {
         index: usize,
         color: Color,
         visits: u64,
-        lead: f64,
         loss: f64,
     ) -> Result<bool> {
         if doc.nodes[doc.mainline[index + 1]]
@@ -452,12 +448,13 @@ impl Trainer {
         {
             return Ok(false);
         }
-        let a = perspective(self.value(doc, doc.mainline[index], visits)?, color);
-        let b = perspective(self.value(doc, doc.mainline[index + 1], visits)?, color);
-        Ok(a.0 >= lead && a.1 > 0.0 && a.0 - b.0 >= loss)
+        let a = score(self.value(doc, doc.mainline[index], visits)?, color);
+        let b = score(self.value(doc, doc.mainline[index + 1], visits)?, color);
+        Ok(a - b >= loss)
     }
     fn problem_key(&self, doc: &Document, index: usize) -> Result<String> {
         Ok(digest(&serde_json::to_vec(&(
+            POLICY,
             self.account.to_lowercase(),
             doc.source_identity()?,
             doc.position(doc.mainline[index])?,
@@ -473,7 +470,7 @@ impl Trainer {
             phase: Phase::YourTurn,
             document: Some(self.problem.as_ref().unwrap().prefix.clone()),
             target: self.settings.moves,
-            status: "Your move · play as the player who lost the lead".into(),
+            status: "Your move · improve on your recorded moves".into(),
             ..Default::default()
         };
     }
@@ -575,27 +572,18 @@ impl Trainer {
             .ok_or("KataGo returned no suggested lines")?;
         let mut candidates = infos
             .iter()
-            .filter_map(|m| {
-                Some((
-                    m,
-                    m["visits"].as_u64()?,
-                    m["winrate"].as_f64()?,
-                    m["scoreLead"].as_f64()?,
-                ))
-            })
-            .filter(|(_, visits, wr, score)| {
-                *visits >= 16 && wr.is_finite() && (0.0..=1.0).contains(wr) && score.is_finite()
-            })
+            .filter_map(|m| Some((m, m["visits"].as_u64()?, m["scoreLead"].as_f64()?)))
+            .filter(|(_, visits, score)| *visits >= 16 && score.is_finite())
             .collect::<Vec<_>>();
-        candidates.sort_by_key(|(_, visits, _, _)| std::cmp::Reverse(*visits));
-        let Some((_, _, wr, score)) = candidates.first().copied() else {
+        candidates.sort_by_key(|(_, visits, _)| std::cmp::Reverse(*visits));
+        let Some((_, _, score)) = candidates.first().copied() else {
             return Err("KataGo has not searched a suggested line deeply enough".into());
         };
         let sign = if p.color == Color::Black { 1.0 } else { -1.0 };
         let mut count = 0;
         let mut lines = Vec::new();
-        for (m, _, w, s) in candidates {
-            if (wr - w) * sign > 0.05 || (score - s) * sign > 2.0 {
+        for (m, _, s) in candidates {
+            if (score - s) * sign > 2.0 {
                 continue;
             }
             let Some(pv) = m["pv"].as_array().filter(|pv| pv.len() >= 2) else {
@@ -685,11 +673,11 @@ fn own_moves(
         .map(|pair| (pair[0], pair[1]))
         .collect())
 }
-fn perspective(a: &Analysis, color: Color) -> (f64, f64) {
+fn score(a: &Analysis, color: Color) -> f64 {
     if color == Color::Black {
-        (a.winrate, a.score_lead)
+        a.score_lead
     } else {
-        (1.0 - a.winrate, -a.score_lead)
+        -a.score_lead
     }
 }
 fn player_color(doc: &Document, account: &str) -> Option<Color> {
