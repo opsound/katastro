@@ -229,7 +229,7 @@ fn suggestion_color(analysis: &Analysis, rank: usize, player: Color) -> Color32 
     ) {
         (Some(_), Some(_)) if rank == 0 => SUGGESTION_BLUE,
         (Some(score), Some(best)) => {
-            let loss = ((best - score) * if player == Color::Black { 1.0 } else { -1.0 }).max(0.0);
+            let loss = player.perspective(best - score).max(0.0);
             let stops = MOVE_LOSS_COLORS;
             if loss <= stops[0].0 {
                 stops[0].1

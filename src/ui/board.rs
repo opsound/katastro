@@ -250,11 +250,7 @@ pub(super) fn board_view(
                 true,
                 format!(
                     "Next recorded move: {} {}",
-                    if played.color == Color::Black {
-                        "Black"
-                    } else {
-                        "White"
-                    },
+                    played.color,
                     point.gtp(doc.size)
                 ),
             )
@@ -288,11 +284,7 @@ pub(super) fn board_view(
                     true,
                     format!(
                         "Variation move {number}: {} {}",
-                        if *color == Color::Black {
-                            "Black"
-                        } else {
-                            "White"
-                        },
+                        *color,
                         point.gtp(doc.size)
                     ),
                 )
@@ -330,28 +322,13 @@ fn paint_group_strength(
         let Some(color) = stone.filter(|_| !seen[index]) else {
             continue;
         };
-        let mut chain = Vec::new();
-        let mut frontier = vec![index];
-        seen[index] = true;
-        while let Some(cell) = frontier.pop() {
-            chain.push(cell);
-            let x = cell % board.size;
-            let y = cell / board.size;
-            for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
-                if let (Some(nx), Some(ny)) = (x.checked_add_signed(dx), y.checked_add_signed(dy))
-                    && nx < board.size
-                    && ny < board.size
-                {
-                    let neighbor = ny * board.size + nx;
-                    if !seen[neighbor] && board.cells[neighbor] == Some(color) {
-                        seen[neighbor] = true;
-                        frontier.push(neighbor);
-                    }
-                }
-            }
+        let (chain, _) = board.group(index);
+        for &cell in &chain {
+            seen[cell] = true;
         }
-        let owned = chain.iter().map(|cell| ownership[*cell]).sum::<f64>() / chain.len() as f64
-            * if color == Color::Black { 1.0 } else { -1.0 };
+        let owned = color.perspective(
+            chain.iter().map(|cell| ownership[*cell]).sum::<f64>() / chain.len() as f64,
+        );
         let hue = if owned > 0.5 {
             GROUP_LIVE
         } else if owned < -0.5 {
@@ -424,8 +401,7 @@ fn point_delta(
     resulting_score: Option<f64>,
     color: Color,
 ) -> Option<f64> {
-    let delta =
-        (resulting_score? - current?.score_lead) * if color == Color::Black { 1.0 } else { -1.0 };
+    let delta = color.perspective(resulting_score? - current?.score_lead);
     Some(if delta.abs() < 0.05 { 0.0 } else { delta })
 }
 

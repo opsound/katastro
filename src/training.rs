@@ -579,11 +579,10 @@ impl Trainer {
         let Some((_, _, score)) = candidates.first().copied() else {
             return Err("KataGo has not searched a suggested line deeply enough".into());
         };
-        let sign = if p.color == Color::Black { 1.0 } else { -1.0 };
         let mut count = 0;
         let mut lines = Vec::new();
         for (m, _, s) in candidates {
-            if (score - s) * sign > 2.0 {
+            if p.color.perspective(score - s) > 2.0 {
                 continue;
             }
             let Some(pv) = m["pv"].as_array().filter(|pv| pv.len() >= 2) else {
@@ -674,11 +673,7 @@ fn own_moves(
         .collect())
 }
 fn score(a: &Analysis, color: Color) -> f64 {
-    if color == Color::Black {
-        a.score_lead
-    } else {
-        -a.score_lead
-    }
+    color.perspective(a.score_lead)
 }
 fn player_color(doc: &Document, account: &str) -> Option<Color> {
     [Color::Black, Color::White].into_iter().find(|c| {

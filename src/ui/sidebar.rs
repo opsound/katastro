@@ -105,7 +105,7 @@ pub(super) fn review_controls(
                         .on_hover_text("Ownership appears as this position refines. Older cached charts remain usable while group estimates are pending.");
                 }
             } else {
-                ui.label(caption(format!("Move labels: point change for {}", if board.next == Color::Black { "Black" } else { "White" })));
+                ui.label(caption(format!("Move labels: point change for {}", board.next)));
             }
         });
     }
@@ -235,12 +235,7 @@ pub(super) fn analysis_details(
         ui.label(
             RichText::new(format!(
                 "Move {} · {} to play",
-                board.move_number,
-                if board.next == Color::Black {
-                    "Black"
-                } else {
-                    "White"
-                }
+                board.move_number, board.next
             ))
             .strong(),
         );
@@ -294,18 +289,7 @@ fn player(ui: &mut egui::Ui, color: Color, name: &str) {
         })
         .response;
     response.widget_info(|| {
-        WidgetInfo::labeled(
-            WidgetType::Other,
-            true,
-            format!(
-                "{} player: {name}",
-                if color == Color::Black {
-                    "Black"
-                } else {
-                    "White"
-                }
-            ),
-        )
+        WidgetInfo::labeled(WidgetType::Other, true, format!("{} player: {name}", color))
     });
 }
 
