@@ -356,6 +356,7 @@ fn next_problem_advances_after_pass_fail_and_exploration() {
             )
             .unwrap();
         support::settle(&mut trainer, false, true);
+        let first_game = trainer.snapshot().document.unwrap().komi;
         let state = State {
             snapshot: trainer.snapshot(),
             trainer,
@@ -384,7 +385,10 @@ fn next_problem_advances_after_pass_fail_and_exploration() {
         h.get_by_label("Next problem").click();
         h.run_steps(3);
         assert_eq!(h.state().snapshot.phase, Phase::YourTurn);
-        assert_eq!(h.state().snapshot.document.as_ref().unwrap().komi, 7.5);
+        assert_ne!(
+            h.state().snapshot.document.as_ref().unwrap().komi,
+            first_game
+        );
         assert_eq!(h.state().snapshot.played, 0);
         assert!(h.state().snapshot.report.is_none() && h.state().snapshot.reveal.is_none());
         h.get_by_label("Play B5").click();

@@ -228,7 +228,7 @@ fn preparation_backfills_an_existing_catalog_without_downgrading_review_values()
                         visits: 4096,
                         winrate: if node == 0 { 0.8 } else { 0.4 },
                         score_lead: if node == 0 { 8.0 } else { -2.0 },
-                        suggestions: vec![],
+                        suggestions: support::searched_moves(node, 64),
                         ownership: vec![],
                         ownership_visits: 0,
                     },

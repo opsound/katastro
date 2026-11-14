@@ -12,6 +12,8 @@ use std::{
     net::{TcpListener, TcpStream},
     time::{Duration, Instant},
 };
+#[path = "support/training.rs"]
+mod support;
 fn until(client: &Client, done: impl Fn(&Snapshot) -> bool) -> Snapshot {
     let end = Instant::now() + Duration::from_secs(5);
     loop {
@@ -168,9 +170,7 @@ fn background_training_resumes_before_grading_and_cancels_a_thinking_opponent() 
     assert!(stopped.document.is_none());
 }
 fn finish(engine: &mut BufReader<TcpStream>, q: &Value) {
-    let turn = q["moves"].as_array().unwrap().len();
-    let (winrate, score) = if turn == 0 { (0.8, 8.0) } else { (0.4, -2.0) };
-    writeln!(engine.get_mut(),"{}",json!({"id":q["id"],"turnNumber":turn,"isDuringSearch":false,"rootInfo":{"visits":q["maxVisits"],"winrate":winrate,"scoreLead":score}})).unwrap();
+    writeln!(engine.get_mut(), "{}", support::reply(q, false, false)).unwrap();
 }
 
 // Benefit: Retry and Next release unfinished graph searches before sending new
@@ -229,7 +229,10 @@ fn leaving_a_report_cancels_chart_work_before_the_next_attempt() {
                     json!({"id":q["id"],"turnNumber":turn,"isDuringSearch":false,"humanPolicy":policy})
                 } else {
                     let leading = turn.is_multiple_of(2);
-                    json!({"id":q["id"],"turnNumber":turn,"isDuringSearch":false,"rootInfo":{"visits":q["maxVisits"],"winrate":if leading {0.8} else {0.4},"scoreLead":if leading {8.0} else {-2.0}}})
+                    let mut r = support::reply(&q, false, false);
+                    r["rootInfo"]["winrate"] = json!(if leading { 0.8 } else { 0.4 });
+                    r["rootInfo"]["scoreLead"] = json!(if leading { 8.0 } else { -2.0 });
+                    r
                 };
                 if writeln!(engine.get_mut(), "{response}").is_err() {
                     break;

@@ -83,6 +83,36 @@ impl Trainer {
         });
         Ok(())
     }
+    pub(super) fn need_candidate(&mut self, doc: &Document, index: usize) -> Result<()> {
+        let node = doc.mainline[index];
+        self.need(doc, node, GRADE_VISITS, self.preparing)?;
+        let (key, position) = self.keys(doc, node, GRADE_VISITS)?;
+        if self
+            .memo
+            .get(&key)
+            .is_some_and(|a| !a.suggestions.iter().any(|m| m.visits > 0))
+        {
+            if let Some(cached) = self.review.analysis(&key, GRADE_VISITS)?
+                && cached.suggestions.iter().any(|m| m.visits > 0)
+            {
+                // A deeper legacy root may lack moves; reuse metadata without
+                // replacing that root's deeper score or redoing the bounded search.
+                self.memo.get_mut(&key).unwrap().suggestions = cached.suggestions;
+            } else if !self.refresh {
+                self.memo.remove(&key);
+                let query = self.query(doc, node, GRADE_VISITS)?;
+                self.queue.push_back(Job {
+                    query,
+                    kind: Kind::Evaluation {
+                        key,
+                        position,
+                        visits: GRADE_VISITS,
+                    },
+                });
+            }
+        }
+        self.need(doc, doc.mainline[index + 1], GRADE_VISITS, self.preparing)
+    }
     pub(super) fn prefetch_recorded(
         &mut self,
         doc: &Document,

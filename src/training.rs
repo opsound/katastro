@@ -1,5 +1,6 @@
 //! Library exercises. All evaluations use Black's perspective internally.
 use crate::{Analysis, Color, Document, EngineProfile, Point, Result, Review, digest};
+use rand::{SeedableRng, rngs::StdRng};
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -66,6 +67,7 @@ struct Problem {
     index: usize,
     color: Color,
     key: String,
+    group: String,
     prefix: Document,
 }
 enum Kind {
@@ -104,8 +106,14 @@ pub struct Trainer {
     preparing: bool,
     refresh: bool,
     report_id: Option<i64>,
+    rng: StdRng,
 }
 impl Trainer {
+    /// Make problem order reproducible for a session.
+    pub fn with_seed(mut self, seed: u64) -> Self {
+        self.rng = StdRng::seed_from_u64(seed);
+        self
+    }
     pub fn new(
         reviews: &Path,
         cache: &Path,
@@ -113,8 +121,21 @@ impl Trainer {
         profile: EngineProfile,
     ) -> Result<Self> {
         static INSTANCE: AtomicU64 = AtomicU64::new(0);
-        let review = Review::new(reviews, cache)?;
-        review.reviews.execute_batch("CREATE TABLE IF NOT EXISTS training_attempts (id INTEGER PRIMARY KEY, problem TEXT NOT NULL, outcome TEXT NOT NULL, report TEXT, document TEXT NOT NULL);")?;
+        let mut review = Review::new(reviews, cache)?;
+        let migration = review
+            .reviews
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        migration.execute_batch("CREATE TABLE IF NOT EXISTS training_attempts (id INTEGER PRIMARY KEY, problem TEXT NOT NULL, outcome TEXT NOT NULL, report TEXT, document TEXT NOT NULL);")?;
+        let grouped: bool = migration.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('training_attempts') WHERE name='group_key')", [], |row| row.get(0),
+        )?;
+        if !grouped {
+            migration.execute(
+                "ALTER TABLE training_attempts ADD COLUMN group_key TEXT",
+                [],
+            )?;
+        }
+        migration.commit()?;
         Ok(Self {
             state: Snapshot::default(),
             review,
@@ -138,6 +159,7 @@ impl Trainer {
             preparing: false,
             refresh: false,
             report_id: None,
+            rng: StdRng::from_rng(&mut rand::rng()),
         })
     }
     pub fn snapshot(&self) -> Snapshot {
@@ -165,7 +187,8 @@ impl Trainer {
         ) {
             return Err("Finish this attempt before continuing".into());
         }
-        self.seen.insert(self.problem.as_ref().unwrap().key.clone());
+        self.seen
+            .insert(self.problem.as_ref().unwrap().group.clone());
         self.initialize(
             self.library.clone(),
             self.account.clone(),
@@ -198,11 +221,13 @@ impl Trainer {
         self.state.phase = Phase::Searching;
         Ok(())
     }
-    fn start_problem(&mut self, doc: Document, index: usize) -> Result<()> {
+    fn start_problem(&mut self, doc: Document, candidate: catalog::Candidate) -> Result<()> {
+        let index = candidate.index;
         self.problem = Some(Problem {
             prefix: prefix(&doc, doc.mainline[index])?,
             color: player_color(&doc, &self.account).unwrap(),
             key: self.problem_key(&doc, index)?,
+            group: candidate.group,
             index,
             doc: doc.clone(),
         });
@@ -230,7 +255,10 @@ impl Trainer {
                 position,
                 visits,
             } => {
-                let a = Analysis::from_root(reply)?;
+                let a = Analysis::from_reply(
+                    reply,
+                    job.query["boardXSize"].as_u64().unwrap() as usize,
+                )?;
                 if a.visits < visits {
                     return Err("KataGo returned an incomplete training evaluation".into());
                 }

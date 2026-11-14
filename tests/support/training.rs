@@ -57,6 +57,7 @@ pub fn reply(q: &Value, white: bool, good: bool) -> Value {
         (0.4, -2.0)
     };
     let mut r = json!({"id":q["id"],"turnNumber":moves.len(),"isDuringSearch":false,"rootInfo":{"visits":q["maxVisits"],"winrate":if white {1.0-wr} else {wr},"scoreLead":if white {-score} else {score}}});
+    r["moveInfos"] = json!([{"move":format!("{}5", b"ABCDEFGHJ"[(moves.len().saturating_sub(key_turn)/2)%9] as char),"visits":q["maxVisits"],"winrate":0.5,"scoreLead":8.0}]);
     if q["includePolicy"] == true {
         let mut policy = vec![-1.0; 82];
         policy[81] = 1.0;
@@ -83,4 +84,13 @@ pub fn settle_with(t: &mut Trainer, mut respond: impl FnMut(&Value) -> Value) ->
         requests.push(q);
     }
     panic!("unbounded exercise work")
+}
+
+pub fn searched_moves(node: usize, visits: u64) -> Vec<katastro::SuggestedMove> {
+    vec![katastro::SuggestedMove {
+        point: Some(katastro::Point::new((node / 2) % 9, 4)),
+        visits,
+        winrate: Some(0.5),
+        score_lead: Some(8.0),
+    }]
 }

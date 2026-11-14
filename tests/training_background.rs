@@ -151,7 +151,7 @@ fn completed_review_pass_populates_training_without_extra_engine_work() {
                     visits: if node == 14 { 64 } else { 1024 },
                     winrate: if node == 0 { 0.8 } else { 0.4 },
                     score_lead: if node == 0 { 8.0 } else { -2.0 },
-                    suggestions: vec![],
+                    suggestions: support::searched_moves(node, 64),
                     ownership: vec![0.0; 81],
                     ownership_visits: if node == 14 { 64 } else { 1024 },
                 },

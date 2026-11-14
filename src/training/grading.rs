@@ -179,9 +179,10 @@ impl Trainer {
     }
     pub(super) fn record(&self, outcome: &str) -> Result<i64> {
         self.review.reviews.execute(
-            "INSERT INTO training_attempts (problem,outcome,report,document) VALUES (?1,?2,?3,?4)",
+            "INSERT INTO training_attempts (problem,group_key,outcome,report,document) VALUES (?1,?2,?3,?4,?5)",
             params![
                 self.problem.as_ref().unwrap().key,
+                self.problem.as_ref().unwrap().group,
                 outcome,
                 serde_json::to_string(&self.state.report)?,
                 serde_json::to_string(&self.state.document)?
