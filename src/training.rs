@@ -11,6 +11,9 @@ use std::{
 mod catalog;
 pub mod client;
 mod grading;
+mod queue;
+mod reveal;
+pub use grading::{Comparison, Evaluation, MoveLoss, Report};
 #[cfg(feature = "desktop")]
 pub mod view;
 const SCREEN_VISITS: u64 = 64;
@@ -43,41 +46,6 @@ impl Default for Settings {
             strict: true,
             include_completed: false,
         }
-    }
-}
-#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
-pub struct MoveLoss {
-    pub score: f64,
-}
-#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
-pub struct Evaluation {
-    pub score: f64,
-}
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub struct Comparison {
-    /// Each curve is a contiguous evaluated prefix; missing tail values are omitted.
-    pub recorded: Vec<Evaluation>,
-    pub attempt: Vec<Evaluation>,
-    #[serde(default)]
-    pub total_plies: usize,
-}
-impl Comparison {
-    pub fn complete(&self) -> bool {
-        self.recorded.len() > self.total_plies && self.attempt.len() > self.total_plies
-    }
-}
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub struct Report {
-    pub passed: bool,
-    pub recorded_loss: MoveLoss,
-    pub attempt_loss: MoveLoss,
-    pub major_mistake: bool,
-    #[serde(default)]
-    pub comparison: Comparison,
-}
-impl Report {
-    pub fn score_saved(&self) -> f64 {
-        self.recorded_loss.score - self.attempt_loss.score
     }
 }
 #[derive(Clone, Debug, Default)]
@@ -244,106 +212,6 @@ impl Trainer {
         self.reset_attempt();
         self.prefetch_recorded(&doc, index, self.settings.moves * 2)
     }
-    pub fn next_request(&mut self) -> Result<Option<Value>> {
-        // Grade readiness changes on commands/replies, not each worker poll.
-        if self.state.phase == Phase::Searching {
-            self.advance()?;
-        }
-        // Keep one analysis slot available for the next interactive HumanSL reply.
-        let reserve = self.state.phase == Phase::YourTurn;
-        if self.pending.len() >= crate::engine::ANALYSIS_THREADS - usize::from(reserve) {
-            return Ok(None);
-        }
-        Ok(self.queue.pop_front().map(|job| {
-            let q = job.query.clone();
-            self.pending.insert(q["id"].as_str().unwrap().into(), job);
-            q
-        }))
-    }
-    fn query(&mut self, doc: &Document, node: usize, visits: u64) -> Result<Value> {
-        let mut q = serde_json::to_value(doc.position(node)?)?;
-        self.sequence += 1;
-        q["id"] = json!(format!("training-{}-{}", self.instance, self.sequence));
-        q["maxVisits"] = json!(visits);
-        q["analyzeTurns"] = json!([q["moves"].as_array().unwrap().len()]);
-        Ok(q)
-    }
-    fn keys(&self, doc: &Document, node: usize, visits: u64) -> Result<(String, String)> {
-        let position = doc.position(node)?.analysis_key(&self.profile)?;
-        Ok((
-            digest(&serde_json::to_vec(&("training-v1", &position, visits))?),
-            position,
-        ))
-    }
-    fn need(&mut self, doc: &Document, node: usize, visits: u64, reuse_deeper: bool) -> Result<()> {
-        let (key, position) = self.keys(doc, node, visits)?;
-        if self.memo.contains_key(&key)
-            || self
-                .queue
-                .iter()
-                .chain(self.pending.values())
-                .any(|j| matches!(&j.kind, Kind::Evaluation {key:k,..} if *k == key))
-        {
-            return Ok(());
-        }
-        let ordered = if reuse_deeper {
-            [&position, &key]
-        } else {
-            [&key, &position]
-        };
-        for &cached_key in &ordered {
-            if let Some(value) = self.review.analysis(cached_key, visits)? {
-                if reuse_deeper
-                    || cached_key == &key
-                    || visits == SCREEN_VISITS
-                    || value.visits == visits
-                {
-                    self.memo.insert(key, value);
-                    return Ok(());
-                }
-                break;
-            }
-        }
-        let query = self.query(doc, node, visits)?;
-        self.queue.push_back(Job {
-            query,
-            kind: Kind::Evaluation {
-                key,
-                position,
-                visits,
-            },
-        });
-        Ok(())
-    }
-    fn prefetch_recorded(&mut self, doc: &Document, index: usize, plies: usize) -> Result<()> {
-        let end = horizon(doc, index, plies).unwrap_or(*doc.mainline.last().unwrap());
-        for &node in doc.mainline.iter().skip(index) {
-            self.need(doc, node, GRADE_VISITS, false)?;
-            if node == end {
-                break;
-            }
-        }
-        Ok(())
-    }
-    fn need_attempt(&mut self, doc: &Document) -> Result<()> {
-        self.need(doc, doc.selected, GRADE_VISITS, false)?;
-        let (key, _) = self.keys(doc, doc.selected, GRADE_VISITS)?;
-        // Newly played moves take priority over queued recorded-line prefetch.
-        if let Some(index) = self
-            .queue
-            .iter()
-            .position(|j| matches!(&j.kind, Kind::Evaluation {key:k,..} if *k == key))
-        {
-            let job = self.queue.remove(index).unwrap();
-            self.queue.push_front(job);
-        }
-        Ok(())
-    }
-    fn value(&self, doc: &Document, node: usize, visits: u64) -> Result<&Analysis> {
-        self.memo
-            .get(&self.keys(doc, node, visits)?.0)
-            .ok_or_else(|| "Training evaluation is incomplete".into())
-    }
     pub fn accept(&mut self, reply: &Value, sample: f64) -> Result<()> {
         let Some(id) = reply["id"].as_str() else {
             return Err("Engine response has no ID".into());
@@ -411,37 +279,6 @@ impl Trainer {
         }
         Ok(())
     }
-    fn qualifies(
-        &self,
-        doc: &Document,
-        index: usize,
-        color: Color,
-        visits: u64,
-        loss: f64,
-    ) -> Result<bool> {
-        if doc.nodes[doc.mainline[index + 1]]
-            .played
-            .is_none_or(|m| m.color != color)
-            || doc.board(doc.mainline[index])?.next != color
-        {
-            return Ok(false);
-        }
-        let a = score(self.value(doc, doc.mainline[index], visits)?, color);
-        let b = score(self.value(doc, doc.mainline[index + 1], visits)?, color);
-        Ok(a - b >= loss)
-    }
-    fn problem_key(&self, doc: &Document, index: usize) -> Result<String> {
-        Ok(digest(&serde_json::to_vec(&(
-            POLICY,
-            self.account.to_lowercase(),
-            doc.source_identity()?,
-            doc.position(doc.mainline[index])?,
-            &self.profile,
-        ))?))
-    }
-    fn completed(&self, key: &str) -> Result<bool> {
-        Ok(self.db.query_row("SELECT EXISTS(SELECT 1 FROM training_attempts WHERE problem=?1 AND outcome IN ('passed','given-up'))",[key],|r|r.get(0))?)
-    }
     fn reset_attempt(&mut self) {
         self.report_id = None;
         self.state = Snapshot {
@@ -486,141 +323,6 @@ impl Trainer {
         let p = self.problem.as_ref().unwrap();
         self.prefetch_recorded(&p.doc.clone(), p.index, self.settings.moves * 2)
     }
-    pub fn reveal(&mut self) -> Result<()> {
-        if !matches!(
-            self.state.phase,
-            Phase::YourTurn | Phase::Opponent | Phase::Grading | Phase::Failed | Phase::Passed
-        ) {
-            return Err("There is no exercise to reveal".into());
-        }
-        if self.state.phase != Phase::Passed {
-            self.record("given-up")?;
-        }
-        self.queue.clear();
-        self.pending.clear();
-        self.state.phase = Phase::Revealing;
-        self.state.status = "Preparing suggested lines…".into();
-        let p = self.problem.as_ref().unwrap();
-        let doc = p.doc.clone();
-        let node = doc.mainline[p.index];
-        let mut query = self.query(&doc, node, GRADE_VISITS)?;
-        query["overrideSettings"] = json!({"analysisPVLen":12});
-        self.queue.push_back(Job {
-            query,
-            kind: Kind::Lines,
-        });
-        Ok(())
-    }
-    fn finish_reveal(&mut self, reply: &Value) -> Result<()> {
-        let p = self.problem.as_ref().unwrap();
-        let path = self.output.join(format!("{}.sgf", p.key));
-        let mut doc = p.doc.clone();
-        if path.is_file() {
-            self.review.import(&path)?;
-            let saved = self.review.document().unwrap();
-            if saved.position(*saved.mainline.last().unwrap())?
-                != doc.position(*doc.mainline.last().unwrap())?
-            {
-                return Err(
-                    "The training review's original game has changed; it was not overwritten"
-                        .into(),
-                );
-            }
-            doc = saved.clone();
-        }
-        let anchor = doc.mainline[p.index];
-        let records = self
-            .db
-            .prepare("SELECT document FROM training_attempts WHERE problem=?1 ORDER BY id")?
-            .query_map([&p.key], |r| r.get::<_, String>(0))?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        for record in records {
-            let attempt: Document = serde_json::from_str(&record)?;
-            doc.selected = anchor;
-            for &id in attempt
-                .path(attempt.selected)?
-                .iter()
-                .skip(p.prefix.nodes.len())
-            {
-                doc.append_move(attempt.nodes[id].played.unwrap().point)?;
-            }
-        }
-        let infos = reply["moveInfos"]
-            .as_array()
-            .ok_or("KataGo returned no suggested lines")?;
-        let mut candidates = infos
-            .iter()
-            .filter_map(|m| Some((m, m["visits"].as_u64()?, m["scoreLead"].as_f64()?)))
-            .filter(|(_, visits, score)| *visits >= 16 && score.is_finite())
-            .collect::<Vec<_>>();
-        candidates.sort_by_key(|(_, visits, _)| std::cmp::Reverse(*visits));
-        let Some((_, _, score)) = candidates.first().copied() else {
-            return Err("KataGo has not searched a suggested line deeply enough".into());
-        };
-        let mut count = 0;
-        let mut lines = Vec::new();
-        for (m, _, s) in candidates {
-            if p.color.perspective(score - s) > 2.0 {
-                continue;
-            }
-            let Some(pv) = m["pv"].as_array().filter(|pv| pv.len() >= 2) else {
-                continue;
-            };
-            let mut line = doc.clone();
-            line.selected = anchor;
-            let mut valid = true;
-            for value in pv.iter().take(12) {
-                let step = value
-                    .as_str()
-                    .ok_or("Invalid PV move")
-                    .and_then(|s| Point::from_gtp(s, line.size).map_err(|_| "Invalid PV move"));
-                if step
-                    .and_then(|point| line.append_move(point).map_err(|_| "Illegal PV"))
-                    .is_err()
-                {
-                    valid = false;
-                    break;
-                }
-            }
-            if valid {
-                let points = pv
-                    .iter()
-                    .take(12)
-                    .map(|v| Point::from_gtp(v.as_str().unwrap(), line.size))
-                    .collect::<Result<Vec<_>>>()?;
-                let text = points
-                    .iter()
-                    .map(|p| p.map(|p| p.gtp(line.size)).unwrap_or("pass".into()))
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                let comment = line.nodes[anchor].property("C").unwrap_or("").to_owned();
-                line.nodes[anchor].props.insert(
-                    "C".into(),
-                    vec![format!("{comment}\nSuggested line {}: {text}", count + 1)],
-                );
-                doc = line;
-                lines.push(points);
-                count += 1;
-                if count == 3 {
-                    break;
-                }
-            }
-        }
-        if count == 0 {
-            return Err(
-                "KataGo returned no legal multi-move suggestions; try revealing again".into(),
-            );
-        }
-        std::fs::create_dir_all(&self.output)?;
-        let temp = path.with_extension("sgf.tmp");
-        std::fs::write(&temp, doc.to_sgf())?;
-        std::fs::rename(temp, &path)?;
-        self.state.lines = lines;
-        self.state.reveal = Some((path, p.index));
-        self.state.phase = Phase::Revealed;
-        self.state.status = format!("{count} suggested lines · original game remains on top");
-        Ok(())
-    }
     pub fn cancel(&mut self) {
         self.report_id = None;
         self.queue.clear();
@@ -632,23 +334,6 @@ impl Trainer {
         self.memo.clear();
         self.state = Snapshot::default();
     }
-}
-fn own_moves(
-    doc: &Document,
-    start: usize,
-    end: usize,
-    color: Color,
-) -> Result<Vec<(usize, usize)>> {
-    let path = doc.path(end)?;
-    let first = path
-        .iter()
-        .position(|id| *id == start)
-        .ok_or("The attempt is not descended from its starting position")?;
-    Ok(path[first..]
-        .windows(2)
-        .filter(|pair| doc.nodes[pair[1]].played.is_some_and(|m| m.color == color))
-        .map(|pair| (pair[0], pair[1]))
-        .collect())
 }
 fn score(a: &Analysis, color: Color) -> f64 {
     color.perspective(a.score_lead)

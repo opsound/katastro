@@ -1,6 +1,41 @@
 //! Own-move grading and progressively completed comparison reports.
 use super::*;
 
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub struct MoveLoss {
+    pub score: f64,
+}
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub struct Evaluation {
+    pub score: f64,
+}
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct Comparison {
+    /// Each curve is a contiguous evaluated prefix; missing tail values are omitted.
+    pub recorded: Vec<Evaluation>,
+    pub attempt: Vec<Evaluation>,
+    #[serde(default)]
+    pub total_plies: usize,
+}
+impl Comparison {
+    pub fn complete(&self) -> bool {
+        self.recorded.len() > self.total_plies && self.attempt.len() > self.total_plies
+    }
+}
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct Report {
+    pub passed: bool,
+    pub recorded_loss: MoveLoss,
+    pub attempt_loss: MoveLoss,
+    pub major_mistake: bool,
+    #[serde(default)]
+    pub comparison: Comparison,
+}
+impl Report {
+    pub fn score_saved(&self) -> f64 {
+        self.recorded_loss.score - self.attempt_loss.score
+    }
+}
 impl Trainer {
     pub(super) fn grade(&mut self, original_end: usize) -> Result<()> {
         let p = self.problem.as_ref().unwrap();
@@ -154,4 +189,22 @@ impl Trainer {
         )?;
         Ok(self.db.last_insert_rowid())
     }
+}
+
+fn own_moves(
+    doc: &Document,
+    start: usize,
+    end: usize,
+    color: Color,
+) -> Result<Vec<(usize, usize)>> {
+    let path = doc.path(end)?;
+    let first = path
+        .iter()
+        .position(|id| *id == start)
+        .ok_or("The attempt is not descended from its starting position")?;
+    Ok(path[first..]
+        .windows(2)
+        .filter(|pair| doc.nodes[pair[1]].played.is_some_and(|m| m.color == color))
+        .map(|pair| (pair[0], pair[1]))
+        .collect())
 }

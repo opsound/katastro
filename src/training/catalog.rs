@@ -194,3 +194,37 @@ impl Trainer {
         Ok(())
     }
 }
+
+impl Trainer {
+    fn qualifies(
+        &self,
+        doc: &Document,
+        index: usize,
+        color: Color,
+        visits: u64,
+        loss: f64,
+    ) -> Result<bool> {
+        if doc.nodes[doc.mainline[index + 1]]
+            .played
+            .is_none_or(|m| m.color != color)
+            || doc.board(doc.mainline[index])?.next != color
+        {
+            return Ok(false);
+        }
+        let a = score(self.value(doc, doc.mainline[index], visits)?, color);
+        let b = score(self.value(doc, doc.mainline[index + 1], visits)?, color);
+        Ok(a - b >= loss)
+    }
+    pub(super) fn problem_key(&self, doc: &Document, index: usize) -> Result<String> {
+        Ok(digest(&serde_json::to_vec(&(
+            POLICY,
+            self.account.to_lowercase(),
+            doc.source_identity()?,
+            doc.position(doc.mainline[index])?,
+            &self.profile,
+        ))?))
+    }
+    fn completed(&self, key: &str) -> Result<bool> {
+        Ok(self.db.query_row("SELECT EXISTS(SELECT 1 FROM training_attempts WHERE problem=?1 AND outcome IN ('passed','given-up'))",[key],|r|r.get(0))?)
+    }
+}

@@ -1,0 +1,120 @@
+//! Budgeted evaluation caching and request priority.
+use super::*;
+impl Trainer {
+    pub fn next_request(&mut self) -> Result<Option<Value>> {
+        // Grade readiness changes on commands/replies, not each worker poll.
+        if self.state.phase == Phase::Searching {
+            self.advance()?;
+        }
+        // Keep one analysis slot available for the next interactive HumanSL reply.
+        let reserve = self.state.phase == Phase::YourTurn;
+        if self.pending.len() >= crate::engine::ANALYSIS_THREADS - usize::from(reserve) {
+            return Ok(None);
+        }
+        Ok(self.queue.pop_front().map(|job| {
+            let q = job.query.clone();
+            self.pending.insert(q["id"].as_str().unwrap().into(), job);
+            q
+        }))
+    }
+    pub(super) fn query(&mut self, doc: &Document, node: usize, visits: u64) -> Result<Value> {
+        let mut q = serde_json::to_value(doc.position(node)?)?;
+        self.sequence += 1;
+        q["id"] = json!(format!("training-{}-{}", self.instance, self.sequence));
+        q["maxVisits"] = json!(visits);
+        q["analyzeTurns"] = json!([q["moves"].as_array().unwrap().len()]);
+        Ok(q)
+    }
+    pub(super) fn keys(
+        &self,
+        doc: &Document,
+        node: usize,
+        visits: u64,
+    ) -> Result<(String, String)> {
+        let position = doc.position(node)?.analysis_key(&self.profile)?;
+        Ok((
+            digest(&serde_json::to_vec(&("training-v1", &position, visits))?),
+            position,
+        ))
+    }
+    pub(super) fn need(
+        &mut self,
+        doc: &Document,
+        node: usize,
+        visits: u64,
+        reuse_deeper: bool,
+    ) -> Result<()> {
+        let (key, position) = self.keys(doc, node, visits)?;
+        if self.memo.contains_key(&key)
+            || self
+                .queue
+                .iter()
+                .chain(self.pending.values())
+                .any(|j| matches!(&j.kind, Kind::Evaluation {key:k,..} if *k == key))
+        {
+            return Ok(());
+        }
+        let ordered = if reuse_deeper {
+            [&position, &key]
+        } else {
+            [&key, &position]
+        };
+        for &cached_key in &ordered {
+            if let Some(value) = self.review.analysis(cached_key, visits)? {
+                if reuse_deeper
+                    || cached_key == &key
+                    || visits == SCREEN_VISITS
+                    || value.visits == visits
+                {
+                    self.memo.insert(key, value);
+                    return Ok(());
+                }
+                break;
+            }
+        }
+        let query = self.query(doc, node, visits)?;
+        self.queue.push_back(Job {
+            query,
+            kind: Kind::Evaluation {
+                key,
+                position,
+                visits,
+            },
+        });
+        Ok(())
+    }
+    pub(super) fn prefetch_recorded(
+        &mut self,
+        doc: &Document,
+        index: usize,
+        plies: usize,
+    ) -> Result<()> {
+        let end = horizon(doc, index, plies).unwrap_or(*doc.mainline.last().unwrap());
+        for &node in doc.mainline.iter().skip(index) {
+            self.need(doc, node, GRADE_VISITS, false)?;
+            if node == end {
+                break;
+            }
+        }
+        Ok(())
+    }
+    pub(super) fn need_attempt(&mut self, doc: &Document) -> Result<()> {
+        self.need(doc, doc.selected, GRADE_VISITS, false)?;
+        let (key, _) = self.keys(doc, doc.selected, GRADE_VISITS)?;
+        // Newly played moves take priority over queued recorded-line prefetch.
+        if let Some(index) = self
+            .queue
+            .iter()
+            .position(|j| matches!(&j.kind, Kind::Evaluation {key:k,..} if *k == key))
+        {
+            let job = self.queue.remove(index).unwrap();
+            self.queue.push_front(job);
+        }
+        Ok(())
+    }
+    pub(super) fn value(&self, doc: &Document, node: usize, visits: u64) -> Result<&Analysis> {
+        self.memo
+            .get(&self.keys(doc, node, visits)?.0)
+            .ok_or_else(|| "Training evaluation is incomplete".into())
+    }
+}
