@@ -1,6 +1,6 @@
 //! Library exercises. All evaluations use Black's perspective internally.
 use crate::{Analysis, Color, Document, EngineProfile, Point, Result, Review, digest};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
@@ -286,35 +286,22 @@ impl Trainer {
         {
             return Ok(());
         }
-        let read = |k: &str| -> Result<Option<String>> {
-            Ok(self
-                .review
-                .cache
-                .query_row(
-                    "SELECT result FROM analysis WHERE key=?1 AND visits>=?2",
-                    params![k, visits as i64],
-                    |r| r.get(0),
-                )
-                .optional()?)
-        };
-        let first = if reuse_deeper { &position } else { &key };
-        let second = if reuse_deeper { &key } else { &position };
-        let stored = read(first)?;
-        let same_budget = if stored.is_some() {
-            first == &key
+        let ordered = if reuse_deeper {
+            [&position, &key]
         } else {
-            second == &key
+            [&key, &position]
         };
-        let cached = match stored {
-            Some(value) => Some(value),
-            None => read(second)?,
-        };
-        if let Some(value) = cached {
-            let a: Analysis = serde_json::from_str(&value)?;
-            a.validate()?;
-            if reuse_deeper || same_budget || visits == SCREEN_VISITS || a.visits == visits {
-                self.memo.insert(key, a);
-                return Ok(());
+        for &cached_key in &ordered {
+            if let Some(value) = self.review.analysis(cached_key, visits)? {
+                if reuse_deeper
+                    || cached_key == &key
+                    || visits == SCREEN_VISITS
+                    || value.visits == visits
+                {
+                    self.memo.insert(key, value);
+                    return Ok(());
+                }
+                break;
             }
         }
         let query = self.query(doc, node, visits)?;
@@ -378,16 +365,7 @@ impl Trainer {
                 position,
                 visits,
             } => {
-                let root = &reply["rootInfo"];
-                let a = Analysis {
-                    visits: root["visits"].as_u64().ok_or("Missing visits")?,
-                    winrate: root["winrate"].as_f64().ok_or("Missing winrate")?,
-                    score_lead: root["scoreLead"].as_f64().ok_or("Missing score")?,
-                    suggestions: vec![],
-                    ownership: vec![],
-                    ownership_visits: 0,
-                };
-                a.validate()?;
+                let a = Analysis::from_root(reply)?;
                 if a.visits < visits {
                     return Err("KataGo returned an incomplete training evaluation".into());
                 }

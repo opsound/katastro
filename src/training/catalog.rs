@@ -1,5 +1,6 @@
 //! Derived discovery results live with the evictable analysis, not user progress.
 use super::*;
+use rusqlite::OptionalExtension;
 
 pub(super) struct Game {
     doc: Document,

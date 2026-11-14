@@ -1,7 +1,7 @@
-use crate::{Document, NodeId, Result, Review, digest};
-use rusqlite::{OptionalExtension, params};
+use crate::{Document, NodeId, Result, digest};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+mod protocol;
 pub const MIN_CACHE_VISITS: u64 = 64;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SuggestedMove {
@@ -162,77 +162,5 @@ impl Document {
             self.komi,
             nodes,
         ))?))
-    }
-}
-impl Review {
-    pub fn analysis_key(&self, node: NodeId, profile: &EngineProfile) -> Result<String> {
-        let position = self
-            .document
-            .as_ref()
-            .ok_or("Open an SGF first")?
-            .position(node)?;
-        position.analysis_key(profile)
-    }
-    pub fn store_analysis(&mut self, key: &str, analysis: &Analysis) -> Result<()> {
-        analysis.validate()?;
-        if analysis.visits < MIN_CACHE_VISITS {
-            return Ok(());
-        }
-        let mut eligible = analysis.clone();
-        if eligible.ownership_depth() < MIN_CACHE_VISITS {
-            eligible.ownership.clear();
-            eligible.ownership_visits = 0;
-        }
-        // Merge completed components under a write lock, including when another app
-        // or review is updating the same cache. A quick map cannot downgrade a chart.
-        let transaction = self
-            .cache
-            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let old: Option<String> = transaction
-            .query_row("SELECT result FROM analysis WHERE key=?1", [key], |row| {
-                row.get(0)
-            })
-            .optional()?;
-        let combined = if let Some(old) = old {
-            let old: Analysis = serde_json::from_str(&old)?;
-            old.validate()?;
-            old.merge(&eligible)
-        } else {
-            eligible
-        };
-        transaction.execute("INSERT INTO analysis(key,visits,result) VALUES (?1,?2,?3) ON CONFLICT(key) DO UPDATE SET visits=excluded.visits,result=excluded.result WHERE excluded.visits >= analysis.visits",params![key,i64::try_from(combined.visits)?,serde_json::to_string(&combined)?])?;
-        transaction.commit()?;
-        Ok(())
-    }
-    pub fn cached_analysis(&self, profile: &EngineProfile) -> Result<BTreeMap<NodeId, Analysis>> {
-        let mut results = BTreeMap::new();
-        if let Some(doc) = &self.document {
-            let mut stmt = self
-                .cache
-                .prepare("SELECT result FROM analysis WHERE key=?1")?;
-            for id in 0..doc.nodes.len() {
-                let Ok(key) = self.analysis_key(id, profile) else {
-                    continue;
-                };
-                let result: Option<String> = stmt.query_row([key], |row| row.get(0)).optional()?;
-                if let Some(result) = result {
-                    let result: Analysis = serde_json::from_str(&result)?;
-                    result.validate()?;
-                    results.insert(id, result);
-                }
-            }
-        }
-        Ok(results)
-    }
-    pub fn clear_analysis(&mut self) -> Result<()> {
-        self.cache
-            .execute_batch("BEGIN; DELETE FROM analysis; DELETE FROM training_games; COMMIT;")?;
-        Ok(())
-    }
-    pub fn save_profile(&self, profile: &EngineProfile) -> Result<()> {
-        self.save_setting("profile", profile)
-    }
-    pub fn last_profile(&self) -> Result<Option<EngineProfile>> {
-        self.setting("profile")
     }
 }

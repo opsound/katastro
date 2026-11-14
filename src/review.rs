@@ -5,6 +5,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
 };
+mod cache;
 pub struct Review {
     reviews: Connection,
     pub(crate) cache: Connection,
@@ -118,22 +119,24 @@ impl Review {
         self.reviews.execute("INSERT INTO documents(id,document) VALUES (?1,?2) ON CONFLICT(id) DO UPDATE SET document=excluded.document",params![key,serde_json::to_string(doc)?])?;
         Ok(())
     }
-    pub fn select(&mut self, id: NodeId) -> Result<()> {
+    fn edit<T>(&mut self, edit: impl FnOnce(&mut Document) -> Result<T>) -> Result<T> {
         let mut doc = self.document.clone().ok_or("Open an SGF first")?;
-        if id >= doc.nodes.len() {
-            return Err("Unknown tree node".into());
-        }
-        doc.selected = id;
+        let result = edit(&mut doc)?;
         self.save_document(&self.document_key, &doc)?;
         self.document = Some(doc);
-        Ok(())
+        Ok(result)
+    }
+    pub fn select(&mut self, id: NodeId) -> Result<()> {
+        self.edit(|doc| {
+            if id >= doc.nodes.len() {
+                return Err("Unknown tree node".into());
+            }
+            doc.selected = id;
+            Ok(())
+        })
     }
     pub fn play(&mut self, point: Option<Point>) -> Result<NodeId> {
-        let mut doc = self.document.clone().ok_or("Open an SGF first")?;
-        let id = doc.append_move(point)?;
-        self.save_document(&self.document_key, &doc)?;
-        self.document = Some(doc);
-        Ok(id)
+        self.edit(|doc| doc.append_move(point))
     }
     pub fn export(&self, path: &Path) -> Result<()> {
         if self

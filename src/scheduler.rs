@@ -1,5 +1,5 @@
 use crate::engine::ANALYSIS_THREADS;
-use crate::{Analysis, Document, EngineProfile, NodeId, Point, Result, SuggestedMove};
+use crate::{Analysis, Document, EngineProfile, NodeId, Result};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 #[derive(Clone, Debug)]
@@ -214,31 +214,7 @@ impl Scheduler {
         let result = if reply.get("noResults").and_then(Value::as_bool) == Some(true) {
             None
         } else {
-            let root = reply
-                .get("rootInfo")
-                .ok_or("Engine reply has no evaluation")?;
-            let ownership = if let Some(value) = reply.get("ownership") {
-                let ownership: Vec<f64> = serde_json::from_value(value.clone())?;
-                if ownership.len() != self.doc.size * self.doc.size {
-                    return Err("Ownership does not match the board size".into());
-                }
-                ownership
-            } else {
-                Vec::new()
-            };
-            let analysis = Analysis {
-                ownership_visits: if ownership.is_empty() {
-                    0
-                } else {
-                    root["visits"].as_u64().ok_or("Invalid visit count")?
-                },
-                ownership,
-                visits: root["visits"].as_u64().ok_or("Invalid visit count")?,
-                winrate: root["winrate"].as_f64().ok_or("Invalid winrate")?,
-                score_lead: root["scoreLead"].as_f64().ok_or("Invalid score")?,
-                suggestions: parse_suggestions(reply, self.doc.size)?,
-            };
-            analysis.validate()?;
+            let analysis = Analysis::from_reply(reply, self.doc.size)?;
             Some(analysis)
         };
         let mut accepted = Vec::new();
@@ -371,68 +347,4 @@ fn budgets() -> impl Iterator<Item = u64> {
         .chain(std::iter::successors(Some(64u64), |v| {
             v.checked_mul(4).filter(|v| *v <= i64::MAX as u64)
         }))
-}
-fn parse_suggestions(reply: &Value, size: usize) -> Result<Vec<SuggestedMove>> {
-    let moves = reply.get("moveInfos").and_then(Value::as_array);
-    if moves.is_none_or(|moves| moves.is_empty()) {
-        let Some(policy) = reply.get("policy").and_then(Value::as_array) else {
-            return Ok(Vec::new());
-        };
-        if policy.len() != size * size + 1 {
-            return Err("Invalid policy dimensions".into());
-        }
-        let mut ranked: Vec<_> = policy
-            .iter()
-            .enumerate()
-            .filter_map(|(i, value)| {
-                value
-                    .as_f64()
-                    .filter(|v| v.is_finite() && *v >= 0.0)
-                    .map(|p| (i, p))
-            })
-            .collect();
-        ranked.sort_by(|a, b| b.1.total_cmp(&a.1));
-        return Ok(ranked
-            .into_iter()
-            .map(|(i, _)| SuggestedMove {
-                point: if i == size * size {
-                    None
-                } else {
-                    Some(Point::new(i % size, i / size))
-                },
-                visits: 0,
-                winrate: None,
-                score_lead: None,
-            })
-            .collect());
-    }
-    let moves = moves.unwrap();
-    let mut ranked: Vec<_> = moves.iter().collect();
-    ranked.sort_by_key(|m| m["order"].as_u64().unwrap_or(u64::MAX));
-    ranked
-        .into_iter()
-        .map(|m| {
-            Ok(SuggestedMove {
-                point: Point::from_gtp(
-                    m["move"]
-                        .as_str()
-                        .ok_or("Suggested move has no coordinate")?,
-                    size,
-                )?,
-                visits: m["visits"]
-                    .as_u64()
-                    .ok_or("Suggested move has no visit count")?,
-                winrate: Some(
-                    m["winrate"]
-                        .as_f64()
-                        .ok_or("Suggested move has no winrate")?,
-                ),
-                score_lead: Some(
-                    m["scoreLead"]
-                        .as_f64()
-                        .ok_or("Suggested move has no score")?,
-                ),
-            })
-        })
-        .collect()
 }

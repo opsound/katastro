@@ -11,6 +11,33 @@ fn fixture(root: &Path, sgf: &str) -> std::path::PathBuf {
     path
 }
 
+// Refactoring shared edit persistence must retain rollback on a failed save,
+// for both navigation and branch creation, without touching the source SGF.
+#[test]
+fn failed_autosaves_leave_selection_and_variations_unchanged() {
+    let temp = TempDir::new().unwrap();
+    let source = fixture(temp.path(), "(;SZ[9];B[cc];W[gg])");
+    let original = fs::read(&source).unwrap();
+    let mut app = review(temp.path());
+    app.import(&source).unwrap();
+    let before = serde_json::to_value(app.document()).unwrap();
+    let db = rusqlite::Connection::open(temp.path().join("reviews.sqlite")).unwrap();
+    db.execute_batch("CREATE TRIGGER reject_save BEFORE UPDATE ON documents BEGIN SELECT RAISE(FAIL, 'storage unavailable'); END;").unwrap();
+    assert!(app.select(1).is_err());
+    assert_eq!(serde_json::to_value(app.document()).unwrap(), before);
+    assert!(app.play(Some(Point::new(4, 4))).is_err());
+    assert_eq!(serde_json::to_value(app.document()).unwrap(), before);
+    db.execute_batch("DROP TRIGGER reject_save").unwrap();
+    let mut reopened = review(temp.path());
+    reopened.import(&source).unwrap();
+    assert_eq!(serde_json::to_value(reopened.document()).unwrap(), before);
+    let added = app.play(Some(Point::new(4, 4))).unwrap();
+    reopened.import(&source).unwrap();
+    assert_eq!(reopened.document().unwrap().selected, added);
+    assert_eq!(reopened.document().unwrap().mainline, vec![0, 1, 2]);
+    assert_eq!(fs::read(source).unwrap(), original);
+}
+
 #[test]
 fn variations_survive_reopen_without_replacing_the_played_game() {
     let temp = TempDir::new().unwrap();
