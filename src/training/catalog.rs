@@ -225,6 +225,6 @@ impl Trainer {
         ))?))
     }
     fn completed(&self, key: &str) -> Result<bool> {
-        Ok(self.db.query_row("SELECT EXISTS(SELECT 1 FROM training_attempts WHERE problem=?1 AND outcome IN ('passed','given-up'))",[key],|r|r.get(0))?)
+        Ok(self.review.reviews.query_row("SELECT EXISTS(SELECT 1 FROM training_attempts WHERE problem=?1 AND outcome IN ('passed','given-up'))",[key],|r|r.get(0))?)
     }
 }

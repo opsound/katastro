@@ -7,7 +7,7 @@ use std::{
 };
 mod cache;
 pub struct Review {
-    reviews: Connection,
+    pub(crate) reviews: Connection,
     pub(crate) cache: Connection,
     pub(crate) document: Option<Document>,
     pub(crate) document_key: String,

@@ -52,6 +52,43 @@ fn query(control: &mut BufReader<TcpStream>) -> Value {
     control.read_line(&mut line).unwrap();
     serde_json::from_str(&line).unwrap()
 }
+
+// The UI must be notified of startup errors as well as progress, even before
+// an engine exists. This protects the shared background-publishing refactor.
+#[test]
+fn training_storage_failure_publishes_and_wakes_for_every_update() {
+    let temp = tempfile::tempdir().unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let (options, source) = setup(temp.path(), &listener);
+    std::fs::create_dir(&options.reviews).unwrap();
+    let (notify, notified) = std::sync::mpsc::channel();
+    let client = Client::spawn(
+        options,
+        vec![source],
+        "me".into(),
+        Settings::default(),
+        Some(std::sync::Arc::new(move || {
+            let _ = notify.send(());
+        })),
+    );
+    loop {
+        notified
+            .recv_timeout(Duration::from_secs(5))
+            .expect("training updates must wake the UI");
+        let state = client
+            .snapshots
+            .try_recv()
+            .expect("publish the snapshot before waking");
+        if state.error.is_some() {
+            assert_eq!(state.phase, Phase::Idle);
+            assert!(state.status.starts_with("Training stopped"));
+            break;
+        }
+        assert_eq!(state.phase, Phase::Searching);
+    }
+    listener.set_nonblocking(true).unwrap();
+    assert!(listener.accept().is_err());
+}
 // Benefit: library preparation and a full attempt run through a real subprocess,
 // while user commands stay responsive; cancellation must not apply a delayed AI move.
 #[test]

@@ -83,7 +83,6 @@ struct Job {
 }
 pub struct Trainer {
     state: Snapshot,
-    db: Connection,
     review: Review,
     output: PathBuf,
     profile: EngineProfile,
@@ -114,12 +113,10 @@ impl Trainer {
         profile: EngineProfile,
     ) -> Result<Self> {
         static INSTANCE: AtomicU64 = AtomicU64::new(0);
-        let db = crate::review::connection(reviews)?;
-        db.execute_batch("CREATE TABLE IF NOT EXISTS training_attempts (id INTEGER PRIMARY KEY, problem TEXT NOT NULL, outcome TEXT NOT NULL, report TEXT, document TEXT NOT NULL);")?;
         let review = Review::new(reviews, cache)?;
+        review.reviews.execute_batch("CREATE TABLE IF NOT EXISTS training_attempts (id INTEGER PRIMARY KEY, problem TEXT NOT NULL, outcome TEXT NOT NULL, report TEXT, document TEXT NOT NULL);")?;
         Ok(Self {
             state: Snapshot::default(),
-            db,
             review,
             output: output.into(),
             profile,

@@ -19,7 +19,7 @@ fn configuration() -> String {
         "logToStderr = true\nreportAnalysisWinratesAs = BLACK\nnumAnalysisThreads = {ANALYSIS_THREADS}\nnumSearchThreadsPerAnalysisThread = 1\nnnMaxBatchSize = {ANALYSIS_THREADS}\nnnCacheSizePowerOfTwo = 18\nnnMutexPoolSizePowerOfTwo = 14\nnumNNServerThreadsPerModel = 1\nmetalDeviceToUseThread0 = 0\nmaxVisits = 64\nanalysisPVLen = 1\n"
     )
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct EngineConfig {
     pub executable: PathBuf,
     pub model: PathBuf,

@@ -22,6 +22,23 @@ Start with one application library and one desktop binary. Separate modules for 
 
 Engine readers, the writer queue, and database work run outside the UI thread. The app receives typed events. Coalesce intermediate updates and request a redraw after meaningful changes; preserve final results and database commits. Bound outstanding requests rather than enqueueing unbounded deep searches.
 
+Current module ownership:
+
+| Area | Modules |
+| --- | --- |
+| Document/tree and coordinates | `game.rs` |
+| Go rules and shared connected-chain traversal | `game/board.rs` |
+| SGF decoding, normalization, and export | `game/sgf.rs` |
+| Analysis values, position identities, protocol decoding | `analysis.rs`, `analysis/protocol.rs` |
+| User documents/settings and validated analysis persistence | `review.rs`, `review/cache.rs` |
+| Review scheduling and worker coordination | `scheduler.rs`, `worker.rs`, `worker/discovery.rs` |
+| Training lifecycle, discovery, requests, grading, and revealed reviews | `training.rs`, `training/{catalog,queue,grading,reveal}.rs` |
+| Pandanet commands, storage, synchronization, and HTTP | `pandanet.rs`, `pandanet/{storage,sync,http}.rs` |
+| Desktop orchestration and training/review transitions | `desktop.rs`, `desktop/training.rs` |
+| Snapshot delivery and repaint notification | `updates.rs` |
+
+Training shares the review database connection; its attempts remain separate from evictable analysis. All three background clients queue snapshots before waking the UI. The review worker's driver preserves command ordering and publication cadence while delegating engine events, refinement, and training preparation to separate methods.
+
 ## Desktop layout
 
 The left side contains only the board, centered at the largest square size that fits its full-height area. There is no application header or footer across it. The resizable right column holds file actions, player names with colored stones, and the adjacent AI moves and Group strength toggles at the top. Move buttons and a resizable, independently scrolling variation tree stay visible at the bottom, above the status line. Analysis charts, candidates, comments, and keyboard shortcuts scroll between these fixed sections. Both charts fit above the move buttons at the default window size.

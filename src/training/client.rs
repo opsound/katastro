@@ -1,5 +1,6 @@
 //! Engine, database, and model download work stays on this worker thread.
 use super::{Phase, Settings, Snapshot, Trainer};
+use crate::updates::{self, Wake};
 use crate::{
     Point, Result, digest,
     engine::{Engine, EngineConfig, EngineEvent},
@@ -63,19 +64,13 @@ impl Client {
         games: Vec<PathBuf>,
         account: String,
         settings: Settings,
-        wake: Option<Arc<dyn Fn() + Send + Sync>>,
+        wake: Wake,
     ) -> Self {
         let (commands, rx) = mpsc::channel();
-        let (tx, snapshots) = mpsc::channel();
+        let (publish, snapshots) = updates::channel(wake);
         let canceled = Arc::new(AtomicBool::new(false));
         let stop = canceled.clone();
         thread::spawn(move || {
-            let publish = |s: Snapshot| {
-                let _ = tx.send(s);
-                if let Some(wake) = &wake {
-                    wake();
-                }
-            };
             let result = (|| -> Result<()> {
                 publish(Snapshot {
                     phase: Phase::Searching,

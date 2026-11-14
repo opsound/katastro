@@ -261,10 +261,7 @@ pub(crate) fn training_board(
     board: &crate::Board,
     enabled: bool,
 ) -> Option<Option<crate::Point>> {
-    let empty = Snapshot::empty(crate::engine::EngineConfig {
-        executable: Default::default(),
-        model: Default::default(),
-    });
+    let empty = Snapshot::empty(Default::default());
     let mut actions = Vec::new();
     let opacity = ui.painter().opacity();
     ui.add_enabled_ui(enabled, |ui| {

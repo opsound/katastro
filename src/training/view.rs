@@ -104,19 +104,11 @@ impl View {
                 ui.add_space(12.);
                 ui.label(&state.status);
                 if let Some(board) = &state.board {
-                    ui.label(format!(
-                        "You play {}",
-                        if matches!(state.phase, Phase::YourTurn) {
-                            if board.next == crate::Color::Black {
-                                "Black"
-                            } else {
-                                "White"
-                            }
-                        } else {
-                            // Only the turn itself needs a color label while playing.
-                            "against 1 dan"
-                        }
-                    ));
+                    ui.label(if state.phase == Phase::YourTurn {
+                        format!("You play {}", board.next)
+                    } else {
+                        "You play against 1 dan".into()
+                    });
                 }
                 if matches!(
                     state.phase,

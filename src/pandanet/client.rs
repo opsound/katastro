@@ -1,5 +1,6 @@
 use super::{Cancellation, Command, Credentials, Keychain, Service, Snapshot};
 use crate::Result;
+use crate::updates::{self, Wake};
 use std::{
     path::PathBuf,
     sync::{
@@ -39,7 +40,6 @@ impl Options {
         }
     }
 }
-type Wake = Option<Arc<dyn Fn() + Send + Sync>>;
 type Work = (Command, Arc<Cancellation>);
 #[derive(Default)]
 struct Controls {
@@ -71,16 +71,10 @@ pub struct Client {
 impl Client {
     pub fn spawn(options: Options, wake: Wake) -> Self {
         let (commands, rx) = mpsc::channel::<Work>();
-        let (tx, snapshots) = mpsc::channel();
+        let (publish, snapshots) = updates::channel(wake);
         let controls = Arc::new(Controls::default());
         let worker_controls = controls.clone();
         std::thread::spawn(move || {
-            let publish = |state| {
-                let _ = tx.send(state);
-                if let Some(wake) = &wake {
-                    wake();
-                }
-            };
             let mut service =
                 match Service::open(&options.root, &options.endpoint, options.credentials) {
                     Ok(service) => service,

@@ -1,3 +1,4 @@
+use crate::updates::{self, Wake};
 use crate::{
     Analysis, Board, Document, NodeId, Point, Result, Review,
     engine::{Engine, EngineConfig, EngineEvent},
@@ -8,10 +9,7 @@ mod discovery;
 use std::{
     collections::BTreeMap,
     path::PathBuf,
-    sync::{
-        Arc,
-        mpsc::{self, Receiver, Sender},
-    },
+    sync::mpsc::{self, Receiver, Sender},
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
@@ -35,7 +33,7 @@ pub enum Command {
     },
     Shutdown,
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct Snapshot {
     pub document: Option<Document>,
     pub board: Option<Board>,
@@ -55,20 +53,9 @@ pub struct Snapshot {
 impl Snapshot {
     pub fn empty(config: EngineConfig) -> Self {
         Self {
-            document: None,
-            board: None,
-            move_numbers: Vec::new(),
-            values: BTreeMap::new(),
-            source: None,
             config,
             status: "Open an SGF to begin".into(),
-            error: None,
-            diagnostic: None,
-            running: false,
-            preparing_training: false,
-            training_indexed: false,
-            coverage: (0, 0),
-            analysis_target: None,
+            ..Default::default()
         }
     }
 }
@@ -85,17 +72,17 @@ impl Client {
         reviews: PathBuf,
         cache: PathBuf,
         config: EngineConfig,
-        wake: Option<Arc<dyn Fn() + Send + Sync>>,
+        wake: Wake,
     ) -> Self {
         let (commands, rx) = mpsc::channel();
-        let (tx, snapshots) = mpsc::channel();
+        let (publish, snapshots) = updates::channel(wake);
         let thread = thread::spawn(move || match Worker::new(reviews, cache, config.clone()) {
-            Ok(mut worker) => worker.run(rx, tx, wake),
+            Ok(mut worker) => worker.run(rx, publish),
             Err(error) => {
                 let mut state = Snapshot::empty(config);
                 state.error = Some(error.to_string());
                 state.status = "Could not open local storage".into();
-                send_snapshot(&state, &tx, &wake);
+                publish(state);
             }
         });
         Self {
@@ -117,16 +104,6 @@ impl Drop for Client {
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
-    }
-}
-fn send_snapshot(
-    state: &Snapshot,
-    tx: &Sender<Snapshot>,
-    wake: &Option<Arc<dyn Fn() + Send + Sync>>,
-) {
-    let _ = tx.send(state.clone());
-    if let Some(wake) = wake {
-        wake();
     }
 }
 struct Worker {
@@ -154,7 +131,7 @@ impl Worker {
             discovery: discovery::Discovery::new(reviews, cache),
         })
     }
-    fn publish(&mut self, tx: &Sender<Snapshot>, wake: &Option<Arc<dyn Fn() + Send + Sync>>) {
+    fn publish(&mut self, publish: &impl Fn(Snapshot)) {
         self.state.document = self.review.document().cloned();
         self.state.source = self.review.source().map(PathBuf::from);
         let (board, numbers) = self
@@ -182,7 +159,7 @@ impl Worker {
                 doc.mainline.len(),
             );
         }
-        send_snapshot(&self.state, tx, wake);
+        publish(self.state.clone());
     }
     fn pause(&mut self) {
         self.discovery.pause();
@@ -329,13 +306,152 @@ impl Worker {
         }
         Ok(())
     }
-    fn run(
-        &mut self,
-        commands: Receiver<Command>,
-        snapshots: Sender<Snapshot>,
-        wake: Option<Arc<dyn Fn() + Send + Sync>>,
-    ) {
-        self.publish(&snapshots, &wake);
+    fn poll_engine(&mut self) -> bool {
+        let mut dirty = false;
+        for _ in 0..256 {
+            let event = self.engine.as_ref().and_then(Engine::try_recv);
+            let Some(event) = event else {
+                break;
+            };
+            dirty = true;
+            match event {
+                EngineEvent::Response(reply) => {
+                    if let Some(trainer) = &mut self.discovery.trainer
+                        && let Err(error) = trainer.accept(&reply, 0.5)
+                    {
+                        self.pause();
+                        self.state.error = Some(error.to_string());
+                    }
+                    if let Some(scheduler) = self.scheduler.as_mut() {
+                        match scheduler.accept(&reply) {
+                            Ok(results) => {
+                                for (target, value) in results
+                                    .into_iter()
+                                    .filter(|_| reply["isDuringSearch"] == false)
+                                {
+                                    if let Err(error) =
+                                        self.review.store_analysis(&target.key, &value)
+                                    {
+                                        self.state.error = Some(error.to_string());
+                                    } else {
+                                        self.discovery.completed(target.node, value.visits);
+                                    }
+                                }
+                            }
+                            Err(error) => {
+                                self.pause();
+                                self.engine = None;
+                                self.state.error = Some(error.to_string());
+                            }
+                        }
+                    }
+                }
+                EngineEvent::Diagnostic(line) => {
+                    self.state.diagnostic = Some(line);
+                }
+                EngineEvent::Fault(error) => {
+                    self.pause();
+                    self.engine = None;
+                    self.state.error = Some(error);
+                    break;
+                }
+                EngineEvent::Exited => {
+                    self.pause();
+                    self.engine = None;
+                    self.state.error=Some("KataGo exited. Saved reviews and analysis are still available; use Analyze to restart.".into());
+                    break;
+                }
+            }
+        }
+        dirty
+    }
+    fn fail(&mut self, error: impl std::fmt::Display) {
+        self.pause();
+        self.state.error = Some(error.to_string());
+    }
+    fn refine(&mut self) -> bool {
+        if !self.state.running {
+            return false;
+        }
+        let mut dirty = false;
+        let result = (|| -> Result<()> {
+            // Fill available positions after each completion, not one per poll.
+            while let Some(scheduler) = self.scheduler.as_mut() {
+                let Some(request) = scheduler.next_request()? else {
+                    break;
+                };
+                self.state.analysis_target = Some(request.visits);
+                self.state.status = format!(
+                    "Refining · target {} visits per position · variations autosave",
+                    request.visits,
+                );
+                if self.unsupported_mainline {
+                    self.state
+                        .status
+                        .push_str(" · analysis unavailable after setup changes");
+                }
+                if let Some(engine) = self.engine.as_mut()
+                    && let Err(error) = engine.send(&request.query)
+                {
+                    self.engine = None;
+                    return Err(error);
+                }
+                dirty = true;
+            }
+            if let Some(scheduler) = self.scheduler.as_ref().filter(|s| s.is_complete()) {
+                self.state.running = false;
+                let (covered, total) = scheduler.coverage();
+                self.state.status = if covered == total {
+                    "Analysis finished · maximum search effort reached".into()
+                } else {
+                    format!(
+                        "Analysis finished · {covered} / {total} played positions evaluated; analysis unavailable after setup changes or engine errors"
+                    )
+                };
+                dirty = true;
+            }
+            Ok(())
+        })();
+        if let Err(error) = result {
+            self.fail(error);
+            dirty = true;
+        }
+        dirty
+    }
+    fn prepare_training(&mut self) -> bool {
+        let mut dirty = false;
+        let discovery = (|| -> Result<()> {
+            if let (Some(source), Some(doc)) = (self.review.source(), self.review.document()) {
+                self.discovery.index_review(source, doc)?;
+                let indexed = self.discovery.indexed();
+                dirty |= self.state.training_indexed != indexed;
+                self.state.training_indexed = indexed;
+            } else {
+                self.discovery.start_idle(&self.state.config)?;
+                if let Some(trainer) = &mut self.discovery.trainer {
+                    while let Some(query) = trainer.next_request()? {
+                        if self.engine.is_none() {
+                            self.engine = Some(Engine::spawn(&self.state.config)?);
+                        }
+                        self.engine.as_mut().unwrap().send(&query)?;
+                    }
+                    let snapshot = trainer.snapshot();
+                    self.state.preparing_training =
+                        snapshot.phase == crate::training::Phase::Searching;
+                    dirty |= self.state.status != snapshot.status;
+                    self.state.status = snapshot.status;
+                }
+            }
+            Ok(())
+        })();
+        if let Err(error) = discovery {
+            self.fail(error);
+            dirty = true;
+        }
+        dirty
+    }
+    fn run(&mut self, commands: Receiver<Command>, snapshots: impl Fn(Snapshot)) {
+        self.publish(&snapshots);
         let mut last_publish = Instant::now();
         let mut dirty = false;
         loop {
@@ -351,7 +467,7 @@ impl Worker {
                     if let Err(error) = result {
                         self.state.error = Some(error.to_string());
                     }
-                    self.publish(&snapshots, &wake);
+                    self.publish(&snapshots);
                     if success
                         && auto
                         && self.state.config.executable.is_file()
@@ -360,152 +476,18 @@ impl Worker {
                         if let Err(error) = self.start() {
                             self.state.error = Some(error.to_string());
                         }
-                        self.publish(&snapshots, &wake);
+                        self.publish(&snapshots);
                     }
                     last_publish = Instant::now();
                 }
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
             }
-            for _ in 0..256 {
-                let event = self.engine.as_ref().and_then(Engine::try_recv);
-                let Some(event) = event else {
-                    break;
-                };
-                match event {
-                    EngineEvent::Response(reply) => {
-                        if let Some(trainer) = &mut self.discovery.trainer
-                            && let Err(error) = trainer.accept(&reply, 0.5)
-                        {
-                            self.pause();
-                            self.state.error = Some(error.to_string());
-                        }
-                        if let Some(scheduler) = self.scheduler.as_mut() {
-                            match scheduler.accept(&reply) {
-                                Ok(results) => {
-                                    for (target, value) in results
-                                        .into_iter()
-                                        .filter(|_| reply["isDuringSearch"] == false)
-                                    {
-                                        if let Err(error) =
-                                            self.review.store_analysis(&target.key, &value)
-                                        {
-                                            self.state.error = Some(error.to_string());
-                                        } else {
-                                            self.discovery.completed(target.node, value.visits);
-                                        }
-                                    }
-                                }
-                                Err(error) => {
-                                    self.pause();
-                                    self.engine = None;
-                                    self.state.error = Some(error.to_string());
-                                }
-                            }
-                        }
-                        dirty = true;
-                    }
-                    EngineEvent::Diagnostic(line) => {
-                        self.state.diagnostic = Some(line);
-                        dirty = true;
-                    }
-                    EngineEvent::Fault(error) => {
-                        self.pause();
-                        self.engine = None;
-                        self.state.error = Some(error);
-                        dirty = true;
-                        break;
-                    }
-                    EngineEvent::Exited => {
-                        self.pause();
-                        self.engine = None;
-                        self.state.error=Some("KataGo exited. Saved reviews and analysis are still available; use Analyze to restart.".into());
-                        dirty = true;
-                        break;
-                    }
-                }
-            }
-            if self.state.running {
-                // Fill available positions in one dispatch, including after an
-                // individual completion, rather than one request per polling tick.
-                loop {
-                    let planned = self.scheduler.as_mut().map(Scheduler::next_request);
-                    match planned {
-                        Some(Ok(Some(request))) => {
-                            self.state.analysis_target = Some(request.visits);
-                            self.state.status = format!(
-                                "Refining · target {} visits per position · variations autosave",
-                                request.visits
-                            );
-                            if self.unsupported_mainline {
-                                self.state
-                                    .status
-                                    .push_str(" · analysis unavailable after setup changes");
-                            }
-                            if let Some(engine) = self.engine.as_mut()
-                                && let Err(error) = engine.send(&request.query)
-                            {
-                                self.pause();
-                                self.engine = None;
-                                self.state.error = Some(error.to_string());
-                                dirty = true;
-                                break;
-                            }
-                            dirty = true;
-                        }
-                        Some(Err(error)) => {
-                            self.pause();
-                            self.state.error = Some(error.to_string());
-                            dirty = true;
-                            break;
-                        }
-                        _ => break,
-                    }
-                }
-                if self.scheduler.as_ref().is_some_and(Scheduler::is_complete) {
-                    self.state.running = false;
-                    let (covered, total) = self.scheduler.as_ref().unwrap().coverage();
-                    self.state.status = if covered == total {
-                        "Analysis finished · maximum search effort reached".into()
-                    } else {
-                        format!(
-                            "Analysis finished · {covered} / {total} played positions evaluated; analysis unavailable after setup changes or engine errors"
-                        )
-                    };
-                    dirty = true;
-                }
-            }
-            let discovery = (|| -> Result<()> {
-                if let (Some(source), Some(doc)) = (self.review.source(), self.review.document()) {
-                    self.discovery.index_review(source, doc)?;
-                    let indexed = self.discovery.indexed();
-                    dirty |= self.state.training_indexed != indexed;
-                    self.state.training_indexed = indexed;
-                } else {
-                    self.discovery.start_idle(&self.state.config)?;
-                    if let Some(trainer) = &mut self.discovery.trainer {
-                        while let Some(query) = trainer.next_request()? {
-                            if self.engine.is_none() {
-                                self.engine = Some(Engine::spawn(&self.state.config)?);
-                            }
-                            self.engine.as_mut().unwrap().send(&query)?;
-                        }
-                        let snapshot = trainer.snapshot();
-                        self.state.preparing_training =
-                            snapshot.phase == crate::training::Phase::Searching;
-                        dirty |= self.state.status != snapshot.status;
-                        self.state.status = snapshot.status;
-                    }
-                }
-                Ok(())
-            })();
-            if let Err(error) = discovery {
-                self.pause();
-                self.state.error = Some(error.to_string());
-                dirty = true;
-            }
+            dirty |= self.poll_engine();
+            dirty |= self.refine();
+            dirty |= self.prepare_training();
             if dirty && last_publish.elapsed() >= Duration::from_millis(30) {
-                self.publish(&snapshots, &wake);
+                self.publish(&snapshots);
                 dirty = false;
                 last_publish = Instant::now();
             }

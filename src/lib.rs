@@ -11,6 +11,7 @@ pub mod scheduler;
 pub mod training;
 #[cfg(feature = "desktop")]
 pub mod ui;
+mod updates;
 pub mod worker;
 pub use analysis::{Analysis, EngineProfile, SuggestedMove};
 pub use game::{Board, Color, Document, Move, Node, NodeId, NodePosition, Point};

@@ -4,6 +4,7 @@ use crate::{
     training::{GRADE_VISITS, Phase, Trainer},
 };
 
+#[derive(Default)]
 pub(super) struct Discovery {
     storage: (PathBuf, PathBuf),
     games: Vec<PathBuf>,
@@ -18,13 +19,7 @@ impl Discovery {
     pub fn new(reviews: PathBuf, cache: PathBuf) -> Self {
         Self {
             storage: (reviews, cache),
-            games: vec![],
-            account: String::new(),
-            pending: false,
-            trainer: None,
-            profile: None,
-            completed: BTreeMap::new(),
-            indexed_visits: 0,
+            ..Default::default()
         }
     }
     pub fn library(&mut self, games: Vec<PathBuf>, account: String) {

@@ -45,7 +45,8 @@ impl Trainer {
         }
         let anchor = doc.mainline[p.index];
         let records = self
-            .db
+            .review
+            .reviews
             .prepare("SELECT document FROM training_attempts WHERE problem=?1 ORDER BY id")?
             .query_map([&p.key], |r| r.get::<_, String>(0))?
             .collect::<std::result::Result<Vec<_>, _>>()?;

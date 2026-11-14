@@ -122,7 +122,7 @@ impl Trainer {
         ) != (comparison.recorded.len(), comparison.attempt.len())
         {
             report.comparison = comparison;
-            self.db.execute(
+            self.review.reviews.execute(
                 "UPDATE training_attempts SET report=?1 WHERE id=?2",
                 params![
                     serde_json::to_string(report)?,
@@ -178,7 +178,7 @@ impl Trainer {
         Ok(values)
     }
     pub(super) fn record(&self, outcome: &str) -> Result<i64> {
-        self.db.execute(
+        self.review.reviews.execute(
             "INSERT INTO training_attempts (problem,outcome,report,document) VALUES (?1,?2,?3,?4)",
             params![
                 self.problem.as_ref().unwrap().key,
@@ -187,7 +187,7 @@ impl Trainer {
                 serde_json::to_string(&self.state.document)?
             ],
         )?;
-        Ok(self.db.last_insert_rowid())
+        Ok(self.review.reviews.last_insert_rowid())
     }
 }
 
