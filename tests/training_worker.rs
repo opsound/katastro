@@ -92,7 +92,13 @@ fn background_training_resumes_before_grading_and_cancels_a_thinking_opponent() 
     client
         .send(Command::Play(Some(katastro::Point::new(3, 4))))
         .unwrap();
-    let human = query(&mut engine);
+    let human = loop {
+        let q = query(&mut engine);
+        if q["includePolicy"] == true {
+            break q;
+        }
+        finish(&mut engine, &q);
+    };
     assert_eq!(human["overrideSettings"]["humanSLProfile"], "rank_1d");
     until(&client, |s| s.phase == Phase::Opponent);
     // Hold the normal evaluation, but deliver the much shorter HumanSL reply.
@@ -128,6 +134,97 @@ fn finish(engine: &mut BufReader<TcpStream>, q: &Value) {
     let turn = q["moves"].as_array().unwrap().len();
     let (winrate, score) = if turn == 0 { (0.8, 8.0) } else { (0.4, -2.0) };
     writeln!(engine.get_mut(),"{}",json!({"id":q["id"],"turnNumber":turn,"isDuringSearch":false,"rootInfo":{"visits":q["maxVisits"],"winrate":winrate,"scoreLead":score}})).unwrap();
+}
+
+// Benefit: Retry and Next release unfinished graph searches before sending new
+// work to the same engine. Canceled replies cannot alter the new attempt.
+#[test]
+fn leaving_a_report_cancels_chart_work_before_the_next_attempt() {
+    for next in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let (options, source) = setup(temp.path(), &listener);
+        let client = Client::spawn(
+            options,
+            vec![source],
+            "me".into(),
+            Settings {
+                moves: 1,
+                ..Default::default()
+            },
+            None,
+        );
+        let (stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let (events, received) = std::sync::mpsc::channel();
+        let serving = std::thread::spawn(move || {
+            let mut engine = BufReader::new(stream);
+            let mut held = vec![];
+            let mut hold = true;
+            loop {
+                let mut line = String::new();
+                match engine.read_line(&mut line) {
+                    Ok(0) => break,
+                    Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => break,
+                    Ok(_) => {}
+                    Err(e) => panic!("controlled engine connection: {e}"),
+                }
+                let q: Value = serde_json::from_str(&line).unwrap();
+                if q["action"] == "terminate_all" {
+                    events.send("canceled").unwrap();
+                    hold = false;
+                    for stale in held.drain(..) {
+                        finish(&mut engine, &stale);
+                    }
+                    continue;
+                }
+                let turn = q["moves"].as_array().unwrap().len();
+                if hold && q["includePolicy"] != true && q["maxVisits"] == 512 && turn == 2 {
+                    held.push(q);
+                    events.send("endpoint").unwrap();
+                    continue;
+                }
+                let response = if q["includePolicy"] == true {
+                    let mut policy = vec![-1.0; 82];
+                    policy[81] = 1.0;
+                    json!({"id":q["id"],"turnNumber":turn,"isDuringSearch":false,"humanPolicy":policy})
+                } else {
+                    let leading = turn.is_multiple_of(2);
+                    json!({"id":q["id"],"turnNumber":turn,"isDuringSearch":false,"rootInfo":{"visits":q["maxVisits"],"winrate":if leading {0.8} else {0.4},"scoreLead":if leading {8.0} else {-2.0}}})
+                };
+                if writeln!(engine.get_mut(), "{response}").is_err() {
+                    break;
+                }
+            }
+        });
+        until(&client, |s| s.phase == Phase::YourTurn);
+        client
+            .send(Command::Play(Some(katastro::Point::new(3, 4))))
+            .unwrap();
+        until(&client, |s| s.phase == Phase::Failed);
+        for _ in 0..2 {
+            assert_eq!(
+                received.recv_timeout(Duration::from_secs(5)).unwrap(),
+                "endpoint"
+            );
+        }
+        client
+            .send(if next { Command::Next } else { Command::Retry })
+            .unwrap();
+        assert_eq!(
+            received
+                .recv_timeout(Duration::from_secs(5))
+                .expect("unfinished chart searches were not canceled"),
+            "canceled"
+        );
+        let ready = until(&client, |s| s.phase == Phase::YourTurn);
+        assert!(ready.report.is_none());
+        assert_eq!(ready.board.unwrap().move_number, if next { 2 } else { 0 });
+        drop(client);
+        serving.join().unwrap();
+    }
 }
 
 #[test]
@@ -314,6 +411,9 @@ fn real_library_exercise_plays_grades_and_reveals_legal_lines() {
     }
     eprintln!("Training turn timings: {}", json!(timings));
     assert!(state.report.is_some());
+    if !state.report.as_ref().unwrap().comparison.complete() {
+        state = wait(|s| s.report.as_ref().is_some_and(|r| r.comparison.complete()));
+    }
     let comparison = &state.report.as_ref().unwrap().comparison;
     assert_eq!(
         comparison.attempt.len(),

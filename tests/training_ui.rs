@@ -7,6 +7,114 @@ use katastro::training::{
     client::Command,
     view::{Action, View},
 };
+
+// Benefit: a completed grade remains usable while the last chart points arrive.
+// Missing endpoints must be visibly pending, never shown as zero evaluations.
+#[test]
+fn report_keeps_controls_available_while_comparison_finishes() {
+    use eframe::egui;
+    struct ReportView {
+        view: View,
+        snapshot: Snapshot,
+        actions: Vec<Action>,
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let mut trainer = support::trainer(temp.path());
+    trainer
+        .begin(
+            vec![support::fixture(temp.path(), false)],
+            "me".into(),
+            Default::default(),
+        )
+        .unwrap();
+    support::settle(&mut trainer, false, true);
+    for i in 0..5 {
+        trainer.play(Some(katastro::Point::new(i, 4))).unwrap();
+        support::settle(&mut trainer, false, true);
+    }
+    let mut snapshot = trainer.snapshot();
+    let comparison = &mut snapshot.report.as_mut().unwrap().comparison;
+    comparison.total_plies = 10;
+    comparison.attempt.truncate(10);
+    comparison.recorded.truncate(10);
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(1200., 820.))
+        .build_ui_state(
+            |ui, s: &mut ReportView| {
+                s.actions
+                    .extend(s.view.render(ui, &s.snapshot, &Default::default()));
+            },
+            ReportView {
+                view: View::default(),
+                snapshot,
+                actions: vec![],
+            },
+        );
+    h.run();
+    h.get_by_label("Passed");
+    h.get_by_label("Finishing comparison…");
+    for name in ["Training score comparison", "Training winrate comparison"] {
+        h.get_by_label(name);
+    }
+    let plotted = |h: &Harness<'_, ReportView>| {
+        let bounds = h.get_by_label("Training winrate comparison").rect();
+        h.output()
+            .shapes
+            .iter()
+            .find_map(|s| match &s.shape {
+                egui::Shape::Path(p)
+                    if p.points.len() >= 10
+                        && p.points.iter().all(|v| bounds.contains(*v))
+                        && p.stroke.color
+                            == egui::epaint::ColorMode::Solid(egui::Color32::from_rgb(
+                                90, 190, 156,
+                            )) =>
+                {
+                    Some(p.points.clone())
+                }
+                _ => None,
+            })
+            .unwrap()
+    };
+    let before = plotted(&h);
+    assert_eq!(
+        before.len(),
+        10,
+        "missing endpoint must not be replaced by zero"
+    );
+    if let Some(folder) = std::env::var_os("KATASTRO_TRAINING_PREVIEW") {
+        h.render()
+            .unwrap()
+            .save(std::path::PathBuf::from(folder).join("report-pending.png"))
+            .unwrap();
+    }
+    h.get_by_label("Next problem").click();
+    h.run();
+    assert!(
+        h.state()
+            .actions
+            .iter()
+            .any(|a| matches!(a, Action::Command(Command::Next)))
+    );
+    let comparison = &mut h.state_mut().snapshot.report.as_mut().unwrap().comparison;
+    comparison.attempt.push(katastro::training::Evaluation {
+        winrate: 0.8,
+        score: 8.0,
+    });
+    comparison.recorded.push(katastro::training::Evaluation {
+        winrate: 0.4,
+        score: -2.0,
+    });
+    h.run();
+    assert!(h.query_by_label("Finishing comparison…").is_none());
+    h.get_by_label("Passed");
+    let after = plotted(&h);
+    assert_eq!(after.len(), 11);
+    assert!(
+        (before[9].x - after[9].x).abs() < 0.1,
+        "finishing the endpoint must not rescale the move axis"
+    );
+}
 struct State {
     trainer: Trainer,
     review: katastro::Review,

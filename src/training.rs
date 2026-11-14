@@ -10,6 +10,7 @@ use std::{
 };
 mod catalog;
 pub mod client;
+mod grading;
 #[cfg(feature = "desktop")]
 pub mod view;
 const SCREEN_VISITS: u64 = 64;
@@ -54,8 +55,16 @@ pub struct Evaluation {
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Comparison {
+    /// Each curve is a contiguous evaluated prefix; missing tail values are omitted.
     pub recorded: Vec<Evaluation>,
     pub attempt: Vec<Evaluation>,
+    #[serde(default)]
+    pub total_plies: usize,
+}
+impl Comparison {
+    pub fn complete(&self) -> bool {
+        self.recorded.len() > self.total_plies && self.attempt.len() > self.total_plies
+    }
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Report {
@@ -130,6 +139,7 @@ pub struct Trainer {
     seen: HashSet<String>,
     preparing: bool,
     refresh: bool,
+    report_id: Option<i64>,
 }
 impl Trainer {
     pub fn new(
@@ -165,6 +175,7 @@ impl Trainer {
             seen: HashSet::new(),
             preparing: false,
             refresh: false,
+            report_id: None,
         })
     }
     pub fn snapshot(&self) -> Snapshot {
@@ -234,12 +245,13 @@ impl Trainer {
             doc: doc.clone(),
         });
         self.reset_attempt();
-        // Discovery may have used a deeper review result. Obtain the grading
-        // budget in the background without delaying the first playable board.
-        self.need(&doc, doc.mainline[index], GRADE_VISITS)
+        self.prefetch_recorded(&doc, index, self.settings.moves * 2)
     }
     pub fn next_request(&mut self) -> Result<Option<Value>> {
-        self.advance()?;
+        // Grade readiness changes on commands/replies, not each worker poll.
+        if self.state.phase == Phase::Searching {
+            self.advance()?;
+        }
         // Keep one analysis slot available for the next interactive HumanSL reply.
         let reserve = self.state.phase == Phase::YourTurn;
         if self.pending.len() >= crate::engine::ANALYSIS_THREADS - usize::from(reserve) {
@@ -266,7 +278,7 @@ impl Trainer {
             position,
         ))
     }
-    fn need(&mut self, doc: &Document, node: usize, visits: u64) -> Result<()> {
+    fn need(&mut self, doc: &Document, node: usize, visits: u64, reuse_deeper: bool) -> Result<()> {
         let (key, position) = self.keys(doc, node, visits)?;
         if self.memo.contains_key(&key)
             || self
@@ -288,8 +300,8 @@ impl Trainer {
                 )
                 .optional()?)
         };
-        let first = if self.preparing { &position } else { &key };
-        let second = if self.preparing { &key } else { &position };
+        let first = if reuse_deeper { &position } else { &key };
+        let second = if reuse_deeper { &key } else { &position };
         let stored = read(first)?;
         let same_budget = if stored.is_some() {
             first == &key
@@ -303,7 +315,7 @@ impl Trainer {
         if let Some(value) = cached {
             let a: Analysis = serde_json::from_str(&value)?;
             a.validate()?;
-            if self.preparing || same_budget || visits == SCREEN_VISITS || a.visits == visits {
+            if reuse_deeper || same_budget || visits == SCREEN_VISITS || a.visits == visits {
                 self.memo.insert(key, a);
                 return Ok(());
             }
@@ -317,6 +329,30 @@ impl Trainer {
                 visits,
             },
         });
+        Ok(())
+    }
+    fn prefetch_recorded(&mut self, doc: &Document, index: usize, plies: usize) -> Result<()> {
+        let end = horizon(doc, index, plies).unwrap_or(*doc.mainline.last().unwrap());
+        for &node in doc.mainline.iter().skip(index) {
+            self.need(doc, node, GRADE_VISITS, false)?;
+            if node == end {
+                break;
+            }
+        }
+        Ok(())
+    }
+    fn need_attempt(&mut self, doc: &Document) -> Result<()> {
+        self.need(doc, doc.selected, GRADE_VISITS, false)?;
+        let (key, _) = self.keys(doc, doc.selected, GRADE_VISITS)?;
+        // Newly played moves take priority over queued recorded-line prefetch.
+        if let Some(index) = self
+            .queue
+            .iter()
+            .position(|j| matches!(&j.kind, Kind::Evaluation {key:k,..} if *k == key))
+        {
+            let job = self.queue.remove(index).unwrap();
+            self.queue.push_front(job);
+        }
         Ok(())
     }
     fn value(&self, doc: &Document, node: usize, visits: u64) -> Result<&Analysis> {
@@ -338,6 +374,7 @@ impl Trainer {
             return Ok(());
         }
         let job = self.pending.remove(id).unwrap();
+        let had_report = self.state.report.is_some();
         match job.kind {
             Kind::Evaluation {
                 key,
@@ -367,46 +404,34 @@ impl Trainer {
                 doc.append_move(point)?;
                 let doc = doc.clone();
                 if self.state.played < self.settings.moves && !two_passes(&doc) {
-                    self.need(&doc, doc.selected, GRADE_VISITS)?;
+                    self.need_attempt(&doc)?;
                     self.state.phase = Phase::YourTurn;
                     self.state.status = "Your move · evaluations stay hidden".into();
                 } else {
+                    self.need(&doc, doc.selected, GRADE_VISITS, false)?;
                     self.state.phase = Phase::Grading;
                     self.state.status = "Comparing losses on your moves…".into();
                 }
             }
             Kind::Lines => self.finish_reveal(reply)?,
         }
-        self.advance()
+        self.advance()?;
+        if had_report && matches!(self.state.phase, Phase::Passed | Phase::Failed) {
+            self.update_comparison()?;
+        }
+        Ok(())
     }
     fn advance(&mut self) -> Result<()> {
-        while self.queue.is_empty() && self.pending.is_empty() {
-            match self.state.phase {
-                Phase::Searching => self.search_next()?,
-                Phase::Grading => {
-                    let p = self.problem.as_ref().unwrap();
-                    let doc = self.state.document.as_ref().unwrap().clone();
-                    let plies = doc.path(doc.selected)?.len() - p.prefix.nodes.len();
-                    let original = p.doc.clone();
-                    let end = horizon(&original, p.index, plies)
-                        .ok_or("Recorded game is too short for this attempt")?;
-                    for (before, after) in
-                        own_moves(&original, original.mainline[p.index], end, p.color)?
-                    {
-                        self.need(&original, before, GRADE_VISITS)?;
-                        self.need(&original, after, GRADE_VISITS)?;
-                    }
-                    // Complete both curves through the final reply. These endpoint
-                    // values are for the report; opponent moves never enter the grade.
-                    self.need(&original, end, GRADE_VISITS)?;
-                    self.need(&doc, doc.selected, GRADE_VISITS)?;
-                    if !self.queue.is_empty() {
-                        break;
-                    }
-                    self.grade(end)?;
-                    break;
-                }
-                _ => break,
+        while self.state.phase == Phase::Searching
+            && self.queue.is_empty()
+            && self.pending.is_empty()
+        {
+            self.search_next()?;
+        }
+        if self.state.phase == Phase::Grading {
+            let end = self.original_end()?;
+            if self.ready_to_grade(end)? {
+                self.grade(end)?;
             }
         }
         Ok(())
@@ -443,6 +468,7 @@ impl Trainer {
         Ok(self.db.query_row("SELECT EXISTS(SELECT 1 FROM training_attempts WHERE problem=?1 AND outcome IN ('passed','given-up'))",[key],|r|r.get(0))?)
     }
     fn reset_attempt(&mut self) {
+        self.report_id = None;
         self.state = Snapshot {
             phase: Phase::YourTurn,
             document: Some(self.problem.as_ref().unwrap().prefix.clone()),
@@ -461,7 +487,7 @@ impl Trainer {
         self.state.played += 1;
         self.state.phase = Phase::Opponent;
         self.state.status = "1 dan is thinking…".into();
-        self.need(&doc, doc.selected, GRADE_VISITS)?;
+        self.need_attempt(&doc)?;
         if two_passes(&doc) {
             self.state.phase = Phase::Grading;
         } else {
@@ -475,104 +501,6 @@ impl Trainer {
         }
         self.advance()
     }
-    fn grade(&mut self, original_end: usize) -> Result<()> {
-        let p = self.problem.as_ref().unwrap();
-        let doc = self.state.document.as_ref().unwrap();
-        let (recorded_loss, _) =
-            self.move_losses(&p.doc, p.doc.mainline[p.index], original_end, p.color)?;
-        let (attempt_loss, major_mistake) =
-            self.move_losses(doc, p.prefix.selected, doc.selected, p.color)?;
-        let mut report = Report {
-            recorded_loss,
-            attempt_loss,
-            major_mistake,
-            passed: false,
-            comparison: Comparison {
-                recorded: self.comparison_line(
-                    &p.doc,
-                    p.doc.mainline[p.index],
-                    original_end,
-                    p.color,
-                )?,
-                attempt: self.comparison_line(doc, p.prefix.selected, doc.selected, p.color)?,
-            },
-        };
-        report.passed = (report.winrate_saved() >= 0.10 || report.score_saved() >= 3.0)
-            && report.winrate_saved() >= -0.02
-            && report.score_saved() >= -1.0
-            && (!self.settings.strict || !report.major_mistake);
-        self.state.phase = if report.passed {
-            Phase::Passed
-        } else {
-            Phase::Failed
-        };
-        self.state.status = if report.passed {
-            "Passed · explore the suggested lines when ready"
-        } else {
-            "Not yet · retry without seeing the solution, or give up and explore"
-        }
-        .into();
-        self.state.report = Some(report);
-        self.record(if self.state.phase == Phase::Passed {
-            "passed"
-        } else {
-            "failed"
-        })
-    }
-    fn move_losses(
-        &self,
-        doc: &Document,
-        start: usize,
-        end: usize,
-        color: Color,
-    ) -> Result<(MoveLoss, bool)> {
-        let mut loss = MoveLoss::default();
-        let mut major = false;
-        for (before, after) in own_moves(doc, start, end, color)? {
-            let a = perspective(self.value(doc, before, GRADE_VISITS)?, color);
-            let b = perspective(self.value(doc, after, GRADE_VISITS)?, color);
-            let winrate = (a.0 - b.0).max(0.0);
-            let score = (a.1 - b.1).max(0.0);
-            loss.winrate += winrate;
-            loss.score += score;
-            major |= winrate >= 0.15 || score >= 3.0;
-        }
-        Ok((loss, major))
-    }
-    fn comparison_line(
-        &self,
-        doc: &Document,
-        start: usize,
-        end: usize,
-        color: Color,
-    ) -> Result<Vec<Evaluation>> {
-        let path = doc.path(end)?;
-        let first = path
-            .iter()
-            .position(|id| *id == start)
-            .ok_or("Missing exercise position")?;
-        path[first..]
-            .iter()
-            .enumerate()
-            .filter(|(i, node)| *i == 0 || doc.nodes[**node].played.is_some())
-            .map(|(_, node)| {
-                let (winrate, score) = perspective(self.value(doc, *node, GRADE_VISITS)?, color);
-                Ok(Evaluation { winrate, score })
-            })
-            .collect()
-    }
-    fn record(&self, outcome: &str) -> Result<()> {
-        self.db.execute(
-            "INSERT INTO training_attempts (problem,outcome,report,document) VALUES (?1,?2,?3,?4)",
-            params![
-                self.problem.as_ref().unwrap().key,
-                outcome,
-                serde_json::to_string(&self.state.report)?,
-                serde_json::to_string(&self.state.document)?
-            ],
-        )?;
-        Ok(())
-    }
     pub fn retry(&mut self) -> Result<()> {
         if self.state.phase != Phase::Failed {
             return Err("Retry is available after a failed attempt".into());
@@ -580,7 +508,8 @@ impl Trainer {
         self.queue.clear();
         self.pending.clear();
         self.reset_attempt();
-        Ok(())
+        let p = self.problem.as_ref().unwrap();
+        self.prefetch_recorded(&p.doc.clone(), p.index, self.settings.moves * 2)
     }
     pub fn reveal(&mut self) -> Result<()> {
         if !matches!(
@@ -728,6 +657,7 @@ impl Trainer {
         Ok(())
     }
     pub fn cancel(&mut self) {
+        self.report_id = None;
         self.queue.clear();
         self.pending.clear();
         self.game = None;

@@ -2,7 +2,7 @@
 
 Open **Train**, or **Games → Train from these games**. The player name defaults to the synced account and is matched case-insensitively against SGF `PB`/`PW`. Use the latest 20 library games by default; increase the limit in setup. Choose five or ten of your moves per attempt. Ready candidates across that selection take precedence over starting a new discovery pass. Passed and given-up exercises are skipped unless **Include completed exercises** is checked. Failed attempts remain eligible.
 
-The application pauses review analysis and background discovery while training. All SGF reads, SQLite access, model verification/downloads, and engine work run on worker threads. The training queue keeps up to eight independent positions outstanding. During the player's turn, at most seven grading requests run, leaving a slot for the next HumanSL reply; opponent requests go to the front of the queue. Searching and final grading can use all eight slots. Going back cancels the session; the UI does not wait for a network request to finish. Leaving an unfinished attempt does not mark the exercise complete.
+The application pauses review analysis and background discovery while training. All SGF reads, SQLite access, model verification/downloads, and engine work run on worker threads. The training queue keeps up to eight independent positions outstanding. During the player's turn, at most seven grading requests run, leaving a slot for the next HumanSL reply; opponent requests go to the front of the queue. Newly played positions take priority over queued recorded-line preparation. Searching and final grading can use all eight slots. Retry, Next, and exploration cancel outstanding searches before submitting work for the next stage. Going back cancels the session; the UI does not wait for a network request to finish. Leaving an unfinished attempt does not mark the exercise complete.
 
 ## Finding turning points
 
@@ -14,9 +14,11 @@ Search original main-line moves made by the named player. Reuse compatible cache
 
 Candidates in each game are considered from largest screened winrate loss downward, with newer games searched first. The recorded continuation must contain enough moves for the selected attempt length. Unreadable records, unknown players, and unsupported positions are skipped. This bounded, screened search can miss turning points that only become clear with deeper analysis; it is not an exhaustive tactical proof.
 
-Confirmed candidates become available immediately, even while the rest of the library is still being prepared. A completed scan also records games with no qualifying positions. Starting training checks these database records first, so a newer unprepared game cannot hold up an older ready exercise in the selected library. If nothing suitable is ready, foreground discovery remains available. A candidate found using deeper review results can open immediately while its exact-budget starting evaluation is obtained in the background for grading.
+Confirmed candidates become available immediately, even while the rest of the library is still being prepared. A completed scan also records games with no qualifying positions. Starting training checks these database records first, so a newer unprepared game cannot hold up an older ready exercise in the selected library. If nothing suitable is ready, foreground discovery remains available.
 
-The attempt receives only the position's ancestry and moves made during the attempt. Future original moves, comments, annotations, results, evaluations, charts, navigation controls, and suggestions are not exposed by the training screen. Illegal moves leave the attempt unchanged. The board keeps its normal brightness while the opponent thinks, with a quiet text status beside it. Extra moves are blocked until the reply arrives, then play resumes immediately while evaluations continue in the background. There is no per-move spinner. Final grading waits for every required evaluation before displaying a report.
+After scanning a game during idle preparation, the worker caches each candidate's recorded comparison window at the grading budget: five player moves plus replies, or the remaining game when shorter. Already indexed games also receive this preparation, so older catalogs benefit. Indexing an active review stays limited to cached results. Opening an exercise immediately queues any missing recorded-window evaluations while showing the playable board; choosing ten moves extends the default prepared window. Discovery's deeper review values remain separate from the exact-budget grading cache, and normal review results are never downgraded.
+
+The attempt receives only the position's ancestry and moves made during the attempt. Future original moves, comments, annotations, results, evaluations, charts, navigation controls, and suggestions are not exposed by the training screen. Illegal moves leave the attempt unchanged. The board keeps its normal brightness while the opponent thinks, with a quiet text status beside it. Extra moves are blocked until the reply arrives, then play resumes immediately while evaluations continue in the background. There is no per-move spinner. Final grading waits for the player's before/after evaluations on both lines, without waiting for chart-only endpoints or preparation beyond an early finish.
 
 ## Opponent and grading
 
@@ -34,7 +36,7 @@ improvement  = recorded loss - attempt loss
 
 Accumulate the two metrics independently. Opponent moves are excluded. A later improvement, even on the player's own move, never cancels an earlier loss. For example, an original move losing 30 percentage points still contributes 30 to the baseline when the opponent immediately gives them back. Several smaller mistakes also accumulate; five losses of 10 points of winrate count as 50, regardless of opponent gifts between them. These sums are losses in percentage points, not a final win probability, and can exceed 100.
 
-Two consecutive passes end an attempt early and shorten the recorded window accordingly. Only the player's moves inside that window count. Before/after evaluations around the recorded player's moves are requested in parallel when grading begins, reusing compatible cached results. The final position of both lines is also evaluated to complete the report charts; an opponent's final move still does not enter the grade.
+Two consecutive passes end an attempt early and shorten the recorded window accordingly. Only the player's moves inside that window count. The recorded window is requested before play, reusing compatible cached results. Attempt evaluations are queued as moves arrive, including the position after the final AI reply. That final opponent position completes the chart but never enters the grade.
 
 A pass requires:
 
@@ -44,7 +46,7 @@ A pass requires:
 
 These are explicit training thresholds, not statistical confidence intervals or proof of understanding. Evaluations remain estimates, and opponent replies are stochastic. The report shows recorded and attempted loss totals, the reduction in each metric, and whether a major mistake occurred. A failed attempt offers **Retry without hints**; success or **Give up and explore** unlocks the review.
 
-The report includes score and winrate graphs with **Recorded** and **Attempt** overlaid from the exercise position through the final reply, aligned by moves from the start and shown from the player's perspective. Both players' moves appear in the graphs; only the player's losses affect the pass/fail result. The chart area is resizable and stays hidden during an attempt and after blind retry.
+The report includes score and winrate graphs with **Recorded** and **Attempt** overlaid from the exercise position through the final reply, aligned by moves from the start and shown from the player's perspective. Both players' moves appear in the graphs; only the player's losses affect the pass/fail result. Pass/fail and the report controls are available as soon as grading is complete. Any remaining endpoints appear later under **Finishing comparison…**, on a fixed move axis; missing values are omitted, never plotted as zero. Completion updates the same saved attempt without changing its grade. Leaving the report cancels remaining work, so its saved curves can remain partial. The chart area is resizable and stays hidden during an attempt and after blind retry.
 
 **Next problem** is available after pass, fail, and while exploring. It skips the current position for this session, including when completed exercises are enabled, and resets the board, report, and reveal state. Skipping a failed problem does not mark it passed or given up; it remains eligible in a later session. If the selection is exhausted, setup explains that no further qualifying position is available.
 
@@ -67,7 +69,7 @@ The app's data directory holds `models/b18c384nbt-humanv0.bin.gz` and generated 
 Routine tests require no account, model, GPU, or network service outside local loopback fixtures:
 
 ```sh
-cargo test --test training --test training_catalog --test training_background --test training_worker --test training_ui --test pandanet_ui
+cargo test --test training --test training_grading --test training_catalog --test training_background --test training_worker --test training_ui --test pandanet_ui
 cargo test --test numbered_variations
 cargo test --lib explored_lines_number_stones
 ```
@@ -109,6 +111,20 @@ KATASTRO_TEST_ENGINE=/path/to/katago \
 KATASTRO_TEST_MODEL=/path/to/normal.bin.gz \
 cargo test --test training_preparation_real -- --ignored --nocapture
 ```
+
+The grading benchmark freezes one real exercise and its first sampled HumanSL continuation in a private directory. Later runs replay those same replies while still issuing real HumanSL requests; both the recorded and attempted positions therefore match across versions. It compares an indexed candidate with and without completed background preparation, reporting preparation cost separately from the wait after the final AI reply. Each attempt starts a fresh engine, reusing only the persisted analysis from preparation. Inputs stay unchanged, and no routine test asserts wall-clock thresholds. Run old and new binaries sequentially with other KataGo work paused:
+
+```sh
+KATASTRO_GRADING_BENCH_ROOT="$PWD/local/grading-benchmark" \
+KATASTRO_GRADING_RESULTS="$PWD/local/grading-results.json" \
+KATASTRO_TRAINING_LIBRARY=/path/to/Pandanet \
+KATASTRO_TEST_ENGINE=/path/to/katago \
+KATASTRO_TEST_MODEL=/path/to/normal.bin.gz \
+KATASTRO_TEST_HUMAN_MODEL=/path/to/b18c384nbt-humanv0.bin.gz \
+cargo test --release --test training_grading_latency -- --ignored --nocapture
+```
+
+The optional screening-cache seed above can also speed up initial benchmark fixture creation. Keep the generated exercise, source paths, opponent line, and SQLite seed private and use the same directory for both versions. The seed restricts catalog scope to the first confirmed candidate without fabricating evaluations or visits. Compare `position_sha256` in the results before interpreting timing differences.
 
 Optional synthetic GPU previews, including `report.png`, require a working wgpu adapter and an existing output directory:
 

@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 #[test]
 #[ignore = "requires KATASTRO_TRAINING_LIBRARY, KATASTRO_TEST_ENGINE and KATASTRO_TEST_MODEL; reads private local games"]
-fn real_background_preparation_opens_a_cached_problem_without_an_engine_request() {
+fn real_background_preparation_opens_a_cached_problem_without_new_discovery() {
     let library = std::path::PathBuf::from(std::env::var_os("KATASTRO_TRAINING_LIBRARY").unwrap());
     let db = rusqlite::Connection::open_with_flags(
         library.join("sync.sqlite"),
@@ -68,10 +68,12 @@ fn real_background_preparation_opens_a_cached_problem_without_an_engine_request(
                     .unwrap();
                 let elapsed = opening.elapsed();
                 if ready.snapshot().phase == Phase::YourTurn {
-                    assert!(
-                        ready.next_request().unwrap().is_none(),
-                        "a prepared exercise should need no discovery request"
-                    );
+                    if let Some(q) = ready.next_request().unwrap() {
+                        assert_eq!(
+                            q["maxVisits"], 512,
+                            "only the comparison window may need preparation; never restart discovery"
+                        );
+                    }
                     let d = ready.snapshot().document.unwrap();
                     let point = (0..d.size * d.size)
                         .map(|i| Some(katastro::Point::new(i % d.size, i / d.size)))

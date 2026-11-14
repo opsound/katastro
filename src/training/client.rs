@@ -118,22 +118,25 @@ impl Client {
                     match rx.recv_timeout(Duration::from_millis(12)) {
                         Ok(command) => {
                             trainer.state.error = None;
+                            let replace =
+                                matches!(command, Command::Retry | Command::Next | Command::Reveal);
                             let result = match command {
                                 Command::Play(point) => trainer.play(point),
                                 Command::Retry => trainer.retry(),
                                 Command::Next => trainer.next_problem(),
-                                Command::Reveal => {
-                                    if let Some(engine) = &mut engine {
-                                        engine.send(&serde_json::json!({"id":"training-cancel","action":"terminate_all"}))?;
-                                    }
-                                    trainer.reveal()
-                                }
+                                Command::Reveal => trainer.reveal(),
                                 Command::Cancel => {
                                     trainer.cancel();
                                     publish(trainer.snapshot());
                                     return Ok(());
                                 }
                             };
+                            if result.is_ok()
+                                && replace
+                                && let Some(engine) = &mut engine
+                            {
+                                engine.send(&serde_json::json!({"id":"training-cancel","action":"terminate_all"}))?;
+                            }
                             if let Err(error) = result {
                                 trainer.state.error = Some(error.to_string());
                             }

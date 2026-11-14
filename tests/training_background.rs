@@ -87,19 +87,25 @@ fn idle_discovery_yields_to_a_game_and_persists_ready_problems() {
     .unwrap();
     until(&c, |s| s.preparing_training);
     let mut engine = connection(&listener);
-    for _ in 0..17 {
-        // Fifteen screening positions, two confirmation positions.
-        let q = query(&mut engine);
-        assert_ne!(
-            q["includePolicy"], true,
-            "background discovery needs no HumanSL model"
-        );
-        writeln!(engine.get_mut(), "{}", support::reply(&q, false, true)).unwrap();
-    }
+    let serving = std::thread::spawn(move || {
+        loop {
+            let mut line = String::new();
+            if engine.read_line(&mut line).unwrap() == 0 {
+                break;
+            }
+            let q: Value = serde_json::from_str(&line).unwrap();
+            assert_ne!(
+                q["includePolicy"], true,
+                "background preparation needs no HumanSL model"
+            );
+            writeln!(engine.get_mut(), "{}", support::reply(&q, false, true)).unwrap();
+        }
+    });
     until(&c, |s| {
         !s.preparing_training && s.status.contains("discovery complete")
     });
     drop(c);
+    serving.join().unwrap();
     let newer = root.join("new.sgf");
     std::fs::write(
         &newer,

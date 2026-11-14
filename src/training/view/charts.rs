@@ -4,13 +4,22 @@ use egui_plot::{Legend, Line, Plot};
 
 pub(super) fn show(ui: &mut egui::Ui, comparison: &Comparison) {
     ui.label("Your perspective · moves by both players from the exercise position");
+    if !comparison.complete() {
+        ui.label("Finishing comparison…");
+    }
     ui.columns(2, |columns| {
         for (ui, score) in columns.iter_mut().zip([true, false]) {
             ui.label(if score { "Score lead" } else { "Winrate" });
             let mut plot = Plot::new(("training-comparison", score))
                 .height(ui.available_height().max(60.0))
                 .include_x(0.0)
-                .include_x(comparison.attempt.len().saturating_sub(1) as f64)
+                .include_x(
+                    comparison
+                        .total_plies
+                        .max(comparison.attempt.len().saturating_sub(1))
+                        .max(comparison.recorded.len().saturating_sub(1))
+                        as f64,
+                )
                 .include_y(0.0)
                 .legend(Legend::default())
                 .allow_drag(false)

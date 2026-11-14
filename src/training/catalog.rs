@@ -119,11 +119,12 @@ impl Trainer {
                 catalog::Entry::load(&self.review.cache, &key)?
             };
             if entry.complete {
+                self.warm_recorded(&doc, &entry)?;
                 return Ok(());
             }
             entry.save(&self.review.cache, &key)?;
             for &node in &doc.mainline {
-                self.need(&doc, node, SCREEN_VISITS)?;
+                self.need(&doc, node, SCREEN_VISITS, self.preparing)?;
             }
             self.game = Some(Game {
                 doc,
@@ -168,15 +169,26 @@ impl Trainer {
         if let Some(index) = self.game.as_mut().unwrap().candidates.pop_front() {
             self.confirming = Some(index);
             for node in [doc.mainline[index], doc.mainline[index + 1]] {
-                self.need(&doc, node, GRADE_VISITS)?;
+                self.need(&doc, node, GRADE_VISITS, self.preparing)?;
             }
         } else {
-            let game = self.game.as_mut().unwrap();
+            let mut game = self.game.take().unwrap();
             game.entry.complete = true;
             game.entry.save(&self.review.cache, &game.key)?;
-            self.game = None;
+            self.warm_recorded(&doc, &game.entry)?;
         }
 
+        Ok(())
+    }
+    fn warm_recorded(&mut self, doc: &Document, entry: &Entry) -> Result<()> {
+        if self.preparing && !self.refresh {
+            // Discovery can use deeper review values. Grading retains its own
+            // requested-budget cache; do not carry discovery aliases into it.
+            self.memo.clear();
+            for &index in &entry.candidates {
+                self.prefetch_recorded(doc, index, Settings::default().moves * 2)?;
+            }
+        }
         Ok(())
     }
 }
