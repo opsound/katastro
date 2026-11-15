@@ -104,31 +104,27 @@ impl Client {
             };
             service.set_request_interval(options.request_interval);
             publish(service.snapshot());
-            let first = worker_controls.token();
-            if !first.is_canceled() {
-                let _ = service.execute(Command::Tick, options.clock.now(), &first, &mut |s| {
-                    publish(s)
-                });
-            }
-            drop(first);
+            let mut work = (Command::Tick, worker_controls.token());
             loop {
+                let (command, cancel) = work;
+                if !cancel.is_canceled() {
+                    let _ =
+                        service.execute(command, options.clock.now(), &cancel, &mut |s| publish(s));
+                }
+                drop(cancel);
                 let now = options.clock.now();
                 let seconds = if service.state.automatic && !service.needs_login {
                     service.next_due.saturating_sub(now).clamp(1, 60)
                 } else {
                     60
                 };
-                let work = match rx.recv_timeout(Duration::from_secs(seconds)) {
+                work = match rx.recv_timeout(Duration::from_secs(seconds)) {
                     Ok(work) => work,
                     Err(mpsc::RecvTimeoutError::Timeout) => {
                         (Command::Tick, worker_controls.token())
                     }
                     Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 };
-                if work.1.is_canceled() {
-                    continue;
-                }
-                let _ = service.execute(work.0, options.clock.now(), &work.1, &mut |s| publish(s));
             }
         });
         Self {

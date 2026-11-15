@@ -1,18 +1,19 @@
 //! Fox's public web archive. No login, third-party proxy, or client credentials.
 use super::{
-    Cancellation, Game,
+    Cancellation, Game, Server,
+    http::Http,
     remote::{Entry, Page},
 };
 use crate::Result;
-use reqwest::{Url, blocking::Client, redirect::Policy};
+use reqwest::Url;
 use serde_json::Value;
-use std::{collections::HashSet, io::Read, time::Duration};
+use std::collections::HashSet;
 pub(super) const ENDPOINT: &str = "https://newframe.foxwq.com/";
 #[derive(Clone)]
 pub(super) struct Remote {
     profile: Url,
     records: Url,
-    client: Client,
+    client: Http,
     uid: String,
     cursor: String,
     seen: HashSet<String>,
@@ -39,13 +40,7 @@ impl Remote {
         Ok(Self {
             profile,
             records,
-            client: Client::builder()
-                .timeout(Duration::from_secs(20))
-                .connect_timeout(Duration::from_secs(10))
-                .redirect(Policy::none())
-                .referer(false)
-                .user_agent("Katastro/0.1 (personal game archive sync)")
-                .build()?,
+            client: Http::new(Server::Fox)?,
             uid: String::new(),
             cursor: "0".into(),
             seen: HashSet::new(),
@@ -57,29 +52,10 @@ impl Remote {
     }
     fn request(&self, url: Url, cancel: &Cancellation) -> Result<Value> {
         cancel.check()?;
-        let response = self
-            .client
-            .get(url)
-            .send()
-            .map_err(|_| "Could not connect to Fox; sync will retry")?;
+        let response = self.client.send(url, None)?;
         cancel.check()?;
-        if !response.status().is_success() {
-            return Err(format!(
-                "Fox returned HTTP {}; sync will retry",
-                response.status().as_u16()
-            )
-            .into());
-        }
-        let mut bytes = Vec::new();
-        const LIMIT: u64 = 16 * 1024 * 1024;
-        response
-            .take(LIMIT + 1)
-            .read_to_end(&mut bytes)
-            .map_err(|_| "Could not read Fox response")?;
+        let bytes = self.client.read(response)?;
         cancel.check()?;
-        if bytes.len() as u64 > LIMIT {
-            return Err("Fox response exceeds the download limit".into());
-        }
         let value: Value = serde_json::from_slice(&bytes)
             .map_err(|_| "Could not read Fox's archive response; the service may have changed")?;
         if value["result"].as_i64() != Some(0) {

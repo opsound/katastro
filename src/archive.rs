@@ -8,6 +8,7 @@ use std::{
 };
 use zeroize::Zeroizing;
 mod fox;
+mod http;
 mod pandanet;
 mod remote;
 mod storage;

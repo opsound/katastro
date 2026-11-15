@@ -1,17 +1,13 @@
 use super::{
-    Cancellation, Game,
+    Cancellation, Game, Server,
+    http::Http,
     remote::{Entry, Page},
 };
 use crate::{Result, digest};
-use reqwest::{
-    Url,
-    blocking::{Client, Response},
-    redirect::Policy,
-};
+use reqwest::Url;
 use scraper::{ElementRef, Html, Selector};
 use std::{
     collections::BTreeMap,
-    io::Read,
     path::PathBuf,
     time::{Duration, Instant},
 };
@@ -20,7 +16,7 @@ use zeroize::Zeroizing;
 #[derive(Clone)]
 pub(super) struct Remote {
     endpoint: Url,
-    client: Client,
+    client: Http,
     session: Option<Zeroizing<String>>,
     pub interval: Duration,
     last_request: Option<Instant>,
@@ -35,28 +31,12 @@ fn text(e: ElementRef<'_>) -> String {
         .collect::<Vec<_>>()
         .join(" ")
 }
-fn network_error(error: reqwest::Error) -> Box<dyn std::error::Error + Send + Sync> {
-    // reqwest errors can contain session-bearing URLs. Never surface those.
-    if error.is_timeout() {
-        "Pandanet request timed out; sync will retry".into()
-    } else {
-        "Could not connect to Pandanet; sync will retry".into()
-    }
-}
 impl Remote {
     pub fn new(endpoint: &str) -> Result<Self> {
         let endpoint = Url::parse(endpoint)?;
-        let client = Client::builder()
-            .timeout(Duration::from_secs(20))
-            .connect_timeout(Duration::from_secs(10))
-            .redirect(Policy::none())
-            .referer(false)
-            .cookie_store(true)
-            .user_agent("Katastro/0.1 (personal game archive sync)")
-            .build()?;
         let remote = Self {
             endpoint,
-            client,
+            client: Http::new(Server::Pandanet)?,
             session: None,
             interval: Duration::ZERO,
             last_request: None,
@@ -93,12 +73,7 @@ impl Remote {
                 cancel.wait(self.interval.saturating_sub(last.elapsed()))?;
             }
             self.last_request = Some(Instant::now());
-            let response = if let Some(fields) = form {
-                self.client.post(url.clone()).form(fields).send()
-            } else {
-                self.client.get(url.clone()).send()
-            }
-            .map_err(network_error)?;
+            let response = self.client.send(url.clone(), form)?;
             cancel.check()?;
             if response.status().is_redirection() {
                 if !matches!(response.status().as_u16(), 301..=303) {
@@ -115,20 +90,13 @@ impl Remote {
                 form = None;
                 continue;
             }
-            if !response.status().is_success() {
-                return Err(format!(
-                    "Pandanet returned HTTP {}; sync will retry",
-                    response.status().as_u16()
-                )
-                .into());
-            }
             let encoding = response
                 .headers()
                 .get(reqwest::header::CONTENT_TYPE)
                 .and_then(|x| x.to_str().ok())
                 .unwrap_or("")
                 .to_owned();
-            return Ok((url, read_limited(response)?, encoding));
+            return Ok((url, self.client.read(response)?, encoding));
         }
         Err("Too many Pandanet redirects".into())
     }
@@ -199,18 +167,6 @@ impl Remote {
     pub fn download(&mut self, url: Url, cancel: &Cancellation) -> Result<Vec<u8>> {
         Ok(self.request(url, None, cancel)?.1)
     }
-}
-fn read_limited(response: Response) -> Result<Vec<u8>> {
-    const LIMIT: u64 = 16 * 1024 * 1024;
-    let mut bytes = Vec::new();
-    response
-        .take(LIMIT + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|_| "Could not read Pandanet response")?;
-    if bytes.len() as u64 > LIMIT {
-        return Err("Pandanet response exceeds the download limit".into());
-    }
-    Ok(bytes)
 }
 fn decode<'a>(bytes: &'a [u8], content_type: &str) -> std::borrow::Cow<'a, str> {
     let label = content_type
