@@ -35,6 +35,7 @@ fn desktop(
                 },
                 source,
                 Options {
+                    server: Default::default(),
                     root: root.join("Pandanet"),
                     endpoint: fixture.endpoint.clone(),
                     request_interval: Duration::ZERO,
@@ -126,6 +127,7 @@ fn empty_desktop_prepares_the_synced_library_and_yields_to_training() {
                 },
                 None,
                 Options {
+                    server: Default::default(),
                     root: root.join("Pandanet"),
                     endpoint: fixture.endpoint.clone(),
                     request_interval: Duration::ZERO,
@@ -208,7 +210,7 @@ fn desktop_signs_in_remembers_downloads_and_opens_a_game_without_disturbing_a_re
         .recv_timeout(Duration::from_secs(3))
         .expect("desktop must start the download");
     // The server holds a real request pending while the user navigates the board.
-    h.get_by_label("Close Pandanet").click();
+    h.get_by_label("Close library").click();
     h.run_steps(3);
     h.get_by_label("Next move").click();
     wait(&mut h, |app| {

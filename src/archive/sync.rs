@@ -9,13 +9,13 @@ impl Service {
     ) -> Result<()> {
         self.next_due = now.saturating_add(SYNC_INTERVAL);
         self.state.error = None;
-        if self.password.is_none() && self.state.remember {
+        if self.state.server == Server::Pandanet && self.password.is_none() && self.state.remember {
             self.password = self
                 .credentials
                 .load(&self.state.username)?
                 .map(Zeroizing::new);
         }
-        if self.password.is_none() {
+        if self.state.server == Server::Pandanet && self.password.is_none() {
             self.needs_login = true;
             return Err("Pandanet sign-in required to sync games".into());
         }
@@ -23,9 +23,13 @@ impl Service {
         self.state.downloaded = 0;
         self.state.page = 0;
         self.state.pages = 0;
-        self.state.status = "Connecting to Pandanet".into();
+        self.state.status = format!("Connecting to {}", self.state.server.label());
         progress(self.snapshot());
         self.remote.reset();
+        if let Some(account) = self.remote.account(&self.state.username, cancel)? {
+            self.state.username = account;
+            self.load_account()?;
+        }
         let full = !self.state.failures.is_empty()
             || self
                 .last_full
@@ -38,18 +42,20 @@ impl Service {
             cancel.check()?;
             let page = self.remote.page(
                 &self.state.username,
-                self.password.as_deref().unwrap(),
+                self.password.as_deref().map(|p| p.as_str()).unwrap_or(""),
                 page_number,
                 cancel,
             )?;
             cancel.check()?;
             self.needs_login = false;
             if self.remember_pending {
-                if self.state.remember {
-                    self.credentials
-                        .save(&self.state.username, self.password.as_deref().unwrap())?;
-                } else {
-                    self.credentials.forget(&self.state.username)?;
+                if self.state.server == Server::Pandanet {
+                    if self.state.remember {
+                        self.credentials
+                            .save(&self.state.username, self.password.as_deref().unwrap())?;
+                    } else {
+                        self.credentials.forget(&self.state.username)?;
+                    }
                 }
                 self.save_config()?;
                 self.remember_pending = false;
@@ -96,7 +102,7 @@ impl Service {
                             .into_iter()
                             .map(|h| {
                                 h.join().unwrap_or_else(|_| {
-                                    Err("Pandanet download worker stopped".into())
+                                    Err("Archive download worker stopped".into())
                                 })
                             })
                             .collect::<Vec<_>>()

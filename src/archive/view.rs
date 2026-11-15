@@ -1,4 +1,4 @@
-use super::{Command, Snapshot};
+use super::{Command, Server, Snapshot};
 use eframe::egui;
 use std::path::{Path, PathBuf};
 use zeroize::Zeroize;
@@ -6,6 +6,8 @@ mod table;
 #[derive(Default)]
 pub struct View {
     pub open: bool,
+    filter: Option<Server>,
+    server: Server,
     settings_open: bool,
     username: String,
     password: String,
@@ -14,6 +16,7 @@ pub struct View {
     sort: table::Sort,
 }
 pub struct Actions {
+    pub server: Server,
     pub command: Option<Command>,
     pub review: Option<PathBuf>,
     pub train: bool,
@@ -23,17 +26,23 @@ fn limit_label(limit: Option<usize>) -> String {
 }
 impl View {
     pub fn show(&mut self, state: &Snapshot) {
+        self.password.zeroize();
+        self.server = state.server;
         self.username = state.username.clone();
         self.remember = state.remember;
         self.settings_open = true;
         self.open = true;
     }
-    pub fn show_library(&mut self, state: &Snapshot) {
-        self.show(state);
+    pub fn show_library(&mut self) {
+        self.open = true;
         self.settings_open = false;
     }
-    pub fn render(&mut self, ctx: &egui::Context, state: &Snapshot, folder: &Path) -> Actions {
+    pub fn training_server(&self) -> Server {
+        self.filter.unwrap_or(self.server)
+    }
+    pub fn render(&mut self, ctx: &egui::Context, states: &[(&Snapshot, &Path)]) -> Actions {
         let mut actions = Actions {
+            server: self.server,
             command: None,
             review: None,
             train: false,
@@ -45,11 +54,21 @@ impl View {
             .default_width(1000.)
             .default_height(580.)
             .show(ctx, |ui| {
+                let Some((state, folder)) = states.iter().find(|(s, _)| s.server == self.server)
+                else {
+                    return;
+                };
+                actions.server = self.server;
                 ui.horizontal(|ui| {
-                    ui.heading(format!("{} synced games", state.games.len()));
+                    ui.heading(format!(
+                        "{} synced games",
+                        states.iter().map(|(s, _)| s.games.len()).sum::<usize>()
+                    ));
                     if ui
                         .add_enabled(
-                            !state.games.is_empty(),
+                            states.iter().any(|(s, _)| {
+                                self.filter.is_none_or(|f| f == s.server) && !s.games.is_empty()
+                            }),
                             egui::Button::new("Train from these games"),
                         )
                         .clicked()
@@ -58,21 +77,31 @@ impl View {
                         close = true;
                     }
                     if ui.button("Sync settings").clicked() {
-                        self.settings_open = !self.settings_open;
+                        if self.settings_open {
+                            self.settings_open = false;
+                        } else {
+                            self.show(state);
+                        }
                     }
                     if state.syncing {
-                        if ui.button("Pause sync").clicked() {
+                        if ui
+                            .button(format!("Pause {} sync", state.server.label()))
+                            .clicked()
+                        {
                             actions.command = Some(Command::SetAutomatic(false));
                         }
                     } else if ui
-                        .add_enabled(!state.username.is_empty(), egui::Button::new("Sync now"))
+                        .add_enabled(
+                            !state.username.is_empty(),
+                            egui::Button::new(format!("Sync {} now", state.server.label())),
+                        )
                         .clicked()
                     {
                         actions.command = Some(Command::SyncNow);
                     }
                 });
                 ui.horizontal(|ui| {
-                    ui.label("Sync history");
+                    ui.label(format!("{} history", state.server.label()));
                     let mut limit = state.limit;
                     egui::ComboBox::from_id_salt("pandanet-history-limit")
                         .selected_text(limit_label(limit))
@@ -90,30 +119,51 @@ impl View {
                 });
                 if self.settings_open {
                     ui.separator();
-                    ui.label("Pandanet · checks every 15 minutes while Katastro is open.");
+                    ui.horizontal(|ui| {
+                        for (other, _) in states {
+                            if ui
+                                .selectable_label(
+                                    self.server == other.server,
+                                    format!("{} sync", other.server.label()),
+                                )
+                                .clicked()
+                            {
+                                self.show(other);
+                            }
+                        }
+                        ui.small("Checks every 15 minutes while Katastro is open.");
+                    });
+                    if state.server == Server::Fox {
+                        ui.small("Public game records · only your username is needed.");
+                    }
                     egui::Grid::new("pandanet-login")
                         .num_columns(2)
                         .show(ui, |ui| {
-                            let label = ui.label("Pandanet username");
+                            let label = ui.label(format!("{} username", state.server.label()));
                             ui.add(
                                 egui::TextEdit::singleline(&mut self.username).desired_width(260.),
                             )
                             .labelled_by(label.id);
                             ui.end_row();
-                            let label = ui.label("Pandanet password");
-                            ui.add(
-                                egui::TextEdit::singleline(&mut self.password)
-                                    .password(true)
-                                    .desired_width(260.),
-                            )
-                            .labelled_by(label.id);
-                            ui.end_row();
+                            if state.server == Server::Pandanet {
+                                let label = ui.label("Pandanet password");
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut self.password)
+                                        .password(true)
+                                        .desired_width(260.),
+                                )
+                                .labelled_by(label.id);
+                                ui.end_row();
+                            }
                         });
                     ui.horizontal(|ui| {
-                        ui.checkbox(&mut self.remember, "Remember login in Keychain");
+                        if state.server == Server::Pandanet {
+                            ui.checkbox(&mut self.remember, "Remember login in Keychain");
+                        }
                         if ui
                             .add_enabled(
-                                !self.username.trim().is_empty() && !self.password.is_empty(),
+                                !self.username.trim().is_empty()
+                                    && (state.server == Server::Fox || !self.password.is_empty()),
                                 egui::Button::new("Connect and sync"),
                             )
                             .clicked()
@@ -139,7 +189,11 @@ impl View {
                         if ui
                             .add_enabled(
                                 !state.username.is_empty(),
-                                egui::Button::new("Disconnect and forget login"),
+                                egui::Button::new(if state.server == Server::Fox {
+                                    "Disconnect Fox"
+                                } else {
+                                    "Disconnect and forget login"
+                                }),
                             )
                             .clicked()
                         {
@@ -178,19 +232,58 @@ impl View {
                     );
                 }
                 ui.separator();
-                let label = ui.label("Search synced games");
+                let label = ui
+                    .horizontal(|ui| {
+                        let label = ui.label("Search synced games");
+                        for (filter, text) in [
+                            (None, "All servers"),
+                            (Some(Server::Pandanet), "Pandanet"),
+                            (Some(Server::Fox), "Fox"),
+                        ] {
+                            let response = ui.selectable_label(self.filter == filter, text);
+                            response.widget_info(|| {
+                                egui::WidgetInfo::labeled(
+                                    egui::WidgetType::SelectableLabel,
+                                    true,
+                                    if filter.is_some() {
+                                        format!("{text} games")
+                                    } else {
+                                        text.into()
+                                    },
+                                )
+                            });
+                            if response.clicked() {
+                                self.filter = filter;
+                                if let Some((other, _)) =
+                                    states.iter().find(|(s, _)| Some(s.server) == filter)
+                                {
+                                    let settings_open = self.settings_open;
+                                    self.show(other);
+                                    self.settings_open = settings_open;
+                                }
+                            }
+                        }
+                        label
+                    })
+                    .inner;
                 ui.add(
                     egui::TextEdit::singleline(&mut self.search)
                         .hint_text("Date, player, or result")
                         .desired_width(f32::INFINITY),
                 )
                 .labelled_by(label.id);
-                if let Some(path) = table::show(ui, state, &self.search, &mut self.sort) {
+                if let Some(path) = table::show(
+                    ui,
+                    &states.iter().map(|(s, _)| *s).collect::<Vec<_>>(),
+                    self.filter,
+                    &self.search,
+                    &mut self.sort,
+                ) {
                     actions.review = Some(path);
                     close = true;
                 }
                 ui.separator();
-                if ui.button("Close Pandanet").clicked() {
+                if ui.button("Close library").clicked() {
                     close = true;
                 }
             });

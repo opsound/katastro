@@ -5,6 +5,7 @@ mod charts;
 pub struct View {
     pub open: bool,
     account: String,
+    server: crate::archive::Server,
     moves: usize,
     limit: usize,
     strict: bool,
@@ -15,6 +16,7 @@ impl Default for View {
         Self {
             open: false,
             account: String::new(),
+            server: Default::default(),
             moves: 5,
             limit: 20,
             strict: true,
@@ -33,15 +35,43 @@ pub enum Action {
     ExploreLine(Vec<Option<crate::Point>>),
 }
 impl View {
-    pub fn show(&mut self, library: &crate::pandanet::Snapshot) {
+    pub fn show(&mut self, library: &crate::archive::Snapshot) {
+        self.server = library.server;
         self.open = true;
         self.account = library.username.clone();
+    }
+    pub fn render_libraries(
+        &mut self,
+        ui: &mut egui::Ui,
+        state: &Snapshot,
+        libraries: &[&crate::archive::Snapshot],
+    ) -> Vec<Action> {
+        if state.phase == Phase::Idle {
+            egui::Panel::top("training-server").show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Train from");
+                    for library in libraries {
+                        if ui
+                            .selectable_label(self.server == library.server, library.server.label())
+                            .clicked()
+                        {
+                            self.show(library);
+                        }
+                    }
+                });
+            });
+        }
+        if let Some(library) = libraries.iter().find(|s| s.server == self.server) {
+            self.render(ui, state, library)
+        } else {
+            Vec::new()
+        }
     }
     pub fn render(
         &mut self,
         ui: &mut egui::Ui,
         state: &Snapshot,
-        library: &crate::pandanet::Snapshot,
+        library: &crate::archive::Snapshot,
     ) -> Vec<Action> {
         let mut out = Vec::new();
         egui::Panel::top("training-heading").show(ui, |ui| {
@@ -205,7 +235,7 @@ impl View {
         &mut self,
         ui: &mut egui::Ui,
         state: &Snapshot,
-        library: &crate::pandanet::Snapshot,
+        library: &crate::archive::Snapshot,
         out: &mut Vec<Action>,
     ) {
         ui.add_space(35.0);
@@ -241,13 +271,13 @@ impl View {
                 ui.label(RichText::new("Opponent: 1 dan · HumanSL\nApproximate human rank. The 99 MB model downloads once, if needed. Games stay on this Mac.").small().weak());
                 ui.add_space(12.0);
                 if ui.add_enabled(!library.games.is_empty() && !self.account.trim().is_empty(), egui::Button::new("Start training")).clicked() { out.push(self.start(library)); }
-                if library.games.is_empty() { ui.label("Sync some games from Pandanet to begin."); }
+                if library.games.is_empty() { ui.label("Sync games in the game library to begin."); }
                 if !state.status.is_empty() { ui.label(&state.status); }
                 if let Some(error) = &state.error { ui.colored_label(egui::Color32::LIGHT_RED, error); }
             });
         });
     }
-    fn start(&self, library: &crate::pandanet::Snapshot) -> Action {
+    fn start(&self, library: &crate::archive::Snapshot) -> Action {
         let mut games = library.games.iter().collect::<Vec<_>>();
         games.sort_by(|a, b| (&b.date, &b.id).cmp(&(&a.date, &a.id)));
         Action::Start {

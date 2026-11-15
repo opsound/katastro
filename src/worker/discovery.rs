@@ -7,9 +7,8 @@ use crate::{
 #[derive(Default)]
 pub(super) struct Discovery {
     storage: (PathBuf, PathBuf),
-    games: Vec<PathBuf>,
-    account: String,
-    pending: bool,
+    libraries: Vec<(String, Vec<PathBuf>)>,
+    pending: std::collections::VecDeque<usize>,
     pub trainer: Option<Trainer>,
     profile: Option<EngineProfile>,
     completed: BTreeMap<NodeId, u64>,
@@ -22,17 +21,28 @@ impl Discovery {
             ..Default::default()
         }
     }
-    pub fn library(&mut self, games: Vec<PathBuf>, account: String) {
-        if self.account != account {
+    pub fn libraries(&mut self, mut libraries: Vec<(String, Vec<PathBuf>)>) {
+        // Review stores canonical source paths; normalize on this worker once,
+        // rather than doing filesystem lookups for every analysis response.
+        for (_, games) in &mut libraries {
+            for path in games {
+                if let Ok(canonical) = path.canonicalize() {
+                    *path = canonical;
+                }
+            }
+        }
+        if self.libraries != libraries {
             self.indexed_visits = 0;
         }
-        self.games = games;
-        self.account = account;
-        self.pending = true;
+        self.libraries = libraries;
+        self.resume();
+    }
+    pub fn pending(&self) -> bool {
+        !self.pending.is_empty()
     }
     pub fn pause(&mut self) {
         self.trainer = None;
-        self.pending = false;
+        self.pending.clear();
     }
     pub fn opened(&mut self) {
         self.pause();
@@ -73,16 +83,32 @@ impl Discovery {
             .map(|id| self.completed.get(id).copied().unwrap_or(0))
             .min()
             .unwrap_or(0);
-        if self.account.is_empty()
-            || visits < GRADE_VISITS.max(self.indexed_visits.saturating_mul(4))
-        {
+        // An exact archive membership outranks a name shared with an opponent
+        // on another server. Name matching also supports manually opened SGFs.
+        let owner = self
+            .libraries
+            .iter()
+            .find(|(account, games)| !account.is_empty() && games.iter().any(|p| p == source));
+        let Some((account, _)) = owner.or_else(|| {
+            self.libraries.iter().find(|(account, _)| {
+                !account.is_empty()
+                    && ["PB", "PW"].iter().any(|key| {
+                        doc.nodes[0]
+                            .property(key)
+                            .is_some_and(|name| name.eq_ignore_ascii_case(account))
+                    })
+            })
+        }) else {
+            return Ok(());
+        };
+        if visits < GRADE_VISITS.max(self.indexed_visits.saturating_mul(4)) {
             return Ok(());
         }
         let Some(profile) = &self.profile else {
             return Ok(());
         };
         let mut trainer = self.trainer(profile.clone())?;
-        trainer.prepare(vec![source.into()], self.account.clone(), true)?;
+        trainer.prepare(vec![source.into()], account.clone(), true)?;
         // Only cached, durable results are used here; foreground review owns the engine.
         if trainer.snapshot().phase == Phase::Idle {
             self.indexed_visits = visits;
@@ -90,7 +116,7 @@ impl Discovery {
         Ok(())
     }
     pub fn start_idle(&mut self, config: &EngineConfig) -> Result<()> {
-        if !self.pending
+        if self.pending.is_empty()
             || self
                 .trainer
                 .as_ref()
@@ -98,9 +124,9 @@ impl Discovery {
         {
             return Ok(());
         }
-        self.pending = false;
-        if self.account.is_empty()
-            || self.games.is_empty()
+        let (account, games) = &self.libraries[self.pending.pop_front().unwrap()];
+        if account.is_empty()
+            || games.is_empty()
             || !config.model.is_file()
             || !config.executable.is_file()
         {
@@ -109,15 +135,15 @@ impl Discovery {
         let mut trainer = self
             .trainer(Engine::profile(config)?)?
             .with_analysis_settings(&config.analysis)?;
-        trainer.prepare(self.games.clone(), self.account.clone(), false)?;
+        trainer.prepare(games.clone(), account.clone(), false)?;
         self.trainer = Some(trainer);
         Ok(())
     }
     pub fn reconfigure(&mut self) {
         self.opened();
-        self.pending = true;
+        self.pending = (0..self.libraries.len()).collect();
     }
     pub fn resume(&mut self) {
-        self.pending = true;
+        self.pending = (0..self.libraries.len()).collect();
     }
 }

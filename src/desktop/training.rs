@@ -56,15 +56,7 @@ impl DesktopApp {
                 self.training_client = None;
                 self.training_view.open = false;
                 let _ = self.client.send(Command::NumberFrom(None));
-                let _ = self.client.send(Command::PrepareTraining {
-                    games: self
-                        .sync_state
-                        .games
-                        .iter()
-                        .map(|g| g.path.clone())
-                        .collect(),
-                    account: self.sync_state.username.clone(),
-                });
+                self.prepare_libraries();
             }
         }
     }

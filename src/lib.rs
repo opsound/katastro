@@ -1,11 +1,13 @@
 pub mod analysis;
+pub mod archive;
 #[cfg(feature = "desktop")]
 pub mod desktop;
 #[cfg(feature = "desktop")]
 pub mod dialogs;
 pub mod engine;
 pub mod game;
-pub mod pandanet;
+// Retain the original public sync API for existing integrations.
+pub use archive as pandanet;
 pub mod review;
 pub mod scheduler;
 pub mod training;

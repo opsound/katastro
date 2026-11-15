@@ -2,6 +2,14 @@
 use super::*;
 impl Service {
     pub fn open(root: &Path, endpoint: &str, credentials: Arc<dyn Credentials>) -> Result<Self> {
+        Self::open_for(root, endpoint, credentials, Server::Pandanet)
+    }
+    pub fn open_for(
+        root: &Path,
+        endpoint: &str,
+        credentials: Arc<dyn Credentials>,
+        server: Server,
+    ) -> Result<Self> {
         std::fs::create_dir_all(root)?;
         #[cfg(unix)]
         {
@@ -40,7 +48,8 @@ impl Service {
             )
             .optional()?;
         let mut state = Snapshot {
-            status: "Connect your Pandanet account to sync games".into(),
+            server,
+            status: format!("Connect your {} account to sync games", server.label()),
             limit: Some(200),
             ..Snapshot::default()
         };
@@ -60,7 +69,7 @@ impl Service {
             state,
             root: root.into(),
             db,
-            remote: http::Remote::new(endpoint)?,
+            remote: remote::Remote::new(endpoint, server)?,
             credentials,
             password: None,
             needs_login: false,
@@ -114,11 +123,31 @@ impl Service {
         self.db.execute("INSERT INTO config (singleton,username,remember,automatic,max_games) VALUES (1,?1,?2,?3,?4) ON CONFLICT(singleton) DO UPDATE SET username=excluded.username,remember=excluded.remember,automatic=excluded.automatic,max_games=excluded.max_games",params![self.state.username,self.state.remember,self.state.automatic,self.state.limit.map(|n|n as i64)])?;
         Ok(())
     }
-    pub(super) fn save_download(&mut self, game: Game, bytes: &[u8]) -> Result<()> {
+    pub(super) fn save_download(&mut self, mut game: Game, bytes: &[u8]) -> Result<()> {
         if bytes.iter().copied().find(|b| !b.is_ascii_whitespace()) == Some(b'<') {
-            return Err("Pandanet returned an HTML page instead of an SGF; will retry".into());
+            return Err(format!(
+                "{} returned an HTML page instead of an SGF; will retry",
+                self.state.server.label()
+            )
+            .into());
         }
-        crate::Document::parse(bytes).map_err(|e| format!("Could not import this SGF: {e}"))?;
+        let document =
+            crate::Document::parse(bytes).map_err(|e| format!("Could not import this SGF: {e}"))?;
+        if self.state.server == Server::Fox {
+            let root = &document.nodes[0];
+            let player = |name, rank| {
+                let name = root.property(name).unwrap_or("");
+                let rank = root
+                    .property(rank)
+                    .unwrap_or("")
+                    .replace('级', "k")
+                    .replace('段', "d");
+                format!("{name} {rank}").trim().to_owned()
+            };
+            game.black = player("PB", "BR");
+            game.white = player("PW", "WR");
+            game.result = root.property("RE").unwrap_or("").into();
+        }
         self.store(game, bytes)
     }
     pub(super) fn store(&mut self, game: Game, bytes: &[u8]) -> Result<()> {

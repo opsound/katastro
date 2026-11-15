@@ -1,9 +1,16 @@
-use crate::pandanet::{Game, Snapshot};
+use crate::archive::{Game, Server, Snapshot};
 use eframe::egui::{self, Color32, RichText, WidgetInfo, WidgetType};
 use egui_extras::{Column, TableBuilder};
 use std::{cmp::Ordering, path::PathBuf};
 
-const HEADINGS: [&str; 5] = ["Date", "White", "Black", "Winner", "Win condition"];
+const HEADINGS: [&str; 6] = [
+    "Date",
+    "White",
+    "Black",
+    "Winner",
+    "Win condition",
+    "Server",
+];
 
 pub(super) struct Sort {
     column: usize,
@@ -30,35 +37,41 @@ impl Sort {
 
 struct Row<'a> {
     game: &'a Game,
-    cells: [String; 5],
+    cells: [String; 6],
+    account: &'a str,
+    server: Server,
     names: [&'a str; 2],
     condition: u8,
     points: f64,
 }
 impl<'a> Row<'a> {
-    fn new(game: &'a Game) -> Self {
+    fn new(game: &'a Game, state: &'a Snapshot) -> Self {
         let (white, _) = player(&game.white);
         let (black, _) = player(&game.black);
         let (winner, condition, kind, points) = outcome(&game.result);
         Self {
             game,
+            account: &state.username,
+            server: state.server,
             cells: [
                 game.date.clone(),
                 game.white.clone(),
                 game.black.clone(),
                 winner.into(),
                 condition,
+                state.server.label().into(),
             ],
             names: [white, black],
             condition: kind,
             points,
         }
     }
-    fn show_cell(&self, ui: &mut egui::Ui, column: usize, username: &str) -> bool {
+    fn show_cell(&self, ui: &mut egui::Ui, column: usize) -> bool {
         let value = &self.cells[column];
         if column == 0 {
-            let won = (self.cells[3] == "White" && self.names[0].eq_ignore_ascii_case(username))
-                || (self.cells[3] == "Black" && self.names[1].eq_ignore_ascii_case(username));
+            let won = (self.cells[3] == "White"
+                && self.names[0].eq_ignore_ascii_case(self.account))
+                || (self.cells[3] == "Black" && self.names[1].eq_ignore_ascii_case(self.account));
             trophy(ui, won, &self.game.date);
             let response = ui.add(egui::Button::new(value).frame(false));
             response.widget_info(|| {
@@ -190,15 +203,17 @@ fn outcome(value: &str) -> (&str, String, u8, f64) {
 
 pub(super) fn show(
     ui: &mut egui::Ui,
-    state: &Snapshot,
+    states: &[&Snapshot],
+    filter: Option<Server>,
     query: &str,
     sort: &mut Sort,
 ) -> Option<PathBuf> {
     let query = query.trim().to_lowercase();
-    let mut rows: Vec<_> = state
-        .games
+    let total = states.iter().map(|s| s.games.len()).sum::<usize>();
+    let mut rows: Vec<_> = states
         .iter()
-        .map(Row::new)
+        .flat_map(|s| s.games.iter().map(|g| Row::new(g, s)))
+        .filter(|r| filter.is_none_or(|f| r.server == f))
         .filter(|row| {
             query.is_empty()
                 || row.cells.join(" ").to_lowercase().contains(&query)
@@ -207,7 +222,7 @@ pub(super) fn show(
         .collect();
     let mut open = None;
     if rows.is_empty() {
-        ui.label(if state.games.is_empty() {
+        ui.label(if total == 0 {
             "Connect in Sync settings to download games."
         } else {
             "No matching games."
@@ -239,7 +254,8 @@ pub(super) fn show(
                 .column(Column::initial(200.).at_least(120.).clip(true))
                 .column(Column::initial(200.).at_least(120.).clip(true))
                 .column(Column::initial(78.).at_least(65.).clip(true))
-                .column(Column::remainder().at_least(130.).clip(true))
+                .column(Column::initial(150.).at_least(130.).clip(true))
+                .column(Column::remainder().at_least(80.).clip(true))
                 .max_scroll_height(body_height)
                 .min_scrolled_height(0.)
                 .auto_shrink([false, false])
@@ -298,7 +314,7 @@ pub(super) fn show(
                         let entry = &rows[row.index()];
                         for column in 0..HEADINGS.len() {
                             row.col(|ui| {
-                                if entry.show_cell(ui, column, &state.username) {
+                                if entry.show_cell(ui, column) {
                                     open = Some(entry.game.path.clone());
                                 }
                             });
@@ -316,7 +332,7 @@ pub(super) fn show(
     ui.small(format!(
         "{} of {} games · Click a row to review",
         rows.len(),
-        state.games.len()
+        total
     ));
     open
 }

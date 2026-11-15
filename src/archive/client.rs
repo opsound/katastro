@@ -23,6 +23,7 @@ impl Clock for SystemClock {
     }
 }
 pub struct Options {
+    pub server: super::Server,
     pub root: PathBuf,
     pub endpoint: String,
     pub request_interval: Duration,
@@ -30,8 +31,17 @@ pub struct Options {
     pub clock: Arc<dyn Clock>,
 }
 impl Options {
+    pub fn fox(root: PathBuf) -> Self {
+        Self {
+            server: super::Server::Fox,
+            endpoint: super::fox::ENDPOINT.into(),
+            ..Self::new(root)
+        }
+    }
+
     pub fn new(root: PathBuf) -> Self {
         Self {
+            server: super::Server::Pandanet,
             root,
             endpoint: super::ENDPOINT.into(),
             request_interval: Duration::ZERO,
@@ -75,18 +85,23 @@ impl Client {
         let controls = Arc::new(Controls::default());
         let worker_controls = controls.clone();
         std::thread::spawn(move || {
-            let mut service =
-                match Service::open(&options.root, &options.endpoint, options.credentials) {
-                    Ok(service) => service,
-                    Err(e) => {
-                        publish(Snapshot {
-                            error: Some(e.to_string()),
-                            status: "Could not open Pandanet library".into(),
-                            ..Snapshot::default()
-                        });
-                        return;
-                    }
-                };
+            let mut service = match Service::open_for(
+                &options.root,
+                &options.endpoint,
+                options.credentials,
+                options.server,
+            ) {
+                Ok(service) => service,
+                Err(e) => {
+                    publish(Snapshot {
+                        error: Some(e.to_string()),
+                        server: options.server,
+                        status: format!("Could not open {} library", options.server.label()),
+                        ..Snapshot::default()
+                    });
+                    return;
+                }
+            };
             service.set_request_interval(options.request_interval);
             publish(service.snapshot());
             let first = worker_controls.token();
@@ -126,7 +141,7 @@ impl Client {
         self.controls.cancel();
         self.commands
             .send((command, self.controls.token()))
-            .map_err(|_| "Pandanet sync worker stopped".into())
+            .map_err(|_| "Archive sync worker stopped".into())
     }
 }
 impl Drop for Client {

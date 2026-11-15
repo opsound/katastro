@@ -29,15 +29,13 @@ impl Wake for DialogWake {
 }
 struct Services {
     dialogs: Box<dyn FileDialogs>,
-    sync: crate::pandanet::Options,
+    sync: Vec<crate::archive::Options>,
 }
 pub struct DesktopApp {
     pub state: Snapshot,
     pub client: Client,
-    sync_client: crate::pandanet::Client,
-    sync_state: crate::pandanet::Snapshot,
-    sync_view: crate::pandanet::view::View,
-    sync_folder: PathBuf,
+    archives: Vec<(crate::archive::Client, crate::archive::Snapshot, PathBuf)>,
+    sync_view: crate::archive::view::View,
     settings_open: bool,
     executable_text: String,
     model_text: String,
@@ -52,13 +50,13 @@ pub struct DesktopApp {
     training_selection: Option<(PathBuf, usize, Vec<Option<crate::Point>>)>,
 }
 impl DesktopApp {
-    pub fn with_sync(
+    pub fn with_archives(
         ctx: &egui::Context,
         reviews: PathBuf,
         cache: PathBuf,
         config: EngineConfig,
         initial: Option<PathBuf>,
-        sync: crate::pandanet::Options,
+        archives: Vec<crate::archive::Options>,
     ) -> Self {
         Self::with_services(
             ctx,
@@ -68,9 +66,25 @@ impl DesktopApp {
             initial,
             Services {
                 dialogs: Box::new(NativeDialogs),
-                sync,
+                sync: archives,
             },
         )
+    }
+    pub fn with_sync(
+        ctx: &egui::Context,
+        reviews: PathBuf,
+        cache: PathBuf,
+        config: EngineConfig,
+        initial: Option<PathBuf>,
+        sync: crate::archive::Options,
+    ) -> Self {
+        let fox = crate::archive::Options::fox(
+            sync.root
+                .parent()
+                .unwrap_or(std::path::Path::new("."))
+                .join("Fox"),
+        );
+        Self::with_archives(ctx, reviews, cache, config, initial, vec![sync, fox])
     }
     pub fn new(
         ctx: &egui::Context,
@@ -96,7 +110,7 @@ impl DesktopApp {
         initial: Option<PathBuf>,
         dialogs: Box<dyn FileDialogs>,
     ) -> Self {
-        let sync = crate::pandanet::Options::new(
+        let sync = crate::archive::Options::new(
             reviews
                 .parent()
                 .unwrap_or(std::path::Path::new("."))
@@ -104,11 +118,22 @@ impl DesktopApp {
         );
         Self::with_services(
             ctx,
-            reviews,
+            reviews.clone(),
             cache,
             config,
             initial,
-            Services { dialogs, sync },
+            Services {
+                dialogs,
+                sync: vec![
+                    sync,
+                    crate::archive::Options::fox(
+                        reviews
+                            .parent()
+                            .unwrap_or(std::path::Path::new("."))
+                            .join("Fox"),
+                    ),
+                ],
+            },
         )
     }
     fn with_services(
@@ -119,12 +144,26 @@ impl DesktopApp {
         initial: Option<PathBuf>,
         services: Services,
     ) -> Self {
-        let sync_folder = services.sync.root.clone();
-        let sync_wake = ctx.clone();
-        let sync_client = crate::pandanet::Client::spawn(
-            services.sync,
-            Some(Arc::new(move || sync_wake.request_repaint())),
-        );
+        let archives = services
+            .sync
+            .into_iter()
+            .map(|options| {
+                let folder = options.root.clone();
+                let state = crate::archive::Snapshot {
+                    server: options.server,
+                    ..Default::default()
+                };
+                let ctx = ctx.clone();
+                (
+                    crate::archive::Client::spawn(
+                        options,
+                        Some(Arc::new(move || ctx.request_repaint())),
+                    ),
+                    state,
+                    folder,
+                )
+            })
+            .collect();
         ctx.set_visuals(egui::Visuals::dark());
         ctx.global_style_mut(|style| {
             style.spacing.item_spacing = egui::vec2(10.0, 8.0);
@@ -152,10 +191,8 @@ impl DesktopApp {
             analysis_settings: Default::default(),
             visit_limit: 1024,
             dialogs: services.dialogs,
-            sync_client,
-            sync_state: crate::pandanet::Snapshot::default(),
-            sync_view: crate::pandanet::view::View::default(),
-            sync_folder,
+            archives,
+            sync_view: crate::archive::view::View::default(),
             pending_dialog: None,
             training_view: Default::default(),
             training_state: Default::default(),
@@ -183,18 +220,33 @@ impl DesktopApp {
                 None
             }
             Action::Games => {
-                self.sync_view.show_library(&self.sync_state);
+                self.sync_view.show_library();
                 None
             }
             Action::Training => {
                 self.training_client = None;
                 self.training_state = Default::default();
-                self.training_view.show(&self.sync_state);
+                let selected = self.sync_view.training_server();
+                if let Some((_, state, _)) = self
+                    .archives
+                    .iter()
+                    .find(|(_, s, _)| s.server == selected && !s.games.is_empty())
+                    .or_else(|| self.archives.iter().find(|(_, s, _)| !s.games.is_empty()))
+                    .or_else(|| self.archives.first())
+                {
+                    self.training_view.show(state);
+                }
                 self.sync_view.open = false;
                 Some(Command::Pause)
             }
             Action::Pandanet => {
-                self.sync_view.show(&self.sync_state);
+                if let Some((_, state, _)) = self
+                    .archives
+                    .iter()
+                    .find(|(_, s, _)| s.server == crate::archive::Server::Pandanet)
+                {
+                    self.sync_view.show(state);
+                }
                 None
             }
             Action::Settings => {
@@ -211,6 +263,20 @@ impl DesktopApp {
         {
             self.state.error = Some(error.to_string());
         }
+    }
+    fn prepare_libraries(&self) {
+        let _ = self.client.send(Command::PrepareTrainingLibraries(
+            self.archives
+                .iter()
+                .filter(|(_, s, _)| !s.username.is_empty())
+                .map(|(_, s, _)| {
+                    (
+                        s.username.clone(),
+                        s.games.iter().map(|g| g.path.clone()).collect(),
+                    )
+                })
+                .collect(),
+        ));
     }
     fn begin_dialog(&mut self, request: DialogRequest, frame: &eframe::Frame) {
         if self.pending_dialog.is_none() {
@@ -250,21 +316,20 @@ impl eframe::App for DesktopApp {
         while let Ok(state) = self.client.snapshots.try_recv() {
             self.state = state;
         }
-        while let Ok(state) = self.sync_client.snapshots.try_recv() {
-            if !self.training_view.open
-                && (state.username != self.sync_state.username
-                    || !state.games.iter().map(|g| &g.path).eq(self
-                        .sync_state
+        let mut library_changed = false;
+        for (client, previous, _) in &mut self.archives {
+            while let Ok(state) = client.snapshots.try_recv() {
+                library_changed |= state.username != previous.username
+                    || !state
                         .games
                         .iter()
-                        .map(|g| &g.path)))
-            {
-                let _ = self.client.send(Command::PrepareTraining {
-                    games: state.games.iter().map(|g| g.path.clone()).collect(),
-                    account: state.username.clone(),
-                });
+                        .map(|g| &g.path)
+                        .eq(previous.games.iter().map(|g| &g.path));
+                *previous = state;
             }
-            self.sync_state = state;
+        }
+        if library_changed && !self.training_view.open {
+            self.prepare_libraries();
         }
         self.poll_training();
         let dropped = ui.input(|input| {
@@ -281,10 +346,11 @@ impl eframe::App for DesktopApp {
             self.action(Action::Review(Command::OpenAndAnalyze(path)), frame);
         }
         if self.training_view.open {
-            for action in self
-                .training_view
-                .render(ui, &self.training_state, &self.sync_state)
-            {
+            for action in self.training_view.render_libraries(
+                ui,
+                &self.training_state,
+                &self.archives.iter().map(|(_, s, _)| s).collect::<Vec<_>>(),
+            ) {
                 self.training_action(action, ui.ctx());
             }
         }
@@ -298,13 +364,22 @@ impl eframe::App for DesktopApp {
             self.settings(ui, frame);
         }
         if self.sync_view.open {
-            let actions = self
-                .sync_view
-                .render(ui.ctx(), &self.sync_state, &self.sync_folder);
+            let actions = self.sync_view.render(
+                ui.ctx(),
+                &self
+                    .archives
+                    .iter()
+                    .map(|(_, s, p)| (s, p.as_path()))
+                    .collect::<Vec<_>>(),
+            );
             if let Some(command) = actions.command
-                && let Err(error) = self.sync_client.send(command)
+                && let Some((client, state, _)) = self
+                    .archives
+                    .iter_mut()
+                    .find(|(_, s, _)| s.server == actions.server)
+                && let Err(error) = client.send(command)
             {
-                self.sync_state.error = Some(error.to_string());
+                state.error = Some(error.to_string());
             }
             if actions.train {
                 self.action(Action::Training, frame);

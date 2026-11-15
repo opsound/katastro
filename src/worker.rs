@@ -27,6 +27,7 @@ pub enum Command {
     Start,
     Pause,
     Configure(EngineConfig),
+    PrepareTrainingLibraries(Vec<(String, Vec<PathBuf>)>),
     PrepareTraining {
         games: Vec<PathBuf>,
         account: String,
@@ -305,7 +306,12 @@ impl Worker {
                     "Engine settings saved · cached review remains available".into();
             }
             Command::Shutdown => {}
-            Command::PrepareTraining { games, account } => self.discovery.library(games, account),
+            Command::PrepareTraining { games, account } => {
+                self.discovery.libraries(vec![(account, games)])
+            }
+            Command::PrepareTrainingLibraries(libraries) => {
+                self.discovery.libraries(libraries);
+            }
         }
         Ok(())
     }
@@ -442,8 +448,9 @@ impl Worker {
                         self.engine.as_mut().unwrap().send(&query)?;
                     }
                     let snapshot = trainer.snapshot();
-                    self.state.preparing_training =
-                        snapshot.phase == crate::training::Phase::Searching;
+                    self.state.preparing_training = snapshot.phase
+                        == crate::training::Phase::Searching
+                        || self.discovery.pending();
                     dirty |= self.state.status != snapshot.status;
                     self.state.status = snapshot.status;
                 }

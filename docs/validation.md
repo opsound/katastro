@@ -662,3 +662,49 @@ Thirteen deliberate regressions were detected and restored: omitting worker sett
 Formatting, strict workspace Clippy, the full workspace suite (**185 passed, 19 explicit opt-in checks excluded**), and the no-GUI library build pass. A rendered settings pane was inspected. Real KataGo 1.18.2/Metal with the b10c384 normal model completed the 100-visit / two-position / two-thread check, including complete ownership and termination at the configured requested budget. The existing HumanSL protocol and legal-continuation check also passed with the official b18c384 human model. These are functional checks, not throughput comparisons. Invocations and prerequisites are in [engine-settings.md](engine-settings.md).
 
 The macOS release bundle was rebuilt and passed strict code-signature verification. The staged tree/history and committed tree are audited for secrets and private artifacts before delivery. These changes remain local; no push is scheduled or performed by this change.
+
+## Fox archive sync and server filtering (2026-11-15)
+
+Fox now uses its public HTTPS record endpoints with a username alone. The default
+200-game limit, two concurrent downloads, 15-minute automatic checks, immutable
+originals, missing-file recovery, and retry/cancellation policy share the existing
+Pandanet implementation in `archive`. Provider databases remain separate; existing
+Pandanet login/storage remain usable without migration. The Games table filters
+All servers / Pandanet / Fox and sorts by server as well as its existing columns.
+Ranks/results come from SGF metadata, trophies use each server's account, training
+setup selects the corresponding library/player, and idle discovery prepares both
+accounts. Completed review indexing prefers the owning archive over a coincidentally
+matching opponent name; canonical source paths are resolved on the worker.
+
+Before production behavior was added, the new public-API test failed on the
+password requirement, the UI test failed on the absent server selector, and the
+controlled-engine test showed the second account still needed discovery. A further
+UI test failed on ambiguous sync controls. Code review identified the opponent-name
+collision; its integration test first reproduced the wrong account's index and then
+passed with source ownership taking priority. These tests use actual HTTP requests
+to synthetic loopback servers, real temporary SQLite/SGF storage, real egui input,
+and controlled subprocess responses. Supplemental cases cover private/foreign
+archives, mismatched SGF IDs, invalid SGFs with retry, and repeated pagination.
+
+Nine temporary mutations were caught and restored: weakened history cap, disabled
+reuse, skipped missing-file restoration, omitted result metadata, ignored server
+filter, wrong training account, omitted second library, ignored SGF response ID,
+and ignored archive ownership. The live Rust check imported and parsed all **57**
+records available for the authorized account and downloaded **zero** on repeat.
+A separate public-archive probe confirmed nonoverlapping pagination with the
+case-sensitive `lastCode` parameter. A GPU-rendered synthetic library preview was
+inspected. Private downloads/logs remain outside Git; repeatable commands and
+protocol limitations are documented in [fox-sync.md](fox-sync.md).
+
+Formatting, strict workspace Clippy, the full workspace suite (**192 passed,
+20 explicit opt-in checks excluded**), and the library build without GUI features
+pass. The live Fox check above is one of the separately invoked opt-in checks.
+Gitleaks found no secrets in the staged tree or Git history; project-specific
+checks found no private artifacts or session URLs. Real account names are supplied
+through local settings/environment variables and must never be hardcoded into
+tracked files or commit messages.
+
+The optimized macOS bundle was rebuilt and passed
+`codesign --verify --deep --strict local/Katastro.app`. An explicit scan for the
+real account name found zero matches in staged files, all reachable Git blobs,
+and commit messages. The existing app session was left running.

@@ -1,4 +1,4 @@
-//! Pandanet archive synchronization, independent of the desktop shell.
+//! Game archive synchronization, independent of the desktop shell.
 use crate::Result;
 use rusqlite::{Connection, OptionalExtension, params};
 use std::{
@@ -7,9 +7,25 @@ use std::{
     time::Duration,
 };
 use zeroize::Zeroizing;
-mod http;
+mod fox;
+mod pandanet;
+mod remote;
 mod storage;
 mod sync;
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Server {
+    #[default]
+    Pandanet,
+    Fox,
+}
+impl Server {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Pandanet => "Pandanet",
+            Self::Fox => "Fox",
+        }
+    }
+}
 pub const ENDPOINT: &str = "https://my.pandanet.co.jp/cgi-bin/cgi.exe?MH";
 pub const SYNC_INTERVAL: u64 = 15 * 60;
 
@@ -35,6 +51,7 @@ pub struct FailedGame {
 }
 #[derive(Clone, Debug, Default)]
 pub struct Snapshot {
+    pub server: Server,
     pub limit: Option<usize>,
     pub failures: Vec<FailedGame>,
     pub username: String,
@@ -98,7 +115,7 @@ pub struct Service {
     state: Snapshot,
     root: PathBuf,
     db: Connection,
-    remote: http::Remote,
+    remote: remote::Remote,
     credentials: Arc<dyn Credentials>,
     password: Option<Zeroizing<String>>,
     needs_login: bool,
@@ -110,7 +127,7 @@ pub struct Service {
 impl Service {
     /// Optional pacing for diagnostics; the desktop bounds concurrency instead.
     pub fn set_request_interval(&mut self, interval: Duration) {
-        self.remote.interval = interval;
+        self.remote.set_interval(interval);
     }
     pub fn set_parallel_downloads(&mut self, count: usize) {
         self.parallel_downloads = count.clamp(1, 4);
@@ -178,12 +195,21 @@ impl Service {
                 if username.is_empty()
                     || username.len() > 64
                     || username.chars().any(|c| c.is_control())
-                    || password.is_empty()
+                    || (self.state.server == Server::Pandanet && password.is_empty())
                 {
-                    return Err("Enter your Pandanet username and password".into());
+                    return Err(format!(
+                        "Enter your {} username{}",
+                        self.state.server.label(),
+                        if self.state.server == Server::Pandanet {
+                            " and password"
+                        } else {
+                            ""
+                        }
+                    )
+                    .into());
                 }
                 self.state.username = username.into();
-                self.state.remember = remember;
+                self.state.remember = remember && self.state.server == Server::Pandanet;
                 self.state.automatic = true;
                 self.password = Some(password);
                 self.needs_login = false;
@@ -206,7 +232,9 @@ impl Service {
                 self.next_due = 0;
             }
             Command::Disconnect => {
-                self.credentials.forget(&self.state.username)?;
+                if self.state.server == Server::Pandanet {
+                    self.credentials.forget(&self.state.username)?;
+                }
                 self.password = None;
                 self.needs_login = true;
                 self.state.remember = false;

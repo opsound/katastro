@@ -1,4 +1,7 @@
-use super::{Cancellation, Game};
+use super::{
+    Cancellation, Game,
+    remote::{Entry, Page},
+};
 use crate::{Result, digest};
 use reqwest::{
     Url,
@@ -14,15 +17,6 @@ use std::{
 };
 use zeroize::Zeroizing;
 
-#[derive(Clone)]
-pub(super) struct Entry {
-    pub game: Game,
-    pub url: Url,
-}
-pub(super) struct Page {
-    pub entries: Vec<Entry>,
-    pub total: usize,
-}
 #[derive(Clone)]
 pub(super) struct Remote {
     endpoint: Url,

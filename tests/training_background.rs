@@ -137,6 +137,13 @@ fn idle_discovery_yields_to_a_game_and_persists_ready_problems() {
 // rerunning its evaluations. Regression: discovery only runs on an empty window.
 #[test]
 fn completed_review_pass_populates_training_without_extra_engine_work() {
+    review_indexes_owner(false);
+}
+#[test]
+fn completed_review_uses_archive_owner_when_opponent_matches_another_account() {
+    review_indexes_owner(true);
+}
+fn review_indexes_owner(multiple: bool) {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
     let source = support::fixture(root, false);
@@ -162,11 +169,16 @@ fn completed_review_pass_populates_training_without_extra_engine_work() {
     }
     let c = Client::spawn(root.join("reviews"), root.join("cache"), config);
     c.send(Command::OpenAndAnalyze(source.clone())).unwrap();
-    c.send(Command::PrepareTraining {
-        games: vec![source.clone()],
-        account: "me".into(),
-    })
-    .unwrap();
+    let libraries = if multiple {
+        vec![
+            ("opponent".into(), vec![]),
+            ("me".into(), vec![source.clone()]),
+        ]
+    } else {
+        vec![("me".into(), vec![source.clone()])]
+    };
+    c.send(Command::PrepareTrainingLibraries(libraries))
+        .unwrap();
     until(&c, |s| s.running);
     let mut engine = connection(&listener);
     let first = query(&mut engine);
@@ -211,4 +223,64 @@ fn completed_review_pass_populates_training_without_extra_engine_work() {
     assert_eq!(t.snapshot().phase, Phase::YourTurn);
     t.play(Some(katastro::Point::new(3, 4))).unwrap();
     assert_eq!(t.next_request().unwrap().unwrap()["includePolicy"], true);
+}
+
+// Benefit: idle preparation covers both servers and each player's own moves.
+// Regression: the second archive replaces the first or uses its account name.
+#[test]
+fn idle_discovery_prepares_both_server_accounts() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let panda = support::fixture(root, false);
+    let fox = root.join("fox.sgf");
+    std::fs::write(
+        &fox,
+        std::fs::read_to_string(&panda)
+            .unwrap()
+            .replace("PB[me]", "PB[foxplayer]")
+            .replace("KM[6.5]", "KM[7.5]"),
+    )
+    .unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let config = config(root, &listener);
+    let c = Client::spawn(root.join("reviews"), root.join("cache"), config.clone());
+    c.send(Command::PrepareTrainingLibraries(vec![
+        ("me".into(), vec![panda.clone()]),
+        ("foxplayer".into(), vec![fox.clone()]),
+    ]))
+    .unwrap();
+    until(&c, |s| s.preparing_training);
+    let mut engine = connection(&listener);
+    let serving = std::thread::spawn(move || {
+        loop {
+            let mut line = String::new();
+            if engine.read_line(&mut line).unwrap() == 0 {
+                break;
+            }
+            let q: Value = serde_json::from_str(&line).unwrap();
+            writeln!(engine.get_mut(), "{}", support::reply(&q, false, true)).unwrap();
+        }
+    });
+    until(&c, |s| {
+        !s.preparing_training && s.status.contains("discovery complete")
+    });
+    drop(c);
+    serving.join().unwrap();
+    for (account, source) in [("me", panda), ("foxplayer", fox)] {
+        let mut trainer = Trainer::new(
+            &root.join("reviews"),
+            &root.join("cache"),
+            &root.join("Training"),
+            Engine::profile(&config).unwrap(),
+        )
+        .unwrap();
+        trainer
+            .begin(vec![source], account.into(), Settings::default())
+            .unwrap();
+        assert_eq!(
+            trainer.snapshot().phase,
+            Phase::YourTurn,
+            "{account} must start immediately from the durable index"
+        );
+    }
 }

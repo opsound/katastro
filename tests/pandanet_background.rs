@@ -36,6 +36,7 @@ fn background_sync_wakes_the_ui_restores_login_and_downloads_on_a_clock_tick() {
     let vault = Arc::new(support::Vault::default());
     let time = Arc::new(Time(AtomicU64::new(100)));
     let options = || Options {
+        server: Default::default(),
         root: tmp.path().into(),
         endpoint: fixture.endpoint.clone(),
         request_interval: Duration::ZERO,
@@ -119,6 +120,7 @@ fn closing_during_startup_does_not_start_a_new_sync_after_the_window_is_gone() {
     let first = std::sync::atomic::AtomicBool::new(true);
     let c = Client::spawn(
         Options {
+            server: Default::default(),
             root: tmp.path().into(),
             endpoint: fixture.endpoint.clone(),
             request_interval: Duration::ZERO,

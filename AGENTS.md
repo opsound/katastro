@@ -42,4 +42,6 @@ Once Cargo manifests exist, standard checks are `cargo fmt --all --check`, `carg
 
 Use `~/KataGo` and `~/katrain` as read-only references unless a separate task requests changes. The user authorized reading SGFs in `~/Downloads` for local checks. Keep originals unchanged and private game content out of Git; use small synthetic or sanitized fixtures for portable tests.
 
+Never hardcode the user's account names in tracked source, tests, fixtures, documentation, or commit messages. Use synthetic account names in tests and runtime configuration for real accounts.
+
 Use Git for this project. Keep changes reviewable and include test evidence in commit or PR descriptions. Do not invent a remote, change global Git settings, or commit engine binaries, model weights, analysis databases, or personal game files.
