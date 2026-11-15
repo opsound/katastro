@@ -17,11 +17,7 @@ impl DesktopApp {
                 let _ = self.client.send(Command::NumberFrom(None));
                 self.training_client = None;
                 self.training_selection = None;
-                self.training_state = crate::training::Snapshot {
-                    phase: crate::training::Phase::Searching,
-                    status: "Preparing training…".into(),
-                    ..Default::default()
-                };
+                self.training_state = crate::training::Snapshot::searching("Preparing training…");
                 let wake = ctx.clone();
                 self.training_client = Some(client::Client::spawn(
                     client::Options::new(

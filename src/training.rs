@@ -62,6 +62,16 @@ pub struct Snapshot {
     pub reveal: Option<(PathBuf, usize)>,
     pub lines: Vec<Vec<Option<Point>>>,
 }
+impl Snapshot {
+    pub(crate) fn searching(status: impl Into<String>) -> Self {
+        Self {
+            phase: Phase::Searching,
+            status: status.into(),
+            ..Default::default()
+        }
+    }
+}
+
 struct Problem {
     doc: Document,
     index: usize,

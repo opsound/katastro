@@ -72,17 +72,9 @@ impl Client {
         let stop = canceled.clone();
         thread::spawn(move || {
             let result = (|| -> Result<()> {
-                publish(Snapshot {
-                    phase: Phase::Searching,
-                    status: "Preparing training…".into(),
-                    ..Default::default()
-                });
+                publish(Snapshot::searching("Preparing training…"));
                 install_model(&options, &stop, |status| {
-                    publish(Snapshot {
-                        phase: Phase::Searching,
-                        status,
-                        ..Default::default()
-                    })
+                    publish(Snapshot::searching(status))
                 })?;
                 if stop.load(Ordering::Relaxed) {
                     return Ok(());

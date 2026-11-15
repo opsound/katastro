@@ -708,3 +708,52 @@ The optimized macOS bundle was rebuilt and passed
 `codesign --verify --deep --strict local/Katastro.app`. An explicit scan for the
 real account name found zero matches in staged files, all reachable Git blobs,
 and commit messages. The existing app session was left running.
+
+## Organization and simplification after Fox sync (2026-11-15)
+
+This pass preserves application behavior.
+Archive HTTP setup, response limits/status checks, and sanitized errors now have
+one implementation. Startup sync uses the same dispatch/cancellation path as later
+commands. The desktop library component owns named archive connections and routes
+a server and its command as one value; engine-setting drafts live with their
+controls. Training progress snapshots share their initialization. Repeated input
+rows share rendering code, and password values zeroize themselves on drop as well
+as being explicitly cleared when switching/closing the library.
+
+The affected HTTP, background-worker, library, training, settings, and file-dialog delivery
+integration tests passed before and after the refactors. A new characterization
+test runs both providers through oversized SGFs and HTTP 429/503 failures, verifies
+that failure messages contain no request URLs/session identifiers, and then
+retries to an exact saved original. It also passed against the preceding commit,
+`a9ae840`, establishing that it covers existing behavior rather than a new feature.
+Sharing a Cargo target directory with that baseline checkout exposed stale build
+artifacts during the first mutation trial; that trial was rejected, the baseline
+checkout removed, and only this package's build artifacts cleared before retesting.
+
+All seven fresh-build mutation checks failed as intended and were restored:
+raising the response limit, accepting HTTP errors, misrouting a library command,
+discarding edited engine settings, ignoring library changes, disabling startup
+sync, and applying a chosen model path to the executable field.
+
+`cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`,
+`cargo test --workspace` (**193 passed, 20 explicit opt-in checks excluded**), and
+`cargo check --no-default-features --lib` pass. Engine protocol and analysis
+scheduling are unchanged; optional real-engine checks were not rerun for this pass.
+GPU-rendered library and settings previews were inspected using:
+
+```sh
+KATASTRO_FOX_UI_PREVIEW=local/simplification/library.png cargo test --test fox_ui server_filter_opens_fox_original_and_training_uses_fox_account
+KATASTRO_ENGINE_SETTINGS_PREVIEW=local/simplification/settings.png cargo test --test engine_settings_ui
+```
+
+These preview commands require the macOS GPU/UI environment described above.
+`bash scripts/package-macos.sh` rebuilt the optimized app, and
+`codesign --verify --deep --strict local/Katastro.app` passed. The running app was
+left untouched. Implementation size is nearly unchanged (8,749 to 8,761 Rust
+lines); the main gains are explicit ownership and fewer duplicate paths.
+
+Before committing, Gitleaks found no secrets in the staged tree or reachable Git
+history; project-specific private-artifact and session-URL checks also passed.
+A case-insensitive scan for complete real account identifiers found no matches in
+staged files, reachable Git blobs, or current/proposed commit messages. The scan
+reads account names from local configuration without copying them into Git.

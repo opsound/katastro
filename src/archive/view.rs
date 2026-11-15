@@ -1,7 +1,7 @@
 use super::{Command, Server, Snapshot};
 use eframe::egui;
 use std::path::{Path, PathBuf};
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 mod table;
 #[derive(Default)]
 pub struct View {
@@ -10,14 +10,13 @@ pub struct View {
     server: Server,
     settings_open: bool,
     username: String,
-    password: String,
+    password: Zeroizing<String>,
     remember: bool,
     search: String,
     sort: table::Sort,
 }
 pub struct Actions {
-    pub server: Server,
-    pub command: Option<Command>,
+    pub command: Option<(Server, Command)>,
     pub review: Option<PathBuf>,
     pub train: bool,
 }
@@ -42,7 +41,6 @@ impl View {
     }
     pub fn render(&mut self, ctx: &egui::Context, states: &[(&Snapshot, &Path)]) -> Actions {
         let mut actions = Actions {
-            server: self.server,
             command: None,
             review: None,
             train: false,
@@ -58,7 +56,7 @@ impl View {
                 else {
                     return;
                 };
-                actions.server = self.server;
+
                 ui.horizontal(|ui| {
                     ui.heading(format!(
                         "{} synced games",
@@ -88,7 +86,7 @@ impl View {
                             .button(format!("Pause {} sync", state.server.label()))
                             .clicked()
                         {
-                            actions.command = Some(Command::SetAutomatic(false));
+                            actions.command = Some((state.server, Command::SetAutomatic(false)));
                         }
                     } else if ui
                         .add_enabled(
@@ -97,7 +95,7 @@ impl View {
                         )
                         .clicked()
                     {
-                        actions.command = Some(Command::SyncNow);
+                        actions.command = Some((state.server, Command::SyncNow));
                     }
                 });
                 ui.horizontal(|ui| {
@@ -113,7 +111,7 @@ impl View {
                             }
                         });
                     if limit != state.limit {
-                        actions.command = Some(Command::SetLimit(limit));
+                        actions.command = Some((state.server, Command::SetLimit(limit)));
                     }
                     ui.small("Older downloads are kept.");
                 });
@@ -139,17 +137,18 @@ impl View {
                     egui::Grid::new("pandanet-login")
                         .num_columns(2)
                         .show(ui, |ui| {
-                            let label = ui.label(format!("{} username", state.server.label()));
-                            ui.add(
-                                egui::TextEdit::singleline(&mut self.username).desired_width(260.),
-                            )
-                            .labelled_by(label.id);
-                            ui.end_row();
-                            if state.server == Server::Pandanet {
-                                let label = ui.label("Pandanet password");
+                            let username_label = format!("{} username", state.server.label());
+                            for (label, value, secret) in [
+                                (username_label.as_str(), &mut self.username, false),
+                                ("Pandanet password", &mut *self.password, true),
+                            ] {
+                                if secret && state.server == Server::Fox {
+                                    continue;
+                                }
+                                let label = ui.label(label);
                                 ui.add(
-                                    egui::TextEdit::singleline(&mut self.password)
-                                        .password(true)
+                                    egui::TextEdit::singleline(value)
+                                        .password(secret)
                                         .desired_width(260.),
                                 )
                                 .labelled_by(label.id);
@@ -168,37 +167,32 @@ impl View {
                             )
                             .clicked()
                         {
-                            actions.command = Some(Command::Connect {
-                                username: self.username.clone(),
-                                password: std::mem::take(&mut self.password),
-                                remember: self.remember,
-                            });
+                            actions.command = Some((
+                                state.server,
+                                Command::Connect {
+                                    username: self.username.clone(),
+                                    password: std::mem::take(&mut *self.password),
+                                    remember: self.remember,
+                                },
+                            ));
                         }
                     });
                     ui.horizontal(|ui| {
-                        let mut automatic = state.automatic;
-                        if ui
-                            .add_enabled(
-                                !state.username.is_empty(),
-                                egui::Checkbox::new(&mut automatic, "Automatic sync"),
-                            )
-                            .changed()
-                        {
-                            actions.command = Some(Command::SetAutomatic(automatic));
-                        }
-                        if ui
-                            .add_enabled(
-                                !state.username.is_empty(),
-                                egui::Button::new(if state.server == Server::Fox {
-                                    "Disconnect Fox"
-                                } else {
-                                    "Disconnect and forget login"
-                                }),
-                            )
-                            .clicked()
-                        {
-                            actions.command = Some(Command::Disconnect);
-                        }
+                        ui.add_enabled_ui(!state.username.is_empty(), |ui| {
+                            let mut automatic = state.automatic;
+                            if ui.checkbox(&mut automatic, "Automatic sync").changed() {
+                                actions.command =
+                                    Some((state.server, Command::SetAutomatic(automatic)));
+                            }
+                            let label = if state.server == Server::Fox {
+                                "Disconnect Fox"
+                            } else {
+                                "Disconnect and forget login"
+                            };
+                            if ui.button(label).clicked() {
+                                actions.command = Some((state.server, Command::Disconnect));
+                            }
+                        });
                     });
                     ui.small(format!("Originals: {}", folder.display()));
                     ui.separator();
@@ -292,10 +286,5 @@ impl View {
             self.password.zeroize();
         }
         actions
-    }
-}
-impl Drop for View {
-    fn drop(&mut self) {
-        self.password.zeroize();
     }
 }
