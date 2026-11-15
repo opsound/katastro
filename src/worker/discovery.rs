@@ -106,7 +106,9 @@ impl Discovery {
         {
             return Ok(());
         }
-        let mut trainer = self.trainer(Engine::profile(config)?)?;
+        let mut trainer = self
+            .trainer(Engine::profile(config)?)?
+            .with_analysis_settings(&config.analysis)?;
         trainer.prepare(self.games.clone(), self.account.clone(), false)?;
         self.trainer = Some(trainer);
         Ok(())

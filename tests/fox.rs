@@ -99,6 +99,7 @@ fn fox_import_analysis_export_and_cached_reopen() {
     std::fs::write(&model, b"fake").unwrap();
     analyze_fox(
         EngineConfig {
+            analysis: Default::default(),
             executable: env!("CARGO_BIN_EXE_katastro-test-engine").into(),
             model,
         },
@@ -114,6 +115,7 @@ fn fox_encoded_komi_analysis_export_and_cached_reopen() {
     std::fs::write(&model, b"fake").unwrap();
     analyze_fox(
         EngineConfig {
+            analysis: Default::default(),
             executable: env!("CARGO_BIN_EXE_katastro-test-engine").into(),
             model,
         },
@@ -264,6 +266,7 @@ fn live_fox_analysis_and_cache() {
     for (sgf, komi) in [(FOX.to_owned(), 0.0), (encoded_fox(), 7.5)] {
         analyze_fox(
             EngineConfig {
+                analysis: Default::default(),
                 executable: std::env::var_os("KATASTRO_TEST_ENGINE")
                     .expect("KATASTRO_TEST_ENGINE")
                     .into(),
@@ -293,6 +296,7 @@ fn live_local_fox_worker_import_and_analysis() {
         temp.path().join("reviews"),
         temp.path().join("cache"),
         EngineConfig {
+            analysis: Default::default(),
             executable: std::env::var_os("KATASTRO_TEST_ENGINE")
                 .expect("KATASTRO_TEST_ENGINE")
                 .into(),

@@ -79,6 +79,7 @@ fn open_dialog_delivers_delayed_selection_and_cancel_preserves_the_review() {
                 temp.path().join("reviews"),
                 temp.path().join("cache"),
                 EngineConfig {
+                    analysis: Default::default(),
                     executable: "missing".into(),
                     model: "missing".into(),
                 },
@@ -140,6 +141,7 @@ fn export_dialog_waits_for_selection_and_exports_saved_variations() {
                 temp.path().join("reviews"),
                 temp.path().join("cache"),
                 EngineConfig {
+                    analysis: Default::default(),
                     executable: "missing".into(),
                     model: "missing".into(),
                 },
@@ -187,6 +189,7 @@ fn engine_file_dialogs_deliver_selections_to_saved_settings() {
                 temp.path().join("reviews"),
                 temp.path().join("cache"),
                 EngineConfig {
+                    analysis: Default::default(),
                     executable: "missing".into(),
                     model: "missing".into(),
                 },

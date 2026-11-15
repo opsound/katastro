@@ -10,6 +10,7 @@ fn desktop_opens_analyzes_and_saves_a_board_variation_through_the_worker() {
     let model = temp.path().join("model");
     std::fs::write(&model, b"fake").unwrap();
     let config = EngineConfig {
+        analysis: Default::default(),
         executable: env!("CARGO_BIN_EXE_katastro-test-engine").into(),
         model,
     };

@@ -29,6 +29,7 @@ fn desktop(
                 root.join("reviews.sqlite"),
                 root.join("cache.sqlite"),
                 EngineConfig {
+                    analysis: Default::default(),
                     executable: "missing".into(),
                     model: "missing".into(),
                 },
@@ -119,6 +120,7 @@ fn empty_desktop_prepares_the_synced_library_and_yields_to_training() {
                 root.join("reviews.sqlite"),
                 root.join("cache.sqlite"),
                 EngineConfig {
+                    analysis: Default::default(),
                     executable: env!("CARGO_BIN_EXE_katastro-test-engine").into(),
                     model,
                 },

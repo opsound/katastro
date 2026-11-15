@@ -31,6 +31,7 @@ fn until(client: &Client, predicate: impl Fn(&Snapshot) -> bool) -> Snapshot {
 #[ignore = "requires a local Metal KataGo binary, model, and private SGF corpus"]
 fn live_worker_chart_and_cached_reopen_measurements() {
     let config = EngineConfig {
+        analysis: Default::default(),
         executable: std::env::var_os("KATASTRO_TEST_ENGINE")
             .expect("KATASTRO_TEST_ENGINE")
             .into(),

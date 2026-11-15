@@ -28,6 +28,7 @@ fn real_pipes_carry_reverse_order_streaming_results_and_cancellation_ack() {
     let model = temp.path().join("model.bin");
     std::fs::write(&model, b"fake model").unwrap();
     let config = EngineConfig {
+        analysis: Default::default(),
         executable: env!("CARGO_BIN_EXE_katastro-test-engine").into(),
         model,
     };
@@ -69,6 +70,7 @@ fn live_katago_protocol_returns_real_estimates_when_explicitly_configured() {
         std::env::var("KATASTRO_TEST_ENGINE").expect("KATASTRO_TEST_ENGINE is required");
     let model = std::env::var("KATASTRO_TEST_MODEL").expect("KATASTRO_TEST_MODEL is required");
     let mut engine = Engine::spawn(&EngineConfig {
+        analysis: Default::default(),
         executable: executable.into(),
         model: model.into(),
     })
@@ -101,6 +103,7 @@ fn live_katago_protocol_returns_real_estimates_when_explicitly_configured() {
 fn live_scheduler_refines_to_256_and_round_trips_ranked_suggestions() {
     use katastro::{Document, Review, scheduler::Scheduler};
     let config = EngineConfig {
+        analysis: Default::default(),
         executable: std::env::var_os("KATASTRO_TEST_ENGINE")
             .expect("KATASTRO_TEST_ENGINE")
             .into(),
@@ -191,6 +194,7 @@ fn live_scheduler_refines_to_256_and_round_trips_ranked_suggestions() {
 #[ignore = "Requires explicit local KataGo executable and model; run with --ignored"]
 fn live_partial_cancellation_preserves_other_turns_of_a_shared_query() {
     let mut engine = Engine::spawn(&EngineConfig {
+        analysis: Default::default(),
         executable: std::env::var_os("KATASTRO_TEST_ENGINE")
             .expect("engine")
             .into(),
@@ -235,6 +239,7 @@ fn live_partial_cancellation_preserves_other_turns_of_a_shared_query() {
 #[ignore = "requires KataGo >=1.15, normal model and b18c384nbt-humanv0 model"]
 fn real_human_policy_and_strong_multi_move_lines_share_a_persistent_engine() {
     let config = EngineConfig {
+        analysis: Default::default(),
         executable: std::env::var_os("KATASTRO_TEST_ENGINE")
             .expect("engine")
             .into(),
@@ -280,4 +285,47 @@ fn real_human_policy_and_strong_multi_move_lines_share_a_persistent_engine() {
         line.append_move(katastro::Point::from_gtp(m.as_str().unwrap(), line.size).unwrap())
             .unwrap();
     }
+}
+
+#[test]
+#[ignore = "Requires explicit local KataGo executable and model; run with --ignored"]
+fn live_custom_analysis_settings_stop_at_the_requested_visit_limit() {
+    use katastro::{Document, engine::AnalysisSettings, scheduler::Scheduler};
+    let config = EngineConfig {
+        executable: std::env::var_os("KATASTRO_TEST_ENGINE")
+            .expect("engine")
+            .into(),
+        model: std::env::var_os("KATASTRO_TEST_MODEL")
+            .expect("model")
+            .into(),
+        analysis: AnalysisSettings {
+            max_visits: Some(100),
+            parallel_positions: 2,
+            threads_per_position: 2,
+        },
+    };
+    let mut engine = Engine::spawn(&config).unwrap();
+    let mut s = Scheduler::new(
+        1,
+        Document::parse(b"(;SZ[9];B[cc];W[gg])").unwrap(),
+        Engine::profile(&config).unwrap(),
+        Default::default(),
+    )
+    .with_settings(&config.analysis)
+    .unwrap();
+    while !s.is_complete() {
+        while let Some(q) = s.next_request().unwrap() {
+            assert!(q.visits <= 100);
+            engine.send(&q.query).unwrap();
+        }
+        assert!(s.pending() > 0, "unfinished analysis must make progress");
+        s.accept(&response(&engine)).unwrap();
+    }
+    assert_eq!(s.coverage(), (3, 3));
+    assert!(
+        s.values
+            .values()
+            .all(|a| a.visits >= 100 && a.ownership.len() == 81)
+    );
+    assert!(s.next_request().unwrap().is_none());
 }

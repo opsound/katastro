@@ -142,6 +142,7 @@ mod probe {
                     root.join("reviews.sqlite"),
                     root.join("cache.sqlite"),
                     EngineConfig {
+                        analysis: Default::default(),
                         executable: "missing".into(),
                         model: "missing".into(),
                     },

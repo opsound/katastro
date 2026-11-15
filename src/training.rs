@@ -107,8 +107,18 @@ pub struct Trainer {
     refresh: bool,
     report_id: Option<i64>,
     rng: StdRng,
+    parallel_positions: usize,
 }
 impl Trainer {
+    /// Share engine capacity; exercise grading retains its fixed visit budget.
+    pub fn with_analysis_settings(
+        mut self,
+        settings: &crate::engine::AnalysisSettings,
+    ) -> Result<Self> {
+        settings.validate()?;
+        self.parallel_positions = settings.parallel_positions;
+        Ok(self)
+    }
     /// Make problem order reproducible for a session.
     pub fn with_seed(mut self, seed: u64) -> Self {
         self.rng = StdRng::seed_from_u64(seed);
@@ -160,6 +170,7 @@ impl Trainer {
             refresh: false,
             report_id: None,
             rng: StdRng::from_rng(&mut rand::rng()),
+            parallel_positions: crate::engine::DEFAULT_PARALLEL_POSITIONS,
         })
     }
     pub fn snapshot(&self) -> Snapshot {

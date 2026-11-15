@@ -8,7 +8,7 @@ impl Trainer {
         }
         // Keep one analysis slot available for the next interactive HumanSL reply.
         let reserve = self.state.phase == Phase::YourTurn;
-        if self.pending.len() >= crate::engine::ANALYSIS_THREADS - usize::from(reserve) {
+        if self.pending.len() >= self.parallel_positions - usize::from(reserve) {
             return Ok(None);
         }
         Ok(self.queue.pop_front().map(|job| {

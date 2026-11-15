@@ -11,6 +11,7 @@ fn config(root: &Path) -> EngineConfig {
     let model = root.join("model");
     std::fs::write(&model, b"fake").unwrap();
     EngineConfig {
+        analysis: Default::default(),
         executable: env!("CARGO_BIN_EXE_katastro-test-engine").into(),
         model,
     }
@@ -42,6 +43,7 @@ fn storage_initialization_failure_wakes_the_ui_to_display_its_error() {
         blocked.join("reviews"),
         temp.path().join("cache"),
         EngineConfig {
+            analysis: Default::default(),
             executable: Default::default(),
             model: Default::default(),
         },
@@ -99,6 +101,7 @@ fn worker_keeps_variations_and_cached_chart_usable_with_engine_unavailable() {
     });
     client
         .send(Command::Configure(EngineConfig {
+            analysis: Default::default(),
             executable: temp.path().join("missing-engine"),
             model: config.model,
         }))
@@ -109,6 +112,7 @@ fn worker_keeps_variations_and_cached_chart_usable_with_engine_unavailable() {
         db,
         cache,
         EngineConfig {
+            analysis: Default::default(),
             executable: "missing".into(),
             model: "missing".into(),
         },
@@ -291,6 +295,7 @@ fn group_ownership_crosses_engine_worker_snapshots_and_remains_available_offline
     until(&client, |s| !s.running && s.document.is_some());
     client
         .send(Command::Configure(EngineConfig {
+            analysis: Default::default(),
             executable: temp.path().join("missing"),
             model: temp.path().join("missing-model"),
         }))
@@ -301,6 +306,7 @@ fn group_ownership_crosses_engine_worker_snapshots_and_remains_available_offline
         reviews,
         cache,
         EngineConfig {
+            analysis: Default::default(),
             executable: "missing".into(),
             model: "missing".into(),
         },

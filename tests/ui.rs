@@ -19,6 +19,7 @@ fn state(root: &Path) -> State {
     let mut state = State {
         review,
         snapshot: Snapshot::empty(EngineConfig {
+            analysis: Default::default(),
             executable: Default::default(),
             model: Default::default(),
         }),
@@ -429,6 +430,7 @@ fn reordered_children_keep_the_played_line_preview_navigation_and_top_row() {
         reviews.clone(),
         cache.clone(),
         EngineConfig {
+            analysis: Default::default(),
             executable: Default::default(),
             model: Default::default(),
         },
@@ -1593,6 +1595,7 @@ fn disabling_board_ai_moves_allows_background_refinement_to_complete() {
         temp.path().join("reviews"),
         temp.path().join("cache"),
         EngineConfig {
+            analysis: Default::default(),
             executable: env!("CARGO_BIN_EXE_katastro-test-engine").into(),
             model,
         },
@@ -1684,6 +1687,7 @@ fn rapid_variation_input_gets_visible_playable_hints_before_original_chart_finis
     let source = temp.path().join("game.sgf");
     std::fs::write(&source, b"(;SZ[9];B[cc])").unwrap();
     let config = EngineConfig {
+        analysis: Default::default(),
         executable: env!("CARGO_BIN_EXE_katastro-test-engine").into(),
         model,
     };

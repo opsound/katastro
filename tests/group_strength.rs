@@ -45,6 +45,7 @@ fn state(root: &std::path::Path) -> State {
     let mut state = State {
         review,
         snapshot: Snapshot::empty(EngineConfig {
+            analysis: Default::default(),
             executable: Default::default(),
             model: Default::default(),
         }),

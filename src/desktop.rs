@@ -12,6 +12,7 @@ use std::{
     sync::Arc,
     task::{Context, Poll, Wake, Waker},
 };
+mod settings;
 mod training;
 struct PendingDialog {
     request: DialogRequest,
@@ -40,6 +41,8 @@ pub struct DesktopApp {
     settings_open: bool,
     executable_text: String,
     model_text: String,
+    analysis_settings: crate::engine::AnalysisSettings,
+    visit_limit: u64,
     dialogs: Box<dyn FileDialogs>,
     pending_dialog: Option<PendingDialog>,
     training_view: crate::training::view::View,
@@ -146,6 +149,8 @@ impl DesktopApp {
             settings_open: false,
             executable_text: String::new(),
             model_text: String::new(),
+            analysis_settings: Default::default(),
+            visit_limit: 1024,
             dialogs: services.dialogs,
             sync_client,
             sync_state: crate::pandanet::Snapshot::default(),
@@ -195,6 +200,8 @@ impl DesktopApp {
             Action::Settings => {
                 self.executable_text = self.state.config.executable.to_string_lossy().into_owned();
                 self.model_text = self.state.config.model.to_string_lossy().into_owned();
+                self.analysis_settings = self.state.config.analysis.clone();
+                self.visit_limit = self.analysis_settings.max_visits.unwrap_or(1024);
                 self.settings_open = true;
                 None
             }
@@ -235,56 +242,6 @@ impl DesktopApp {
                 self.executable_text = path.to_string_lossy().into_owned()
             }
             DialogRequest::EngineModel => self.model_text = path.to_string_lossy().into_owned(),
-        }
-    }
-    fn settings(&mut self, ui: &mut egui::Ui, frame: &eframe::Frame) {
-        let mut open = self.settings_open;
-        let mut save = false;
-        let mut choose = None;
-        egui::Window::new("KataGo engine")
-            .open(&mut open)
-            .resizable(false)
-            .default_width(540.0)
-            .show(ui.ctx(), |ui| {
-                ui.label("Analysis runs locally. Your SGFs and reviews stay on this Mac.");
-                ui.add_space(12.0);
-                ui.label("KataGo executable");
-                ui.horizontal(|ui| {
-                    ui.add(egui::TextEdit::singleline(&mut self.executable_text).desired_width(410.0));
-                    if ui.button("Choose executable").clicked() {
-                        choose = Some(DialogRequest::EngineExecutable);
-                    }
-                });
-                ui.label("Neural network model (.bin.gz)");
-                ui.horizontal(|ui| {
-                    ui.add(egui::TextEdit::singleline(&mut self.model_text).desired_width(410.0));
-                    if ui.button("Choose model").clicked() {
-                        choose = Some(DialogRequest::EngineModel);
-                    }
-                });
-                ui.add_space(12.0);
-                ui.label("The app fills the chart at one visit per position, then refines to 8 and 64 visits. Pause at any time; each result is cached.");
-                ui.add_space(12.0);
-                if ui.button("Save engine settings").clicked() {
-                    save = true;
-                }
-                if let Some(diagnostic) = &self.state.diagnostic {
-                    ui.collapsing("Latest engine message", |ui| { ui.label(diagnostic); });
-                }
-            });
-        self.settings_open = open;
-        if let Some(request) = choose {
-            self.begin_dialog(request, frame);
-        }
-        if save {
-            self.action(
-                Action::Review(Command::Configure(EngineConfig {
-                    executable: self.executable_text.trim().into(),
-                    model: self.model_text.trim().into(),
-                })),
-                frame,
-            );
-            self.settings_open = false;
         }
     }
 }

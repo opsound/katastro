@@ -29,6 +29,7 @@ fn real_background_preparation_opens_a_cached_problem_without_new_discovery() {
         .map(|p| katastro::digest(&std::fs::read(p).unwrap()))
         .collect();
     let config = EngineConfig {
+        analysis: Default::default(),
         executable: std::env::var_os("KATASTRO_TEST_ENGINE").unwrap().into(),
         model: std::env::var_os("KATASTRO_TEST_MODEL").unwrap().into(),
     };

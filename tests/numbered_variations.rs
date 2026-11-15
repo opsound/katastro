@@ -10,6 +10,7 @@ fn client(root: &Path) -> Client {
         root.join("reviews"),
         root.join("cache"),
         EngineConfig {
+            analysis: Default::default(),
             executable: Default::default(),
             model: Default::default(),
         },

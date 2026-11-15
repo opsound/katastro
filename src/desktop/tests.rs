@@ -59,6 +59,7 @@ fn explored_lines_number_stones_from_the_exercise_and_follow_navigation() {
                 temp.path().join("reviews"),
                 temp.path().join("cache"),
                 EngineConfig {
+                    analysis: Default::default(),
                     executable: Default::default(),
                     model: Default::default(),
                 },

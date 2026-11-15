@@ -40,6 +40,7 @@ fn setup(root: &std::path::Path, listener: &TcpListener) -> (Options, std::path:
     )
     .unwrap();
     let config = EngineConfig {
+        analysis: Default::default(),
         executable: env!("CARGO_BIN_EXE_katastro-test-engine").into(),
         model,
     };
@@ -386,6 +387,7 @@ fn real_library_exercise_plays_grades_and_reveals_legal_lines() {
         temp.path().join("reviews"),
         temp.path().join("cache"),
         EngineConfig {
+            analysis: Default::default(),
             executable: std::env::var_os("KATASTRO_TEST_ENGINE").unwrap().into(),
             model: std::env::var_os("KATASTRO_TEST_MODEL").unwrap().into(),
         },
@@ -472,5 +474,39 @@ fn real_library_exercise_plays_grades_and_reveals_legal_lines() {
             hash,
             "source game changed"
         );
+    }
+}
+
+#[test]
+fn training_worker_limits_discovery_to_the_configured_parallel_positions() {
+    let temp = tempfile::tempdir().unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let (mut options, source) = setup(temp.path(), &listener);
+    options.engine.analysis.parallel_positions = 2;
+    let client = Client::spawn(
+        options,
+        vec![source],
+        "me".into(),
+        Settings {
+            moves: 1,
+            ..Default::default()
+        },
+        None,
+    );
+    let (stream, _) = listener.accept().unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let mut engine = BufReader::new(stream);
+    for _ in 0..2 {
+        assert_eq!(query(&mut engine)["maxVisits"], 64);
+    }
+    client.send(Command::Cancel).unwrap();
+    until(&client, |s| s.phase == Phase::Idle);
+    let mut extra = String::new();
+    match engine.read_line(&mut extra) {
+        Ok(0) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => {}
+        other => panic!("only two discovery requests may precede cancellation: {other:?} {extra}"),
     }
 }

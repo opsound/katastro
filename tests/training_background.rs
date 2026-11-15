@@ -45,6 +45,7 @@ fn config(root: &Path, listener: &TcpListener) -> EngineConfig {
     )
     .unwrap();
     EngineConfig {
+        analysis: Default::default(),
         executable: env!("CARGO_BIN_EXE_katastro-test-engine").into(),
         model,
     }
@@ -57,7 +58,8 @@ fn idle_discovery_yields_to_a_game_and_persists_ready_problems() {
     let root = temp.path();
     let source = support::fixture(root, false);
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let config = config(root, &listener);
+    let mut config = config(root, &listener);
+    config.analysis.parallel_positions = 2;
     let c = Client::spawn(root.join("reviews"), root.join("cache"), config.clone());
     c.send(Command::PrepareTraining {
         games: vec![source.clone()],
@@ -66,7 +68,7 @@ fn idle_discovery_yields_to_a_game_and_persists_ready_problems() {
     .unwrap();
     until(&c, |s| s.preparing_training);
     let mut engine = connection(&listener);
-    let held = (0..8).map(|_| query(&mut engine)).collect::<Vec<_>>();
+    let held = (0..2).map(|_| query(&mut engine)).collect::<Vec<_>>();
     c.send(Command::Open(source.clone())).unwrap();
     let opened = until(&c, |s| s.document.is_some());
     assert!(!opened.preparing_training && !opened.running);

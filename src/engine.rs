@@ -13,16 +13,56 @@ use std::{
     thread,
     time::Duration,
 };
-pub(crate) const ANALYSIS_THREADS: usize = 8;
-fn configuration() -> String {
+pub(crate) const DEFAULT_PARALLEL_POSITIONS: usize = 8;
+fn configuration(settings: &AnalysisSettings) -> String {
+    let positions = settings.parallel_positions;
+    let threads = settings.threads_per_position;
+    let batch = positions * threads;
     format!(
-        "logToStderr = true\nreportAnalysisWinratesAs = BLACK\nnumAnalysisThreads = {ANALYSIS_THREADS}\nnumSearchThreadsPerAnalysisThread = 1\nnnMaxBatchSize = {ANALYSIS_THREADS}\nnnCacheSizePowerOfTwo = 18\nnnMutexPoolSizePowerOfTwo = 14\nnumNNServerThreadsPerModel = 1\nmetalDeviceToUseThread0 = 0\nmaxVisits = 64\nanalysisPVLen = 1\n"
+        "logToStderr = true\nreportAnalysisWinratesAs = BLACK\nnumAnalysisThreads = {positions}\nnumSearchThreadsPerAnalysisThread = {threads}\nnnMaxBatchSize = {batch}\nnnCacheSizePowerOfTwo = 18\nnnMutexPoolSizePowerOfTwo = 14\nnumNNServerThreadsPerModel = 1\nmetalDeviceToUseThread0 = 0\nmaxVisits = 64\nanalysisPVLen = 1\n"
     )
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AnalysisSettings {
+    pub max_visits: Option<u64>,
+    pub parallel_positions: usize,
+    pub threads_per_position: usize,
+}
+impl Default for AnalysisSettings {
+    fn default() -> Self {
+        Self {
+            max_visits: None,
+            parallel_positions: DEFAULT_PARALLEL_POSITIONS,
+            threads_per_position: 1,
+        }
+    }
+}
+impl AnalysisSettings {
+    pub fn validate(&self) -> Result<()> {
+        if self
+            .max_visits
+            .is_some_and(|v| !(64..=1_048_576).contains(&v))
+        {
+            return Err(
+                "Visits per position must be between 64 and 1,048,576, or unlimited".into(),
+            );
+        }
+        if !(1..=32).contains(&self.parallel_positions) {
+            return Err("Parallel positions must be between 1 and 32".into());
+        }
+        if !(1..=16).contains(&self.threads_per_position) {
+            return Err("Threads per position must be between 1 and 16".into());
+        }
+        Ok(())
+    }
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct EngineConfig {
     pub executable: PathBuf,
     pub model: PathBuf,
+    #[serde(default)]
+    pub analysis: AnalysisSettings,
 }
 impl EngineConfig {
     pub fn discover(home: &Path) -> Self {
@@ -39,7 +79,11 @@ impl EngineConfig {
         } else {
             PathBuf::new()
         };
-        Self { executable, model }
+        Self {
+            executable,
+            model,
+            analysis: AnalysisSettings::default(),
+        }
     }
 }
 #[derive(Debug)]
@@ -66,6 +110,7 @@ impl Engine {
         Self::spawn_models(config, None)
     }
     fn spawn_models(config: &EngineConfig, human: Option<&Path>) -> Result<Self> {
+        config.analysis.validate()?;
         if !config.model.is_file() {
             return Err("Choose a KataGo .bin.gz model in Engine settings".into());
         }
@@ -75,7 +120,7 @@ impl Engine {
             std::process::id(),
             SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ));
-        fs::write(&config_path, configuration())?;
+        fs::write(&config_path, configuration(&config.analysis))?;
         let mut command = Command::new(&config.executable);
         command.arg("analysis");
         if let Some(human) = human {
@@ -158,10 +203,13 @@ impl Engine {
         self.events.try_recv().ok()
     }
     pub fn profile(config: &EngineConfig) -> Result<EngineProfile> {
+        config.analysis.validate()?;
         Ok(EngineProfile {
             model_sha256: digest(&fs::read(&config.model)?),
             engine_sha256: digest(&fs::read(&config.executable)?),
-            settings_digest: digest(configuration().as_bytes()),
+            // Effort and concurrency do not change evaluation semantics. Keep the
+            // historical identity so tuning them reuses completed compatible results.
+            settings_digest: digest(configuration(&AnalysisSettings::default()).as_bytes()),
         })
     }
 }

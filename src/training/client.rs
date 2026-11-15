@@ -97,7 +97,8 @@ impl Client {
                     &options.cache,
                     &output,
                     Engine::profile(&options.engine)?,
-                )?;
+                )?
+                .with_analysis_settings(&options.engine.analysis)?;
                 trainer.begin(games, account, settings)?;
                 publish(trainer.snapshot());
                 let mut engine: Option<Engine> = None;

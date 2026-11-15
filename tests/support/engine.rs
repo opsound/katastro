@@ -46,6 +46,11 @@ fn emit(query: &Value) {
 fn main() {
     eprintln!("test engine ready");
     let args: Vec<_> = std::env::args_os().collect();
+    let config = args
+        .windows(2)
+        .find(|pair| pair[0] == "-config")
+        .map(|pair| std::fs::read_to_string(&pair[1]).unwrap())
+        .unwrap_or_default();
     let model = args
         .windows(2)
         .find(|pair| pair[0] == "-model")
@@ -107,6 +112,7 @@ fn main() {
             }
             Some("crash") => std::process::exit(7),
             Some("malformed") => println!("invalid engine output"),
+            Some("query_config") => println!("{}", json!({"id":query["id"],"config":config})),
             Some("query_version") => println!(
                 "{}",
                 json!({"id":query["id"],"version":"fake-test-only","action":"query_version"})

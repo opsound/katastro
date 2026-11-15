@@ -34,6 +34,7 @@ fn config(root: &Path, listener: &TcpListener) -> EngineConfig {
     )
     .unwrap();
     EngineConfig {
+        analysis: Default::default(),
         executable: env!("CARGO_BIN_EXE_katastro-test-engine").into(),
         model,
     }

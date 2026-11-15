@@ -1,4 +1,4 @@
-use crate::engine::ANALYSIS_THREADS;
+use crate::engine::AnalysisSettings;
 use crate::{Analysis, Document, EngineProfile, NodeId, Result};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
@@ -28,8 +28,17 @@ pub struct Scheduler {
     inflight: BTreeMap<String, Request>,
     failed: BTreeSet<NodeId>,
     interactive: Option<NodeId>,
+    settings: AnalysisSettings,
 }
 impl Scheduler {
+    pub fn with_settings(mut self, settings: &AnalysisSettings) -> Result<Self> {
+        settings.validate()?;
+        self.settings = settings.clone();
+        Ok(self)
+    }
+    fn limit(&self) -> u64 {
+        self.settings.max_visits.unwrap_or(i64::MAX as u64)
+    }
     pub fn new(
         generation: u64,
         doc: Document,
@@ -49,6 +58,7 @@ impl Scheduler {
             inflight: BTreeMap::new(),
             failed: BTreeSet::new(),
             interactive,
+            settings: AnalysisSettings::default(),
         }
     }
     fn request(&mut self, nodes: &[NodeId], visits: u64, priority: i64) -> Result<Request> {
@@ -96,7 +106,8 @@ impl Scheduler {
                 .values
                 .get(&node)
                 .is_none_or(|v| v.ownership.is_empty());
-            if !self.failed.contains(&node)
+            if (current < self.limit() || missing_ownership)
+                && !self.failed.contains(&node)
                 && !self.inflight.values().any(|r| {
                     r.query["includeOwnership"] == true
                         && r.targets.values().flatten().any(|t| t.node == node)
@@ -110,7 +121,9 @@ impl Scheduler {
                         } else if current < 64 || missing_ownership {
                             64
                         } else {
-                            budgets().find(|v| *v > current).unwrap_or(i64::MAX as u64)
+                            budgets(self.limit())
+                                .find(|v| *v > current)
+                                .unwrap_or(i64::MAX as u64)
                         },
                         100,
                     )
@@ -120,7 +133,7 @@ impl Scheduler {
         // The initial multi-position coverage request stays cheap and uninterrupted.
         // Count unfinished positions, including individual turns of a shared query.
         if self.inflight.values().any(|r| r.query["priority"] == 0)
-            || self.pending() >= ANALYSIS_THREADS
+            || self.pending() >= self.settings.parallel_positions
         {
             return Ok(None);
         }
@@ -156,7 +169,7 @@ impl Scheduler {
         {
             return Ok(None);
         }
-        for visits in budgets() {
+        for visits in budgets(self.limit()) {
             let ready = |id: &NodeId| {
                 !self.failed.contains(id)
                     && !pending.contains(id)
@@ -168,7 +181,7 @@ impl Scheduler {
                 .iter()
                 .copied()
                 .filter(ready)
-                .take(ANALYSIS_THREADS - self.pending())
+                .take(self.settings.parallel_positions - self.pending())
                 .collect();
             if !nodes.is_empty() {
                 return self.request(&nodes, visits, -10).map(Some);
@@ -273,7 +286,9 @@ impl Scheduler {
         }
         // Reclaim just one position when the retained searches fill the engine.
         // Cancellation is per turn, so other positions in that query still finish.
-        if self.pending() - canceled.values().map(Vec::len).sum::<usize>() >= ANALYSIS_THREADS {
+        if self.pending() - canceled.values().map(Vec::len).sum::<usize>()
+            >= self.settings.parallel_positions
+        {
             for request in self
                 .inflight
                 .values()
@@ -327,7 +342,7 @@ impl Scheduler {
                     || self
                         .values
                         .get(&id)
-                        .is_some_and(|v| v.visits >= i64::MAX as u64)
+                        .is_some_and(|v| v.visits >= self.limit())
             })
     }
     /// Skip unsupported positions; report whether the played line contains any.
@@ -341,10 +356,12 @@ impl Scheduler {
     }
 }
 
-fn budgets() -> impl Iterator<Item = u64> {
+fn budgets(limit: u64) -> impl Iterator<Item = u64> {
     [1, 8]
         .into_iter()
         .chain(std::iter::successors(Some(64u64), |v| {
             v.checked_mul(4).filter(|v| *v <= i64::MAX as u64)
         }))
+        .take_while(move |v| *v < limit)
+        .chain(std::iter::once(limit))
 }

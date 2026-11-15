@@ -192,7 +192,8 @@ impl Worker {
         }
         self.review.save_profile(&profile)?;
         self.generation += 1;
-        let mut scheduler = Scheduler::new(self.generation, doc, profile, values);
+        let mut scheduler = Scheduler::new(self.generation, doc, profile, values)
+            .with_settings(&self.state.config.analysis)?;
         self.unsupported_mainline = scheduler.unsupported();
         self.scheduler = Some(scheduler);
         self.state.running = true;
@@ -292,12 +293,14 @@ impl Worker {
             }
             Command::Pause => self.pause(),
             Command::Configure(config) => {
+                config.analysis.validate()?;
+                self.review.save_setting("engine", &config)?;
                 self.pause();
                 self.discovery.reconfigure();
                 self.state.training_indexed = false;
                 self.engine = None;
-                self.review.save_setting("engine", &config)?;
                 self.state.config = config;
+                self.state.analysis_target = None;
                 self.state.status =
                     "Engine settings saved · cached review remains available".into();
             }
@@ -402,7 +405,10 @@ impl Worker {
                 self.state.running = false;
                 let (covered, total) = scheduler.coverage();
                 self.state.status = if covered == total {
-                    "Analysis finished · maximum search effort reached".into()
+                    self.state.config.analysis.max_visits.map_or_else(
+                        || "Analysis finished · maximum search effort reached".into(),
+                        |limit| format!("Analysis finished · {limit} visits per position reached"),
+                    )
                 } else {
                     format!(
                         "Analysis finished · {covered} / {total} played positions evaluated; analysis unavailable after setup changes or engine errors"

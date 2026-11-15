@@ -125,6 +125,7 @@ fn seed(root: &Path, config: &EngineConfig) -> Value {
 fn real_preparation_and_final_grading_latency() {
     let root = PathBuf::from(std::env::var_os("KATASTRO_GRADING_BENCH_ROOT").unwrap());
     let config = EngineConfig {
+        analysis: Default::default(),
         executable: std::env::var_os("KATASTRO_TEST_ENGINE").unwrap().into(),
         model: std::env::var_os("KATASTRO_TEST_MODEL").unwrap().into(),
     };

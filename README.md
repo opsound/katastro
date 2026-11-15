@@ -10,7 +10,7 @@ Native macOS Go review app in Rust, powered by KataGo.
 
 ## Run
 
-Requires Rust. For analysis, install KataGo and a model, then choose their paths in **Engine settings**.
+Requires Rust. For analysis, install KataGo and a model, then choose their paths in **Engine settings**. The pane also controls the review visit limit, parallel positions, and search threads per position, with saved preferences and a reset to defaults. See [engine settings](docs/engine-settings.md) for the tradeoffs.
 
 ```sh
 cargo run --release -- game.sgf

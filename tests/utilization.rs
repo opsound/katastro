@@ -52,6 +52,7 @@ fn samples(root: &Path) -> Vec<(String, PathBuf, Document)> {
 #[ignore = "Requires real KataGo, a model and private SGFs; records comparable throughput and interaction latency"]
 fn real_worker_throughput_and_interaction_latency() {
     let config = EngineConfig {
+        analysis: Default::default(),
         executable: std::env::var_os("KATASTRO_TEST_ENGINE")
             .expect("engine")
             .into(),

@@ -25,6 +25,7 @@ fn until(client: &Client, predicate: impl Fn(&Snapshot) -> bool) -> Snapshot {
 #[ignore = "Requires real Metal KataGo, private SGFs, and read-only existing legacy analysis cache"]
 fn live_selected_group_latency_with_real_legacy_chart_cache() {
     let config = EngineConfig {
+        analysis: Default::default(),
         executable: std::env::var_os("KATASTRO_TEST_ENGINE")
             .expect("engine")
             .into(),
