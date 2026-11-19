@@ -286,3 +286,31 @@ fn chart_and_group_maps_keep_their_deepest_completed_depths_independently() {
         "late cheap maps and deep replies without ownership must preserve the best complete map"
     );
 }
+
+#[test]
+fn existing_sha256_cache_entry_reopens_with_the_same_engine_and_model() {
+    use katastro::engine::{Engine, EngineConfig};
+    let temp = TempDir::new().unwrap();
+    let config = EngineConfig {
+        model: temp.path().join("model"),
+        executable: temp.path().join("engine"),
+        analysis: Default::default(),
+    };
+    fs::write(&config.model, vec![17; 131_073]).unwrap();
+    fs::write(&config.executable, b"sample executable").unwrap();
+    let sgf = temp.path().join("game.sgf");
+    fs::write(&sgf, b"(;SZ[9];B[aa])").unwrap();
+    let mut review = Review::new(&temp.path().join("reviews"), &temp.path().join("cache")).unwrap();
+    review.import(&sgf).unwrap();
+    // Existing on-disk SHA-256 key for these exact files, settings and position.
+    review
+        .store_analysis(
+            "bf25fdb53d77095afeba20e8b89ca4615a61a9e75a77854419b8c9100bd2b16e",
+            &sample(256),
+        )
+        .unwrap();
+    let restored = review
+        .cached_analysis(&Engine::profile(&config).unwrap())
+        .unwrap();
+    assert_eq!(restored.get(&1), Some(&sample(256)));
+}

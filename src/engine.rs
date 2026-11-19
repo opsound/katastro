@@ -1,4 +1,4 @@
-use crate::{EngineProfile, Result, digest};
+use crate::{EngineProfile, Result, digest, digest_file};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
@@ -205,8 +205,8 @@ impl Engine {
     pub fn profile(config: &EngineConfig) -> Result<EngineProfile> {
         config.analysis.validate()?;
         Ok(EngineProfile {
-            model_sha256: digest(&fs::read(&config.model)?),
-            engine_sha256: digest(&fs::read(&config.executable)?),
+            model_sha256: digest_file(&config.model)?,
+            engine_sha256: digest_file(&config.executable)?,
             // Effort and concurrency do not change evaluation semantics. Keep the
             // historical identity so tuning them reuses completed compatible results.
             settings_digest: digest(configuration(&AnalysisSettings::default()).as_bytes()),

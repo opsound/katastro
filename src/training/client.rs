@@ -2,7 +2,7 @@
 use super::{Phase, Settings, Snapshot, Trainer};
 use crate::updates::{self, Wake};
 use crate::{
-    Point, Result, digest,
+    Point, Result, digest_file,
     engine::{Engine, EngineConfig, EngineEvent},
 };
 use std::{
@@ -217,8 +217,7 @@ impl Drop for Client {
     }
 }
 fn install_model(options: &Options, stop: &AtomicBool, progress: impl Fn(String)) -> Result<()> {
-    if std::fs::read(&options.human_model).is_ok_and(|bytes| digest(&bytes) == options.model_sha256)
-    {
+    if digest_file(&options.human_model).is_ok_and(|hash| hash == options.model_sha256) {
         return Ok(());
     }
     progress("Downloading the 1-dan model · 99 MB, once per installation".into());
@@ -258,7 +257,7 @@ fn install_model(options: &Options, stop: &AtomicBool, progress: impl Fn(String)
                 progress(format!("Downloading the 1-dan model · {displayed} / 99 MB"));
             }
         }
-        if digest(&std::fs::read(&temp)?) != options.model_sha256 {
+        if digest_file(&temp)? != options.model_sha256 {
             return Err("HumanSL model checksum mismatch; download was not installed".into());
         }
         if stop.load(Ordering::Relaxed) {

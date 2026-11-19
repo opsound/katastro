@@ -109,3 +109,56 @@ fn live_worker_chart_and_cached_reopen_measurements() {
         }
     }
 }
+
+#[test]
+#[ignore = "requires a local engine, model, and representative SGF via KATASTRO_TEST_SGF"]
+fn warm_resume_to_worker_snapshot() {
+    use katastro::{Analysis, engine::Engine};
+    let path = PathBuf::from(std::env::var_os("KATASTRO_TEST_SGF").unwrap());
+    let mut config = EngineConfig {
+        executable: std::env::var_os("KATASTRO_TEST_ENGINE").unwrap().into(),
+        model: std::env::var_os("KATASTRO_TEST_MODEL").unwrap().into(),
+        analysis: Default::default(),
+    };
+    config.analysis.max_visits = Some(64);
+    let temp = tempfile::TempDir::new().unwrap();
+    let db = temp.path().join("reviews");
+    let cache = temp.path().join("cache");
+    let mut review = Review::new(&db, &cache).unwrap();
+    review.import(&path).unwrap();
+    let doc = review.document().unwrap();
+    let nodes = doc.nodes.len();
+    let value = Analysis {
+        visits: 64,
+        score_lead: 0.0,
+        winrate: 0.5,
+        suggestions: vec![],
+        ownership: vec![0.0; doc.size * doc.size],
+        ownership_visits: 64,
+    };
+    let profile = Engine::profile(&config).unwrap();
+    for id in 0..nodes {
+        let key = review.analysis_key(id, &profile).unwrap();
+        review.store_analysis(&key, &value).unwrap();
+    }
+    review.save_profile(&profile).unwrap();
+    drop(review);
+    let client = Client::spawn(db, cache, config);
+    client.send(Command::OpenAndAnalyze(path)).unwrap();
+    until(&client, |s| s.running);
+    let mut samples = Vec::new();
+    for _ in 0..7 {
+        client.send(Command::Pause).unwrap();
+        until(&client, |s| s.status.starts_with("Analysis paused"));
+        let start = Instant::now();
+        client.send(Command::Start).unwrap();
+        let result = until(&client, |s| s.running);
+        samples.push(start.elapsed());
+        assert_eq!(result.values.len(), nodes);
+    }
+    samples.sort();
+    println!(
+        "positions={nodes} median warm resume={:.2} ms",
+        samples[3].as_secs_f64() * 1000.
+    );
+}

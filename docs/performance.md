@@ -29,3 +29,22 @@ KATASTRO_TEST_ENGINE=/absolute/path/to/katago \
 KATASTRO_TEST_MODEL=/absolute/path/to/model.bin.gz \
 cargo test --test fox live_fox_analysis_and_cache -- --ignored --nocapture
 ```
+
+## Resuming a fully cached review
+
+The release benchmark seeds a temporary cache with 64-visit evaluations and ownership for every node of one SGF. With the review capped at 64 visits, it measures the time from each Analyze command to the worker’s running snapshot after a pause. Each of seven resumes checks that the complete chart is available. The engine process and file-system cache are warm. No search or frame presentation is timed.
+
+```sh
+KATASTRO_TEST_ENGINE=/absolute/path/to/katago \
+KATASTRO_TEST_MODEL=/absolute/path/to/model.bin.gz \
+KATASTRO_TEST_SGF=/absolute/path/to/game.sgf \
+cargo test --release --test performance warm_resume_to_worker_snapshot -- --ignored --nocapture
+```
+
+On Apple Silicon, replacing software SHA-256 with the accelerated implementation already used by the TLS stack reduced the following median times. Both builds hashed the complete model and executable on every resume. Each pair used the same local SGF and assets, with execution order alternated across games.
+
+| Main-line positions | Previous median | Updated median |
+| ---: | ---: | ---: |
+| 199 | 112.88 ms | 24.52 ms |
+| 217 | 113.41 ms | 25.23 ms |
+| 229 | 113.17 ms | 25.67 ms |

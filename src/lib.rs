@@ -20,6 +20,18 @@ pub use game::{Board, Color, Document, Move, Node, NodeId, NodePosition, Point};
 pub use review::Review;
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 pub fn digest(bytes: &[u8]) -> String {
-    use sha2::{Digest, Sha256};
-    format!("{:x}", Sha256::digest(bytes))
+    hex::encode(ring::digest::digest(&ring::digest::SHA256, bytes))
+}
+pub(crate) fn digest_file(path: &std::path::Path) -> Result<String> {
+    use std::io::Read;
+    let mut file = std::fs::File::open(path)?;
+    let mut context = ring::digest::Context::new(&ring::digest::SHA256);
+    let mut buffer = [0; 64 * 1024];
+    loop {
+        let size = file.read(&mut buffer)?;
+        if size == 0 {
+            return Ok(hex::encode(context.finish()));
+        }
+        context.update(&buffer[..size]);
+    }
 }
