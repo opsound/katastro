@@ -757,3 +757,13 @@ history; project-specific private-artifact and session-URL checks also passed.
 A case-insensitive scan for complete real account identifiers found no matches in
 staged files, reachable Git blobs, or current/proposed commit messages. The scan
 reads account names from local configuration without copying them into Git.
+
+## Review persistence, engine identity, and warm resume audit
+
+Two simultaneous reviews of the same synthetic game reproduced a lost variation when a stale session navigated or played. Navigation now updates the stored cursor, and playing a move applies it to the latest committed tree under a SQLite write transaction. The integration test verifies both sessions’ move parents, selection, frozen main line, and original SGF after reopening. Reintroducing stale-tree edits lost a node again.
+
+Replacing a model at the configured path while paused reproduced a second failure. The retained subprocess answered for the old model while the scheduler used the new profile. Another window changing the last-used profile could also mislabel in-memory results. Independently removing each identity check restored the incorrect score. A cached training exercise also detected a model replacement before launching its delayed subprocess. Bypassing that check launched the replacement and produced the wrong diagnostic.
+
+The file-hashing change preserves existing SHA-256 keys and bounds its read buffer to 64 KiB. A historical cache-key fixture restored the same 256-visit entry with both implementations. Deliberately omitting bytes from a chunk made that lookup fail. The release benchmark covers three private 19×19 games and temporary databases. [Measurements and reproduction](performance.md#resuming-a-fully-cached-review)
+
+Formatting, strict workspace Clippy, the no-GUI library check, and all 197 routine tests passed. Five of the 21 opt-in tests passed in the separate real-engine suite with the normal and HumanSL models. The warm-resume benchmark also ran separately. The worker-backed UI tests continue to exercise the same interactions using a shared harness.
