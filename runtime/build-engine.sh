@@ -2,6 +2,7 @@
 # Producer only. Build both helper slices on an Apple Silicon Mac with Xcode.
 set -euo pipefail
 [[ "$(uname -sm)" = "Darwin arm64" ]]
+recipe="$(cd "$(dirname "$0")" && pwd)"
 work="${1:?supply an empty build directory}"
 mkdir -p "$work"
 cd "$work"
@@ -35,7 +36,7 @@ p.write_text(p.read_text().replace("quick_exit(EXIT_FAILURE)", "_Exit(EXIT_FAILU
 PY
 for arch in arm64 x86_64; do
     if [[ "$arch" = arm64 ]]; then
-        backend=(-DUSE_BACKEND=METAL -DProtobuf_PROTOC_EXECUTABLE="$work/static/bin/protoc"
+        backend=(-DUSE_BACKEND=METAL "-DCMAKE_Swift_FLAGS=-target arm64-apple-macosx13.0" -DProtobuf_PROTOC_EXECUTABLE="$work/static/bin/protoc"
             -DProtobuf_LIBRARIES="$work/static/lib/libprotobuf.a" -DProtobuf_INCLUDE_DIRS="$work/static/include")
     else
         backend=(-DUSE_BACKEND=EIGEN -DEIGEN3_INCLUDE_DIRS="$work/eigen-src" -DUSE_AVX2=OFF)
@@ -56,5 +57,18 @@ cp katago-src/LICENSE distribution/notices/KataGo.txt
 cp protobuf-src/LICENSE distribution/notices/protobuf.txt
 cp eigen-src/COPYING* distribution/notices/
 (cd katago-src && find cpp/external -type f \( -iname 'license*' -o -iname 'copying*' -o -name NOTICE \) -exec sh -c 'for f; do mkdir -p "../distribution/notices/$(dirname "$f")"; cp "$f" "../distribution/notices/$f"; done' sh {} +)
-sed -n '1,/^#include/p' katago-src/cpp/core/sha2.cpp > distribution/notices/sha2.txt
-COPYFILE_DISABLE=1 tar -czf katago-macos-universal.tar.gz -C distribution katago notices
+sed -n '3,/^ \*\//p' katago-src/cpp/core/sha2.cpp > distribution/notices/sha2.txt
+head -n 30 katago-src/cpp/external/nlohmann_json/json.hpp > distribution/notices/json.txt
+mkdir -p distribution/Helpers distribution/Resources/Models
+mv distribution/katago distribution/Helpers/
+mv distribution/notices distribution/Resources/Notices
+cp "$recipe/models.LICENSE" distribution/Resources/Notices/
+fetch_model() {
+    local name="$1" url="$2" hash="$3"
+    local path="distribution/Resources/Models/$name"
+    curl --fail --location --retry 3 "$url" -o "$path"
+    echo "$hash  $path" | shasum -a 256 --check --status
+}
+fetch_model review.bin.gz https://media.katagotraining.org/uploaded/networks/models/kata1/kata1-b18c384nbt-s9996604416-d4316597426.bin.gz 9d7a6afed8ff5b74894727e156f04f0cd36060a24824892008fbb6e0cba51f1d
+fetch_model b18c384nbt-humanv0.bin.gz https://github.com/lightvector/KataGo/releases/download/v1.15.0/b18c384nbt-humanv0.bin.gz 637746e44f0efe00ad1245a50aa9bbf0716efe364c43965ead97bd6835d84ab5
+COPYFILE_DISABLE=1 tar -czf katago-macos-universal.tar.gz -C distribution Helpers Resources
