@@ -320,3 +320,49 @@ fn group_ownership_crosses_engine_worker_snapshots_and_remains_available_offline
         "cached group estimates must be usable with no engine"
     );
 }
+
+#[test]
+fn resuming_after_a_model_replacement_uses_the_new_model_for_cached_results() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut config = config(temp.path());
+    config.analysis.max_visits = Some(64);
+    let source = temp.path().join("game.sgf");
+    let reviews = temp.path().join("reviews");
+    let cache = temp.path().join("cache");
+    std::fs::write(&source, b"(;SZ[9];B[aa])").unwrap();
+    // This model streams a distinctive 64-visit score but never completes that search.
+    std::fs::write(&config.model, b"hold-final").unwrap();
+    let old = katastro::engine::Engine::profile(&config).unwrap();
+    let client = Client::spawn(reviews.clone(), cache.clone(), config.clone());
+    client
+        .send(Command::OpenAndAnalyze(source.clone()))
+        .unwrap();
+    until(&client, |s| {
+        s.values.get(&0).is_some_and(|v| v.score_lead == 2.5)
+    });
+    client.send(Command::Pause).unwrap();
+    until(&client, |s| !s.running);
+
+    // The files are the same size and the configured path is unchanged.
+    std::fs::write(&config.model, b"fake-final").unwrap();
+    let new = katastro::engine::Engine::profile(&config).unwrap();
+    assert_ne!(old, new);
+    // Another review can change the offline default while this window is paused.
+    let mut reopened = katastro::Review::new(&reviews, &cache).unwrap();
+    reopened.save_profile(&new).unwrap();
+    client.send(Command::Start).unwrap();
+    until(&client, |s| s.running);
+    let result = until(&client, |s| {
+        s.values.get(&0).is_some_and(|v| v.visits >= 64)
+    });
+    assert_eq!(
+        result.values[&0].score_lead, 0.0,
+        "old engine answered for the new model"
+    );
+    if result.running {
+        until(&client, |s| !s.running && s.coverage == (2, 2));
+    }
+    reopened.import(&source).unwrap();
+    assert_eq!(reopened.cached_analysis(&new).unwrap()[&0].score_lead, 0.0);
+    assert!(reopened.cached_analysis(&old).unwrap().is_empty());
+}

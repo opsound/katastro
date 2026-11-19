@@ -120,6 +120,10 @@ pub struct Trainer {
     parallel_positions: usize,
 }
 impl Trainer {
+    pub(crate) fn profile(&self) -> &EngineProfile {
+        &self.profile
+    }
+
     /// Share engine capacity; exercise grading retains its fixed visit budget.
     pub fn with_analysis_settings(
         mut self,

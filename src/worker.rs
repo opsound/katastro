@@ -1,6 +1,6 @@
 use crate::updates::{self, Wake};
 use crate::{
-    Analysis, Board, Document, NodeId, Point, Result, Review,
+    Analysis, Board, Document, EngineProfile, NodeId, Point, Result, Review,
     engine::{Engine, EngineConfig, EngineEvent},
     scheduler::Scheduler,
 };
@@ -110,12 +110,23 @@ impl Drop for Client {
 struct Worker {
     review: Review,
     state: Snapshot,
-    engine: Option<Engine>,
+    engine: Option<(EngineProfile, Engine)>,
+    values_profile: Option<EngineProfile>,
     scheduler: Option<Scheduler>,
     generation: u64,
     number_from: Option<NodeId>,
     unsupported_mainline: bool,
     discovery: discovery::Discovery,
+}
+fn ensure_engine<'a>(
+    slot: &'a mut Option<(EngineProfile, Engine)>,
+    config: &EngineConfig,
+    profile: &EngineProfile,
+) -> Result<&'a mut Engine> {
+    if slot.as_ref().is_none_or(|(loaded, _)| loaded != profile) {
+        *slot = Some((profile.clone(), Engine::spawn(config)?));
+    }
+    Ok(&mut slot.as_mut().unwrap().1)
 }
 impl Worker {
     fn new(reviews: PathBuf, cache: PathBuf, config: EngineConfig) -> Result<Self> {
@@ -125,6 +136,7 @@ impl Worker {
             review,
             state: Snapshot::empty(config),
             engine: None,
+            values_profile: None,
             scheduler: None,
             generation: 0,
             number_from: None,
@@ -168,7 +180,7 @@ impl Worker {
         if let Some(scheduler) = self.scheduler.take() {
             self.state.values = scheduler.values;
         }
-        if let Some(engine) = self.engine.as_mut() {
+        if let Some((_, engine)) = self.engine.as_mut() {
             let _ = engine
                 .send(&json!({"id":format!("pause-{}",self.generation),"action":"terminate_all"}));
         }
@@ -180,7 +192,7 @@ impl Worker {
         let profile = Engine::profile(&self.state.config)?;
         let mut values = self.review.cached_analysis(&profile)?;
         self.discovery.started(profile.clone(), &values);
-        if self.review.last_profile()?.as_ref() == Some(&profile) {
+        if self.values_profile.as_ref() == Some(&profile) {
             for (node, value) in &self.state.values {
                 let combined = values
                     .get(node)
@@ -188,10 +200,9 @@ impl Worker {
                 values.insert(*node, combined);
             }
         }
-        if self.engine.is_none() {
-            self.engine = Some(Engine::spawn(&self.state.config)?);
-        }
+        ensure_engine(&mut self.engine, &self.state.config, &profile)?;
         self.review.save_profile(&profile)?;
+        self.values_profile = Some(profile.clone());
         self.generation += 1;
         let mut scheduler = Scheduler::new(self.generation, doc, profile, values)
             .with_settings(&self.state.config.analysis)?;
@@ -206,7 +217,7 @@ impl Worker {
             let doc = self.review.document().cloned().ok_or("Open an SGF first")?;
             let canceled = scheduler.select(doc);
             self.state.running = true;
-            if let Some(engine) = self.engine.as_mut() {
+            if let Some((_, engine)) = self.engine.as_mut() {
                 for canceled in canceled {
                     engine.send(
                         &json!({"id":format!("cancel-{}",canceled.id),"action":"terminate",
@@ -228,8 +239,9 @@ impl Worker {
                 self.discovery.opened();
                 self.state.training_indexed = false;
                 self.generation += 1;
-                self.state.values = if let Some(profile) = self.review.last_profile()? {
-                    self.review.cached_analysis(&profile)?
+                self.values_profile = self.review.last_profile()?;
+                self.state.values = if let Some(profile) = &self.values_profile {
+                    self.review.cached_analysis(profile)?
                 } else {
                     BTreeMap::new()
                 };
@@ -318,7 +330,7 @@ impl Worker {
     fn poll_engine(&mut self) -> bool {
         let mut dirty = false;
         for _ in 0..256 {
-            let event = self.engine.as_ref().and_then(Engine::try_recv);
+            let event = self.engine.as_ref().and_then(|(_, e)| e.try_recv());
             let Some(event) = event else {
                 break;
             };
@@ -399,7 +411,7 @@ impl Worker {
                         .status
                         .push_str(" · analysis unavailable after setup changes");
                 }
-                if let Some(engine) = self.engine.as_mut()
+                if let Some((_, engine)) = self.engine.as_mut()
                     && let Err(error) = engine.send(&request.query)
                 {
                     self.engine = None;
@@ -442,10 +454,8 @@ impl Worker {
                 self.discovery.start_idle(&self.state.config)?;
                 if let Some(trainer) = &mut self.discovery.trainer {
                     while let Some(query) = trainer.next_request()? {
-                        if self.engine.is_none() {
-                            self.engine = Some(Engine::spawn(&self.state.config)?);
-                        }
-                        self.engine.as_mut().unwrap().send(&query)?;
+                        ensure_engine(&mut self.engine, &self.state.config, trainer.profile())?
+                            .send(&query)?;
                     }
                     let snapshot = trainer.snapshot();
                     self.state.preparing_training = snapshot.phase
