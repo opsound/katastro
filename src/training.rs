@@ -433,13 +433,13 @@ fn prefix(doc: &Document, node: usize) -> Result<Document> {
     prefix.selected = path.len() - 1;
     Ok(prefix)
 }
-fn two_passes(doc: &Document) -> bool {
+pub(crate) fn two_passes(doc: &Document) -> bool {
     let n = &doc.nodes[doc.selected];
     n.played.is_some_and(|m| m.point.is_none())
         && n.parent
             .is_some_and(|id| doc.nodes[id].played.is_some_and(|m| m.point.is_none()))
 }
-fn sample_policy(doc: &Document, policy: &Value, sample: f64) -> Result<Option<Point>> {
+pub(crate) fn sample_policy(doc: &Document, policy: &Value, sample: f64) -> Result<Option<Point>> {
     if !(0.0..1.0).contains(&sample) {
         return Err("Invalid random sample".into());
     }

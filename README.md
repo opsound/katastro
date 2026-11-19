@@ -6,6 +6,7 @@ Native macOS Go review app in Rust, powered by KataGo.
 - Autosaved variations in a tree that preserves the original game.
 - AI move suggestions and optional group strength overlays.
 - Automatic Fox and Pandanet downloads and a searchable local game library.
+- Play as Black or White against a human-like opponent from 20 kyu to 9 dan.
 - Training from costly mistakes in your games, with a 1-dan opponent and blind retries.
 
 ## Run
@@ -28,6 +29,12 @@ open local/Katastro.app
 An offline rebuild can use the populated Cargo and runtime caches with `KATASTRO_OFFLINE=1 cargo build --locked --offline`. The runtime archive lives in `~/Library/Caches/Katastro/build-runtime`. Set `KATASTRO_RUNTIME_CACHE` to use a different directory. The engine and models are GitHub Release assets. Their pinned source recipe and checksums live in `runtime/`. The repository contains no submodules or engine/model binaries.
 
 **Engine** lets you override the bundled executable or review model and adjust search effort and parallelism. [Engine settings](docs/engine-settings.md)
+
+## Play against AI
+
+Choose **Play AI**, select an opponent rank, your color and a 9×9, 13×13 or 19×19 board, then choose **Start game**. The default is 5 kyu on 19×19 with you playing Black. Each rank selects KataGo’s modern HumanSL profile and samples its predicted human moves. The ranks approximate playing style and difficulty and can differ from server ratings. [KataGo’s HumanSL analysis guide](https://github.com/lightvector/KataGo/blob/v1.18.2/docs/Analysis_Engine.md#human-sl-analysis-guide) · [Upstream 5-kyu configuration](https://github.com/lightvector/KataGo/blob/v1.18.2/cpp/configs/gtp_human5k_example.cfg)
+
+Games use Chinese area scoring with 7.5 komi. Capture disputed or dead stones before passing. Two consecutive passes count the position on the board. Resignation also records a result. Every move is saved in a local SGF. Choose **Review game** at the end to analyze it and explore variations.
 
 ## Controls
 
@@ -62,6 +69,7 @@ Retry without hints after a failure, choose **Next problem** after any result or
 
 - Reviews and completed training attempts: `~/Library/Application Support/Katastro/reviews.sqlite`
 - Training review SGFs: `~/Library/Application Support/Katastro/Training/`
+- Games against the AI: `~/Library/Application Support/Katastro/Played Games/`
 - Fox and Pandanet originals and sync indexes are in `~/Library/Application Support/Katastro/Fox/` and `~/Library/Application Support/Katastro/Pandanet/`
 - Remembered Pandanet password: macOS login Keychain
 - Analysis cache: `~/Library/Caches/Katastro/analysis.sqlite`

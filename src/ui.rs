@@ -18,6 +18,7 @@ pub enum Action {
     Export,
     Settings,
     Pandanet,
+    PlayAi,
     Games,
     Training,
 }
@@ -116,6 +117,9 @@ pub fn render(ui: &mut egui::Ui, snapshot: &Snapshot) -> Vec<Action> {
                         )
                     };
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.small_button("Play AI").clicked() {
+                            out.push(Action::PlayAi);
+                        }
                         if ui.small_button("Pandanet").clicked() {
                             out.push(Action::Pandanet);
                         }

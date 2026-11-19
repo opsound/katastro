@@ -8,6 +8,8 @@ pub mod engine;
 pub mod game;
 // Retain the original public sync API for existing integrations.
 pub use archive as pandanet;
+#[cfg(feature = "desktop")]
+mod opponent;
 pub mod review;
 mod runtime;
 pub mod scheduler;

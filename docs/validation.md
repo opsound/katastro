@@ -779,3 +779,15 @@ Run these checks on a Mac with a working Metal backend on Apple Silicon or an In
 ```sh
 cargo test --test packaging -- --include-ignored --test-threads=1
 ```
+
+## Human-like opponents in full games
+
+The desktop integration test opens Play AI, selects 20 kyu and 5 dan in separate games, plays a stone on the board and inspects the analysis subprocess requests. Both games keep the correct rank and move history, discard unrelated and stale replies, sample the legal HumanSL move, accept passes, score the final position and reopen the autosaved SGF in review. A scoring fixture also exercises mixed-color borders, neutral points and single-color territory. The real-engine UI test plays White on 9×9, waits for a 5-kyu opening move, resigns and reopens the game with its rank and result.
+
+The first UI run failed on the missing Play AI control. Scoring initially left the SGF result empty. Hardcoding the opponent profile, ignoring recent move history, or reversing komi each failed a targeted test. The signing and offline relocation checks, five opt-in real-engine protocol tests, formatting, strict workspace Clippy, no-GUI library build, and 200 routine tests passed locally on Apple Silicon.
+
+```sh
+cargo test --test play_ai
+# On macOS with a working engine backend
+cargo test --test play_ai -- --ignored --test-threads=1
+```

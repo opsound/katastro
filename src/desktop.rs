@@ -13,6 +13,7 @@ use std::{
     task::{Context, Poll, Wake, Waker},
 };
 mod library;
+mod opponent;
 mod settings;
 mod training;
 struct PendingDialog {
@@ -37,6 +38,7 @@ pub struct DesktopApp {
     pub client: Client,
     library: library::Library,
     settings: settings::Settings,
+    opponent: Option<opponent::OpponentView>,
     dialogs: Box<dyn FileDialogs>,
     pending_dialog: Option<PendingDialog>,
     training_view: crate::training::view::View,
@@ -150,6 +152,7 @@ impl DesktopApp {
             state: Snapshot::empty(config),
             client,
             settings: Default::default(),
+            opponent: None,
             dialogs: services.dialogs,
             library: library::Library::new(services.sync, ctx),
             pending_dialog: None,
@@ -181,6 +184,10 @@ impl DesktopApp {
             Action::Games => {
                 self.library.view.show_library();
                 None
+            }
+            Action::PlayAi => {
+                self.opponent = Some(Default::default());
+                Some(Command::Pause)
             }
             Action::Training => {
                 self.training_client = None;
@@ -248,8 +255,26 @@ impl eframe::App for DesktopApp {
         while let Ok(state) = self.client.snapshots.try_recv() {
             self.state = state;
         }
-        if self.library.poll() && !self.training_view.open {
+        if self.library.poll() && !self.training_view.open && self.opponent.is_none() {
             self.prepare_libraries();
+        }
+        if let Some(view) = &mut self.opponent {
+            if let Some(action) = view.render(
+                ui,
+                &self.state.config,
+                self.training_databases
+                    .0
+                    .parent()
+                    .unwrap_or(std::path::Path::new(".")),
+            ) {
+                self.opponent = None;
+                if let opponent::Action::Review(path) = action {
+                    let _ = self.client.send(Command::OpenAndAnalyze(path));
+                }
+                self.prepare_libraries();
+                ui.ctx().request_repaint();
+            }
+            return;
         }
         self.poll_training();
         let dropped = ui.input(|input| {

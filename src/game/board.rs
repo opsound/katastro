@@ -18,6 +18,39 @@ impl Board {
         }
         self.cells[point.y * self.size + point.x]
     }
+    /// Black's area lead when both players accept all remaining stones as alive.
+    pub fn area_lead(&self, komi: f64) -> f64 {
+        let mut area = [0; 2];
+        let mut seen = vec![false; self.cells.len()];
+        for (i, cell) in self.cells.iter().enumerate() {
+            if let Some(color) = cell {
+                area[color.index()] += 1;
+            } else if !seen[i] {
+                let mut borders = [false; 2];
+                let mut points = 0;
+                let mut open = vec![i];
+                seen[i] = true;
+                while let Some(empty) = open.pop() {
+                    points += 1;
+                    for adjacent in self.neighbors(empty) {
+                        if let Some(color) = self.cells[adjacent] {
+                            borders[color.index()] = true;
+                        } else if !seen[adjacent] {
+                            seen[adjacent] = true;
+                            open.push(adjacent);
+                        }
+                    }
+                }
+                match borders {
+                    [true, false] => area[0] += points,
+                    [false, true] => area[1] += points,
+                    _ => {}
+                }
+            }
+        }
+        f64::from(area[0] - area[1]) - komi
+    }
+
     fn neighbors(&self, index: usize) -> Vec<usize> {
         let x = index % self.size;
         let y = index / self.size;
