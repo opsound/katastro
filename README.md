@@ -10,18 +10,24 @@ Native macOS Go review app in Rust, powered by KataGo.
 
 ## Run
 
-Requires Rust. For analysis, install KataGo and a model, then choose their paths in **Engine settings**. The pane also controls the review visit limit, parallel positions, and search threads per position, with saved preferences and a reset to defaults. See [engine settings](docs/engine-settings.md) for the tradeoffs.
+On macOS, install Rust 1.95 or newer and the Xcode command-line tools. The first desktop build downloads a SHA-256-pinned runtime (~194 MiB) containing KataGo 1.18.2, a review model, and the HumanSL model. Apple Silicon uses Metal. Intel uses the Eigen CPU backend.
 
 ```sh
+cargo run --release
+# Or open a game directly
 cargo run --release -- game.sgf
 ```
 
-Or build a macOS app:
+To create a movable, ad-hoc-signed app with everything needed for offline review, training, and play, run
 
 ```sh
 bash scripts/package-macos.sh
 open local/Katastro.app
 ```
+
+An offline rebuild can use the populated Cargo and runtime caches with `KATASTRO_OFFLINE=1 cargo build --locked --offline`. The runtime archive lives in `~/Library/Caches/Katastro/build-runtime`. Set `KATASTRO_RUNTIME_CACHE` to use a different directory. The engine and models are GitHub Release assets. Their pinned source recipe and checksums live in `runtime/`. The repository contains no submodules or engine/model binaries.
+
+**Engine** lets you override the bundled executable or review model and adjust search effort and parallelism. [Engine settings](docs/engine-settings.md)
 
 ## Controls
 
@@ -50,12 +56,12 @@ Downloads run two at a time. Existing game IDs with local SGFs are skipped, and 
 
 Click **Train** or **Games → Train from these games**. Exercises are prepared from completed review analysis and from the synced library while no game is open, then cached for quick starts. Setup uses your latest 20 games by default, with randomized game selection and repeated misses of the same key move grouped into one problem. Play five or ten moves against a 1-dan HumanSL opponent, on positions where one of your moves lost at least 5 points, then compare the attempt with the recorded continuation in an overlaid score graph. Training uses points only. Passing depends on reducing cumulative point losses on your own moves; opponent blunders and later gains do not cancel earlier mistakes.
 
-Retry without hints after a failure, choose **Next problem** after any result or while exploring, or pass/give up to explore suggested lines in the normal reviewer. The opponent model downloads once (99 MB); games stay local. See the [training policy and test instructions](docs/training.md).
+Retry without hints after a failure, choose **Next problem** after any result or while exploring, or pass/give up to explore suggested lines in the normal reviewer. Training uses the bundled HumanSL model. See the [training policy and test instructions](docs/training.md).
 
 ## Storage
 
 - Reviews and completed training attempts: `~/Library/Application Support/Katastro/reviews.sqlite`
-- Training review SGFs and opponent model: `~/Library/Application Support/Katastro/Training/` and `models/`
+- Training review SGFs: `~/Library/Application Support/Katastro/Training/`
 - Fox and Pandanet originals and sync indexes are in `~/Library/Application Support/Katastro/Fox/` and `~/Library/Application Support/Katastro/Pandanet/`
 - Remembered Pandanet password: macOS login Keychain
 - Analysis cache: `~/Library/Caches/Katastro/analysis.sqlite`

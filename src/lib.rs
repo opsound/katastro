@@ -9,6 +9,7 @@ pub mod game;
 // Retain the original public sync API for existing integrations.
 pub use archive as pandanet;
 pub mod review;
+mod runtime;
 pub mod scheduler;
 pub mod training;
 #[cfg(feature = "desktop")]

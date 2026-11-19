@@ -1,0 +1,22 @@
+name: Verify released macOS runtime
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'runtime/macos.json'
+      - 'runtime/stage.py'
+      - 'build.rs'
+      - 'scripts/package-macos.sh'
+      - '.github/workflows/runtime-check.yml'
+permissions:
+  contents: read
+jobs:
+  relocated-bundle:
+    runs-on: macos-15-intel
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - run: rustup update stable && rustup default stable
+      - run: cargo build --locked --bin katastro
+      - run: cargo test --locked --test packaging -- --include-ignored --test-threads=1
+        env:
+          KATASTRO_OFFLINE: '1'

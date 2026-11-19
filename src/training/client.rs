@@ -28,11 +28,13 @@ pub struct Options {
 }
 impl Options {
     pub fn new(reviews: PathBuf, cache: PathBuf, engine: EngineConfig) -> Self {
-        let human_model = reviews
-            .parent()
-            .unwrap_or(Path::new("."))
-            .join("models")
-            .join(HUMAN_MODEL);
+        let human_model = crate::runtime::human_model().unwrap_or_else(|| {
+            reviews
+                .parent()
+                .unwrap_or(Path::new("."))
+                .join("models")
+                .join(HUMAN_MODEL)
+        });
         Self {
             reviews,
             cache,
@@ -219,6 +221,11 @@ impl Drop for Client {
 fn install_model(options: &Options, stop: &AtomicBool, progress: impl Fn(String)) -> Result<()> {
     if digest_file(&options.human_model).is_ok_and(|hash| hash == options.model_sha256) {
         return Ok(());
+    }
+    if crate::runtime::human_model().as_ref() == Some(&options.human_model) {
+        return Err(
+            "Bundled HumanSL model is missing or damaged. Rebuild or reinstall Katastro.".into(),
+        );
     }
     progress("Downloading the 1-dan model · 99 MB, once per installation".into());
     let parent = options.human_model.parent().ok_or("Invalid model path")?;

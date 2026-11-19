@@ -26,7 +26,7 @@ The attempt receives only the position's ancestry and moves made during the atte
 
 KataGo 1.15 or newer loads the normal analysis model and the official `b18c384nbt-humanv0.bin.gz` HumanSL model in one persistent process. Opponent requests use `humanSLProfile=rank_1d`, one visit, and `includePolicy=true`. Moves are sampled proportionally from `humanPolicy` at full temperature, filtered through the application's legality checks. This follows KataGo's [Human SL Analysis Guide](https://github.com/lightvector/KataGo/blob/master/docs/Analysis_Engine.md#human-sl-analysis-guide). It approximates human 1-dan play; it is not a certified Pandanet rank. Normal search visits are not used as a substitute for rank calibration.
 
-The 99,066,230-byte model comes from the [official v1.15.0 release](https://github.com/lightvector/KataGo/releases/tag/v1.15.0). A streaming download goes to a temporary file, then a pinned SHA-256 check precedes atomic installation. The installed file is verified before reuse. Interrupted or corrupt downloads never replace the installed model. No game content is sent to the model host.
+The macOS runtime includes the 99,066,230-byte HumanSL model. Training verifies its pinned SHA-256 before use and can run offline on first launch. [Official HumanSL release](https://github.com/lightvector/KataGo/releases/tag/v1.15.0)
 
 The normal model, without a HumanSL override, assesses all grading positions at a requested **512 visits**. Both lines cover the same number of plies. For **each of the player's own moves**, calculate the change between its immediate before/after evaluations, from that player's perspective:
 

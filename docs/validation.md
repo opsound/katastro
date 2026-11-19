@@ -767,3 +767,15 @@ Replacing a model at the configured path while paused reproduced a second failur
 The file-hashing change preserves existing SHA-256 keys and bounds its read buffer to 64 KiB. A historical cache-key fixture restored the same 256-visit entry with both implementations. Deliberately omitting bytes from a chunk made that lookup fail. The release benchmark covers three private 19×19 games and temporary databases. [Measurements and reproduction](performance.md#resuming-a-fully-cached-review)
 
 Formatting, strict workspace Clippy, the no-GUI library check, and all 197 routine tests passed. Five of the 21 opt-in tests passed in the separate real-engine suite with the normal and HumanSL models. The warm-resume benchmark also ran separately. The worker-backed UI tests continue to exercise the same interactions using a shared harness.
+
+## Bundled macOS runtime
+
+The default Cargo desktop build stages a pinned GitHub Release archive alongside the binary. Packaging copies it inside the app and signs the helper and the outer bundle. The release workflow built both helper architectures from pinned sources and checked their macOS 13 load commands and system-library dependencies. The archive includes the normal analysis model, HumanSL model, and upstream license notices.
+
+The package integration test uses a fresh home and a sandbox which denies network access and reads from Homebrew locations. It saves engine preferences, finishes a 64-visit review, moves the app, reopens the same cached review, and requests a real 9×9 HumanSL policy. Before bundling, the engine resolved outside the app. Persisting the original absolute bundled paths reproduced that relocation failure. A separate bootstrap test repairs missing staged files offline and rejects corrupt downloads and cached archives. Bypassing the download digest check failed this test.
+
+Run these checks on a Mac with a working Metal backend on Apple Silicon or an Intel CPU. The first build needs access to the release asset.
+
+```sh
+cargo test --test packaging -- --include-ignored --test-threads=1
+```

@@ -131,7 +131,17 @@ fn ensure_engine<'a>(
 impl Worker {
     fn new(reviews: PathBuf, cache: PathBuf, config: EngineConfig) -> Result<Self> {
         let review = Review::new(&reviews, &cache)?;
-        let config = review.setting("engine")?.unwrap_or(config);
+        let config = if let Some(mut saved) = review.setting::<EngineConfig>("engine")? {
+            if saved.executable.as_os_str().is_empty() {
+                saved.executable = config.executable;
+            }
+            if saved.model.as_os_str().is_empty() {
+                saved.model = config.model;
+            }
+            saved
+        } else {
+            config
+        };
         Ok(Self {
             review,
             state: Snapshot::empty(config),
@@ -307,7 +317,16 @@ impl Worker {
             Command::Pause => self.pause(),
             Command::Configure(config) => {
                 config.analysis.validate()?;
-                self.review.save_setting("engine", &config)?;
+                let mut saved = config.clone();
+                if let Some(runtime) = crate::runtime::directory() {
+                    if saved.executable == runtime.join("Helpers/katago") {
+                        saved.executable.clear();
+                    }
+                    if saved.model == runtime.join("Resources/Models/review.bin.gz") {
+                        saved.model.clear();
+                    }
+                }
+                self.review.save_setting("engine", &saved)?;
                 self.pause();
                 self.discovery.reconfigure();
                 self.state.training_indexed = false;

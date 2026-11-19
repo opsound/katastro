@@ -65,20 +65,12 @@ pub struct EngineConfig {
     pub analysis: AnalysisSettings,
 }
 impl EngineConfig {
-    pub fn discover(home: &Path) -> Self {
-        let executable = [
-            PathBuf::from("/opt/homebrew/bin/katago"),
-            PathBuf::from("/usr/local/bin/katago"),
-        ]
-        .into_iter()
-        .find(|p| p.exists())
-        .unwrap_or_default();
-        let preferred = home.join("katrain/katrain/models/b10c384h6nbttflrs.bin.gz");
-        let model = if preferred.exists() {
-            preferred
-        } else {
-            PathBuf::new()
+    pub fn discover(_home: &Path) -> Self {
+        let Some(runtime) = crate::runtime::directory() else {
+            return Self::default();
         };
+        let executable = runtime.join("Helpers/katago");
+        let model = runtime.join("Resources/Models/review.bin.gz");
         Self {
             executable,
             model,
