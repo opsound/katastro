@@ -770,11 +770,13 @@ Formatting, strict workspace Clippy, the no-GUI library check, and all 197 routi
 
 ## Bundled macOS runtime
 
-The default Cargo desktop build stages a pinned GitHub Release archive alongside the binary. Packaging copies it inside the app and signs the helper and the outer bundle. The release workflow built both helper architectures from pinned sources and checked their macOS 13 load commands and system-library dependencies. The archive includes the normal analysis model, HumanSL model, and upstream license notices.
+The default Cargo desktop build stages a pinned GitHub Release archive alongside the binary. Packaging copies it inside the app and signs the helper and the outer bundle. The release workflow builds the arm64 Metal helper from pinned sources and checks its architecture, macOS 13 deployment target, and system-library dependencies. The archive includes the normal analysis model, HumanSL model, and upstream license notices.
 
 The package integration test uses a fresh home and a sandbox which denies network access and reads from Homebrew locations. It saves engine preferences, finishes a 64-visit review, moves the app, reopens the same cached review, and requests a real 9×9 HumanSL policy. Before bundling, the engine resolved outside the app. Persisting the original absolute bundled paths reproduced that relocation failure. A separate bootstrap test repairs missing staged files offline and rejects corrupt downloads and cached archives. Bypassing the download digest check failed this test.
 
-Run these checks on a Mac with a working Metal backend on Apple Silicon or an Intel CPU. The first build needs access to the release asset.
+The packaging regression reads the Mach-O architectures of the app and its embedded helper, executes the helper to verify the Metal backend, and verifies the signed bundle. Substituting the previous universal release reproduced the architecture failure. Repackaging also removes obsolete runtime license notices. Disabling that cleanup reproduced the stale-file failure. An unsupported macOS desktop target fails before runtime staging.
+
+Run these checks on an Apple Silicon Mac with a working Metal device. The first build needs access to the release asset.
 
 ```sh
 cargo test --test packaging -- --include-ignored --test-threads=1

@@ -5,6 +5,10 @@ use std::process::Command;
 fn packaging_produces_a_signed_macos_app_with_a_launchable_executable() {
     let temp = tempfile::TempDir::new().unwrap();
     let bundle = temp.path().join("Katastro.app");
+    // Repack over an older installation with a retired runtime notice.
+    let obsolete = bundle.join("Contents/Resources/Notices/retired-backend.txt");
+    std::fs::create_dir_all(obsolete.parent().unwrap()).unwrap();
+    std::fs::write(&obsolete, "previous release").unwrap();
     let status = Command::new("bash")
         .arg(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -26,6 +30,10 @@ fn packaging_produces_a_signed_macos_app_with_a_launchable_executable() {
             "{resource}"
         );
     }
+    assert!(
+        !obsolete.exists(),
+        "obsolete runtime notice survived repackaging"
+    );
     let plist = bundle.join("Contents/Info.plist");
     assert!(
         plist.is_file(),
@@ -40,8 +48,28 @@ fn packaging_produces_a_signed_macos_app_with_a_launchable_executable() {
     let binary = bundle
         .join("Contents/MacOS")
         .join(String::from_utf8(name.stdout).unwrap().trim());
-    let kind = Command::new("file").arg(&binary).output().unwrap();
-    assert!(String::from_utf8(kind.stdout).unwrap().contains("Mach-O"));
+    let helper = bundle.join("Contents/Helpers/katago");
+    for executable in [&binary, &helper] {
+        let arches = Command::new("/usr/bin/lipo")
+            .arg("-archs")
+            .arg(executable)
+            .output()
+            .unwrap();
+        assert!(arches.status.success());
+        assert_eq!(
+            String::from_utf8(arches.stdout).unwrap().trim(),
+            "arm64",
+            "{}",
+            executable.display()
+        );
+    }
+    let version = Command::new(helper).arg("version").output().unwrap();
+    assert!(version.status.success());
+    assert!(
+        String::from_utf8(version.stdout)
+            .unwrap()
+            .contains("Using Metal backend")
+    );
     assert!(
         Command::new("test")
             .arg("-x")
@@ -61,7 +89,7 @@ fn packaging_produces_a_signed_macos_app_with_a_launchable_executable() {
 }
 
 #[test]
-#[ignore = "requires a graphical macOS session with Metal or an Intel Mac; tests the packaged real engines"]
+#[ignore = "requires an Apple Silicon Mac with a working Metal device"]
 fn relocated_runtime_runs_review_and_humansl_from_its_own_bundle() {
     use katastro::{
         engine::{Engine, EngineConfig, EngineEvent},

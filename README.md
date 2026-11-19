@@ -11,7 +11,7 @@ Native macOS Go review app in Rust, powered by KataGo.
 
 ## Run
 
-On macOS, install Rust 1.95 or newer and the Xcode command-line tools. The first desktop build downloads a SHA-256-pinned runtime (~194 MiB) containing KataGo 1.18.2, a review model, and the HumanSL model. Apple Silicon uses Metal. Intel uses the Eigen CPU backend.
+On an Apple Silicon Mac running macOS 13 or later, install Rust 1.95 or newer and the Xcode command-line tools. The first desktop build downloads a SHA-256-pinned runtime (~192 MiB) containing KataGo 1.18.2, a review model, and the HumanSL model. KataGo runs locally using Metal.
 
 ```sh
 cargo run --release

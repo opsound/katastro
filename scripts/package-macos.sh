@@ -13,7 +13,9 @@ mkdir -p "$bundle/Contents/MacOS" "$bundle/Contents/Resources"
 checksum=$(/usr/bin/python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["sha256"])' "$project_root/runtime/macos.json")
 runtime="$(dirname "$binary")/katastro-runtime-$checksum"
 ditto "$runtime/Helpers" "$bundle/Contents/Helpers"
-ditto "$runtime/Resources" "$bundle/Contents/Resources"
+ditto "$runtime/Resources/Models" "$bundle/Contents/Resources/Models"
+# Retire notices for dependencies dropped since an earlier build of this app.
+/usr/bin/rsync -a --delete "$runtime/Resources/Notices/" "$bundle/Contents/Resources/Notices/"
 codesign --force --sign - "$bundle/Contents/Helpers/katago"
 cp "$binary" "$bundle/Contents/MacOS/katastro"
 chmod +x "$bundle/Contents/MacOS/katastro"

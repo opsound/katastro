@@ -10,6 +10,10 @@ fn main() {
     {
         return;
     }
+    assert!(
+        env::var("CARGO_CFG_TARGET_ARCH").unwrap() == "aarch64",
+        "The macOS desktop app requires an Apple Silicon target (aarch64-apple-darwin)"
+    );
     let out = PathBuf::from(env::var_os("OUT_DIR").unwrap());
     let profile = out
         .ancestors()

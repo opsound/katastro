@@ -12,11 +12,22 @@ permissions:
   contents: read
 jobs:
   relocated-bundle:
-    runs-on: macos-15-intel
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - run: rustup update stable && rustup default stable
       - run: cargo build --locked --bin katastro
-      - run: cargo test --locked --test packaging -- --include-ignored --test-threads=1
+      - run: cargo test --locked --test packaging
         env:
           KATASTRO_OFFLINE: '1'
+      - name: Check for a Metal device
+        id: metal
+        run: |
+          swift -e 'import Metal; print("available=\(MTLCreateSystemDefaultDevice() != nil)")' >> "$GITHUB_OUTPUT"
+      - name: Analyze offline after moving the signed app
+        if: steps.metal.outputs.available == 'true'
+        run: cargo test --locked --test packaging -- --ignored --test-threads=1
+        env:
+          KATASTRO_OFFLINE: '1'
+      - if: steps.metal.outputs.available == 'false'
+        run: echo 'The runner has no Metal device. Real-engine relocation requires an Apple Silicon Mac with Metal.' >> "$GITHUB_STEP_SUMMARY"
