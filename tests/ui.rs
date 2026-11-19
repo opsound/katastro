@@ -7,6 +7,10 @@ use katastro::{
     worker::{Command, Snapshot},
 };
 use std::path::Path;
+#[path = "support/review_ui.rs"]
+mod review_ui;
+use katastro::worker::Client;
+use review_ui::{WorkerUi, until};
 struct State {
     review: Review,
     snapshot: Snapshot,
@@ -376,33 +380,6 @@ fn narrow_sidebar_keeps_long_player_names_compact_and_scrolled_analysis_playable
 
 #[test]
 fn reordered_children_keep_the_played_line_preview_navigation_and_top_row() {
-    use katastro::worker::Client;
-    use std::time::{Duration, Instant};
-    struct Running {
-        client: Client,
-        snapshot: Snapshot,
-    }
-    impl Running {
-        fn render(&mut self, ui: &mut eframe::egui::Ui) {
-            for action in ui::render(ui, &self.snapshot) {
-                if let ui::Action::Review(command) = action {
-                    self.client.send(command).unwrap();
-                }
-            }
-        }
-    }
-    fn until(client: &Client, predicate: impl Fn(&Snapshot) -> bool) -> Snapshot {
-        let deadline = Instant::now() + Duration::from_secs(10);
-        loop {
-            let snapshot = client
-                .recv(deadline.saturating_duration_since(Instant::now()))
-                .unwrap();
-            assert!(snapshot.error.is_none(), "{:?}", snapshot.error);
-            if predicate(&snapshot) {
-                return snapshot;
-            }
-        }
-    }
     let temp = tempfile::TempDir::new().unwrap();
     let source = temp.path().join("game.sgf");
     std::fs::write(&source, b"(;SZ[9];B[cc];W[gg];B[cg])").unwrap();
@@ -440,8 +417,8 @@ fn reordered_children_keep_the_played_line_preview_navigation_and_top_row() {
     let mut h = Harness::builder()
         .with_size(eframe::egui::vec2(1200.0, 820.0))
         .build_ui_state(
-            |ui, state: &mut Running| state.render(ui),
-            Running { client, snapshot },
+            |ui, state: &mut WorkerUi| state.render(ui),
+            WorkerUi::new(client, snapshot),
         );
     h.get_by_label("Next recorded move: Black C7");
     assert!(
@@ -1546,38 +1523,7 @@ fn hiding_ai_moves_keeps_an_overlapping_played_moves_hollow_ring_and_point_delta
 #[cfg(unix)]
 #[test]
 fn disabling_board_ai_moves_allows_background_refinement_to_complete() {
-    use katastro::worker::Client;
-    use std::{
-        io::Write,
-        time::{Duration, Instant},
-    };
-    struct Running {
-        client: Client,
-        snapshot: Snapshot,
-        commands: Vec<Command>,
-    }
-    impl Running {
-        fn render(&mut self, ui: &mut eframe::egui::Ui) {
-            for action in ui::render(ui, &self.snapshot) {
-                if let ui::Action::Review(command) = action {
-                    self.commands.push(command.clone());
-                    self.client.send(command).unwrap();
-                }
-            }
-        }
-    }
-    fn until(client: &Client, predicate: impl Fn(&Snapshot) -> bool) -> Snapshot {
-        let deadline = Instant::now() + Duration::from_secs(10);
-        loop {
-            let snapshot = client
-                .recv(deadline.saturating_duration_since(Instant::now()))
-                .unwrap();
-            assert!(snapshot.error.is_none(), "{:?}", snapshot.error);
-            if predicate(&snapshot) {
-                return snapshot;
-            }
-        }
-    }
+    use std::{io::Write, time::Duration};
     let temp = tempfile::TempDir::new().unwrap();
     let gate = temp.path().join("refinement-gate");
     assert!(
@@ -1607,18 +1553,14 @@ fn disabling_board_ai_moves_allows_background_refinement_to_complete() {
     let mut h = Harness::builder()
         .with_size(eframe::egui::vec2(900.0, 680.0))
         .build_ui_state(
-            |ui, state: &mut Running| state.render(ui),
-            Running {
-                client,
-                snapshot,
-                commands: vec![],
-            },
+            |ui, state: &mut WorkerUi| state.render(ui),
+            WorkerUi::new(client, snapshot),
         );
     h.get_by_label("AI suggestion 1: D6");
     h.get_by_label("AI moves").click();
     h.run();
     assert!(
-        h.state().commands.is_empty(),
+        h.state().commands_sent == 0,
         "a visual toggle must not issue engine or review commands"
     );
     assert!(h.query_by_label("AI suggestion 1: D6").is_none());
@@ -1646,41 +1588,7 @@ fn disabling_board_ai_moves_allows_background_refinement_to_complete() {
 }
 #[test]
 fn rapid_variation_input_gets_visible_playable_hints_before_original_chart_finishes() {
-    use katastro::{engine::Engine, worker::Client};
-    use std::time::{Duration, Instant};
-    struct Running {
-        client: Client,
-        snapshot: Snapshot,
-    }
-    impl Running {
-        fn render(&mut self, ui: &mut eframe::egui::Ui) {
-            for action in ui::render(ui, &self.snapshot) {
-                if let ui::Action::Review(command) = action {
-                    self.client.send(command).unwrap();
-                }
-            }
-        }
-    }
-    fn until(client: &Client, predicate: impl Fn(&Snapshot) -> bool) -> Snapshot {
-        let deadline = Instant::now() + Duration::from_secs(10);
-        let mut latest = None;
-        loop {
-            let snapshot = client
-                .recv(deadline.saturating_duration_since(Instant::now()))
-                .unwrap_or_else(|error| panic!("new variation must receive hints while older work is held: {error}; latest selection/visits/coverage: {latest:?}"));
-            assert!(snapshot.error.is_none(), "{:?}", snapshot.error);
-            latest = snapshot.document.as_ref().map(|d| {
-                (
-                    d.selected,
-                    snapshot.values.get(&d.selected).map(|v| v.visits),
-                    snapshot.coverage,
-                )
-            });
-            if predicate(&snapshot) {
-                return snapshot;
-            }
-        }
-    }
+    use katastro::engine::Engine;
     let temp = tempfile::TempDir::new().unwrap();
     let model = temp.path().join("model");
     std::fs::write(&model, b"variation-hints").unwrap();
@@ -1706,8 +1614,8 @@ fn rapid_variation_input_gets_visible_playable_hints_before_original_chart_finis
     let mut h = Harness::builder()
         .with_size(eframe::egui::vec2(1200.0, 1100.0))
         .build_ui_state(
-            |ui, state: &mut Running| state.render(ui),
-            Running { client, snapshot },
+            |ui, state: &mut WorkerUi| state.render(ui),
+            WorkerUi::new(client, snapshot),
         );
     h.get_by_label("Play D6").click();
     h.run();
