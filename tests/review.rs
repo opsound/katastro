@@ -356,3 +356,35 @@ fn new_zealand_superko_distinguishes_the_next_player_and_persists_legal_suicide(
     assert_eq!(doc.board(removed).unwrap().captures, [0, 2]);
     assert_eq!(doc.board(pass).unwrap().next, Color::Black);
 }
+
+#[test]
+fn simultaneous_reviews_preserve_branches_and_each_sessions_move_parent() {
+    let temp = TempDir::new().unwrap();
+    let sgf = "(;SZ[9];B[aa];W[bb])";
+    let source = fixture(temp.path(), sgf);
+    let mut first = review(temp.path());
+    let mut second = review(temp.path());
+    first.import(&source).unwrap();
+    second.import(&source).unwrap();
+
+    first.select(1).unwrap();
+    let branch = first.play(Some(Point::new(3, 3))).unwrap();
+    second.select(2).unwrap();
+    let continuation = second.play(Some(Point::new(4, 4))).unwrap();
+    let reply = first.play(Some(Point::new(5, 5))).unwrap();
+
+    let mut reopened = review(temp.path());
+    reopened.import(&source).unwrap();
+    let doc = reopened.document().unwrap();
+    assert_eq!(
+        doc.nodes.len(),
+        6,
+        "an autosave discarded another session's move"
+    );
+    assert_eq!(doc.nodes[branch].parent, Some(1));
+    assert_eq!(doc.nodes[continuation].parent, Some(2));
+    assert_eq!(doc.nodes[reply].parent, Some(branch));
+    assert_eq!(doc.selected, reply);
+    assert_eq!(doc.mainline, vec![0, 1, 2]);
+    assert_eq!(fs::read_to_string(source).unwrap(), sgf);
+}

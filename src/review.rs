@@ -1,5 +1,5 @@
 use crate::{Document, NodeId, Point, Result};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Serialize, de::DeserializeOwned};
 use std::{
     fs,
@@ -77,9 +77,12 @@ impl Review {
     pub fn import(&mut self, path: &Path) -> Result<()> {
         let (imported, source_komi) = Document::parse_with_source_komi(&fs::read(path)?)?;
         let key = imported.source_identity()?;
+        let source = fs::canonicalize(path)?;
+        let tx = self
+            .reviews
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let load = |key: &str| -> Result<Option<String>> {
-            Ok(self
-                .reviews
+            Ok(tx
                 .query_row("SELECT document FROM documents WHERE id=?1", [key], |r| {
                     r.get(0)
                 })
@@ -103,10 +106,11 @@ impl Review {
         } else {
             imported
         };
-        self.save_document(&key, &doc)?;
+        tx.execute("INSERT INTO documents(id,document) VALUES (?1,?2) ON CONFLICT(id) DO UPDATE SET document=excluded.document", params![key, serde_json::to_string(&doc)?])?;
+        tx.commit()?;
         self.document = Some(doc);
         self.document_key = key;
-        self.source = Some(fs::canonicalize(path)?);
+        self.source = Some(source);
         Ok(())
     }
     pub fn document(&self) -> Option<&Document> {
@@ -115,28 +119,40 @@ impl Review {
     pub fn source(&self) -> Option<&Path> {
         self.source.as_deref()
     }
-    fn save_document(&self, key: &str, doc: &Document) -> Result<()> {
-        self.reviews.execute("INSERT INTO documents(id,document) VALUES (?1,?2) ON CONFLICT(id) DO UPDATE SET document=excluded.document",params![key,serde_json::to_string(doc)?])?;
+    pub fn select(&mut self, id: NodeId) -> Result<()> {
+        let doc = self.document.as_mut().ok_or("Open an SGF first")?;
+        if id >= doc.nodes.len() {
+            return Err("Unknown tree node".into());
+        }
+        // Navigation edits only the saved cursor. Another session may have added branches.
+        self.reviews.execute(
+            "UPDATE documents SET document=json_set(document,'$.selected',?1) WHERE id=?2",
+            params![i64::try_from(id)?, self.document_key],
+        )?;
+        doc.selected = id;
         Ok(())
     }
-    fn edit<T>(&mut self, edit: impl FnOnce(&mut Document) -> Result<T>) -> Result<T> {
-        let mut doc = self.document.clone().ok_or("Open an SGF first")?;
-        let result = edit(&mut doc)?;
-        self.save_document(&self.document_key, &doc)?;
-        self.document = Some(doc);
-        Ok(result)
-    }
-    pub fn select(&mut self, id: NodeId) -> Result<()> {
-        self.edit(|doc| {
-            if id >= doc.nodes.len() {
-                return Err("Unknown tree node".into());
-            }
-            doc.selected = id;
-            Ok(())
-        })
-    }
     pub fn play(&mut self, point: Option<Point>) -> Result<NodeId> {
-        self.edit(|doc| doc.append_move(point))
+        let parent = self.document.as_ref().ok_or("Open an SGF first")?.selected;
+        let tx = self
+            .reviews
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let json: String = tx.query_row(
+            "SELECT document FROM documents WHERE id=?1",
+            [&self.document_key],
+            |row| row.get(0),
+        )?;
+        let mut doc: Document = serde_json::from_str(&json)?;
+        // IDs are append-only. Play from this window's cursor in the latest saved tree.
+        doc.selected = parent;
+        let node = doc.append_move(point)?;
+        tx.execute(
+            "UPDATE documents SET document=?1 WHERE id=?2",
+            params![serde_json::to_string(&doc)?, self.document_key],
+        )?;
+        tx.commit()?;
+        self.document = Some(doc);
+        Ok(node)
     }
     pub fn export(&self, path: &Path) -> Result<()> {
         if self
