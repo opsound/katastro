@@ -10,12 +10,12 @@ jobs:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-      - name: Build universal helper
+      - name: Build Apple Silicon Metal helper
         run: |
           python3 -m venv "$RUNNER_TEMP/tools"
           "$RUNNER_TEMP/tools/bin/pip" install cmake==3.31.6 ninja==1.11.1.4
           PATH="$RUNNER_TEMP/tools/bin:$PATH" runtime/build-engine.sh "$RUNNER_TEMP/engine"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: katago-macos-universal
-          path: ${{ runner.temp }}/engine/katago-macos-universal.tar.gz
+          name: katago-macos-arm64
+          path: ${{ runner.temp }}/engine/katago-macos-arm64.tar.gz
