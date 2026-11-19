@@ -155,6 +155,10 @@ impl Client {
                     }
                     while let Some(query) = trainer.next_request()? {
                         if engine.is_none() {
+                            // A prepared exercise can wait for player input before starting KataGo.
+                            if Engine::profile(&options.engine)? != *trainer.profile() {
+                                return Err("Engine or model changed. Restart training to use the new analysis profile.".into());
+                            }
                             engine = Some(Engine::spawn_with_human(
                                 &options.engine,
                                 &options.human_model,

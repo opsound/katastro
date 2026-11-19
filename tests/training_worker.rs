@@ -510,3 +510,52 @@ fn training_worker_limits_discovery_to_the_configured_parallel_positions() {
         other => panic!("only two discovery requests may precede cancellation: {other:?} {extra}"),
     }
 }
+
+#[test]
+fn cached_training_setup_cannot_launch_a_different_model_mid_attempt() {
+    use katastro::{engine::Engine, training::Trainer};
+    let temp = tempfile::tempdir().unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let (options, source) = setup(temp.path(), &listener);
+    let model = options.engine.model.clone();
+    let mut preparer = Trainer::new(
+        &options.reviews,
+        &options.cache,
+        &temp.path().join("Training"),
+        Engine::profile(&options.engine).unwrap(),
+    )
+    .unwrap();
+    preparer
+        .prepare(vec![source.clone()], "me".into(), false)
+        .unwrap();
+    support::settle(&mut preparer, false, true);
+    let client = Client::spawn(
+        options,
+        vec![source],
+        "me".into(),
+        Settings {
+            moves: 1,
+            ..Default::default()
+        },
+        None,
+    );
+    until(&client, |s| s.phase == Phase::YourTurn);
+
+    std::fs::write(model, b"fake-model").unwrap();
+    client
+        .send(Command::Play(Some(katastro::Point::new(3, 4))))
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let error = loop {
+        let s = client
+            .recv(deadline.saturating_duration_since(Instant::now()))
+            .unwrap();
+        if let Some(error) = s.error {
+            break error;
+        }
+    };
+    assert!(
+        error.contains("changed"),
+        "expected the session to detect the model change, got {error}"
+    );
+}
