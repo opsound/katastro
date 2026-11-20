@@ -45,7 +45,7 @@ Fox and Pandanet share HTTP construction, response size/status handling, and san
 
 ## Desktop layout
 
-The left side contains only the board, centered at the largest square size that fits its full-height area. There is no application header or footer across it. The resizable right column holds file actions, player names with colored stones, and the adjacent AI moves and Group strength toggles at the top. Move buttons and a resizable, independently scrolling variation tree stay visible at the bottom, above the status line. Analysis charts, candidates, comments, and keyboard shortcuts scroll between these fixed sections. Both charts fit above the move buttons at the default window size.
+The left side contains only the board, centered at the largest square size that fits its full-height area. There is no application header or footer across it. The resizable right column holds file actions, player names with colored stones, and the adjacent AI moves and Group strength toggles at the top. A resizable, independently scrolling variation tree stays visible above the status line. Its header shows the selected move number, previous and next chevrons, and a menu for jumping to either end of the imported game or playing a pass. Analysis charts, candidates, comments, and keyboard shortcuts scroll between the fixed sections. Both charts fit above the tree header at the default window size.
 
 Reserve the group legend's height as ownership arrives, keeping the analysis controls steady. Long player names and status messages truncate within the column and expose their full text on hover. Resizing and scrolling retain the board toggles and review selection; moving controls does not change background analysis or persistence.
 

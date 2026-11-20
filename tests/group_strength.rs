@@ -404,6 +404,8 @@ fn missing_ownership_is_pending_instead_of_inventing_weak_groups() {
         h.get_by_label("Play B8").rect(),
         "ownership arriving must not move the board"
     );
+    h.get_by_label("More move actions").click();
+    h.run();
     h.get_by_label("Pass").click();
     h.run();
     assert!(

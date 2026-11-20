@@ -40,6 +40,8 @@ Games use Chinese area scoring with 7.5 komi. Capture disputed or dead stones be
 
 Click the board to explore a variation. The tree keeps the played game on top and shows each move’s board coordinate below its numbered stone. Click a stone or its coordinate to revisit the position. A gold line traces the selected variation back to its fork. You can also navigate by clicking a chart.
 
+The chevrons beside the move number in **Variations** step backward and forward. Open **⋯** to jump to the first position or the last played move, or to play a pass from the current position.
+
 | Input | Action |
 | --- | --- |
 | Left / Right | Previous / next move |

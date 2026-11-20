@@ -10,7 +10,7 @@ mod tree;
 use board::board_view;
 pub use charts::chart_points;
 use sidebar::{analysis_details, navigation_legend, review_controls};
-use tree::{move_buttons, tree};
+use tree::tree;
 #[derive(Clone, Debug)]
 pub enum Action {
     Review(Command),
@@ -44,7 +44,7 @@ fn command(out: &mut Vec<Action>, value: Command) {
 
 pub fn render(ui: &mut egui::Ui, snapshot: &Snapshot) -> Vec<Action> {
     let mut out = Vec::new();
-    if !ui.ctx().text_edit_focused() {
+    if !ui.ctx().text_edit_focused() && !egui::Popup::is_id_open(ui.ctx(), tree::move_menu_id()) {
         ui.input_mut(|input| {
             for (key, down) in [(egui::Key::ArrowUp, false), (egui::Key::ArrowDown, true)] {
                 if input.consume_key(egui::Modifiers::NONE, key)
@@ -137,11 +137,6 @@ pub fn render(ui: &mut egui::Ui, snapshot: &Snapshot) -> Vec<Action> {
                     .size_range(160.0..=320.0)
                     .frame(egui::Frame::NONE)
                     .show(ui, |ui| {
-                        move_buttons(ui, &mut out);
-                        ui.horizontal(|ui| {
-                            ui.label(caption("VARIATIONS").strong());
-                            ui.label(caption("Played game on top"));
-                        });
                         tree(ui, doc, &snapshot.source, &mut out);
                     });
             }

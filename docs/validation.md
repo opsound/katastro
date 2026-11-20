@@ -838,3 +838,15 @@ KATASTRO_TREE_PREVIEW=/tmp/variation-tree.png cargo test --test ui selecting_a_b
 ### Rounded fork connectors
 
 Each fork now curves into and out of the vertical line shared by its siblings. The UI test selects a one-row fork and a two-row fork, verifies the white stone on the board, and samples the visible gold stroke every two screen points. With the original angular connectors, the direction changed by 27.1° between adjacent samples on the one-row fork. Both forks pass with the rounded stroke. Temporarily restoring the angular connectors reproduced the failure. The GPU preview above shows both fork heights.
+
+### Move controls in the tree header
+
+The narrow-sidebar UI test resizes the sidebar to its minimum width and steps through an SGF annotation. The move counter, Previous and Next chevrons, and three-dot menu fit on the same row as the title. The counter stays at move one through the annotation and advances on the following stone. The worker-backed test opens the menu, uses Arrow Down and Escape with a variation available, jumps to both ends of the imported game, and plays a pass. Reopening the temporary SQLite review restores the pass under the chosen position.
+
+Before the change, the navigation occupied a separate row and First, Last, and Pass were always visible. An initial font-based menu icon rendered as a missing glyph. The header now paints all three icons. Substituting SGF depth for move number, dropping a menu dot, sending the open menu’s arrow key to the board, and disabling the pass action each failed the corresponding test. All four mutations were restored.
+
+```sh
+cargo test --test ui variations_header
+# On a Mac with a working wgpu adapter
+KATASTRO_MOVE_MENU_PREVIEW=/tmp/move-menu.png cargo test --test ui variations_header_menu
+```

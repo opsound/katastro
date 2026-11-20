@@ -85,6 +85,256 @@ impl State {
     }
 }
 #[test]
+fn variations_header_shows_the_current_move_and_navigation_on_one_row() {
+    use eframe::egui::{pos2, vec2};
+    use egui_kittest::kittest::NodeT;
+
+    let temp = tempfile::TempDir::new().unwrap();
+    let mut state = imported_state(temp.path(), "(;SZ[9];B[cc];C[diagram];W[gg];B[cg])");
+    state.review.select(2).unwrap();
+    state.sync();
+    let mut h = Harness::builder()
+        .with_size(vec2(900.0, 680.0))
+        .build_ui_state(|ui, state: &mut State| state.render(ui), state);
+    let viewport = h.get_by_label("Timeline viewport").rect();
+    let divider = pos2(viewport.left() - 14.0, viewport.center().y);
+    let narrow = divider + vec2(100.0, 0.0);
+    h.hover_at(divider);
+    h.run_steps(2);
+    h.drag_at(divider);
+    h.step();
+    h.hover_at(narrow);
+    h.step();
+    h.drop_at(narrow);
+    h.run();
+    let viewport = h.get_by_label("Timeline viewport").rect();
+    assert!(
+        viewport.width() <= 302.0,
+        "expected the minimum sidebar width: {viewport:?}"
+    );
+    let heading = h.get_by_label("VARIATIONS").rect();
+    let previous = h.get_by_label("Previous move").rect();
+    assert!(
+        (heading.center().y - previous.center().y).abs() <= 4.0,
+        "the navigation controls occupy a separate row from Variations"
+    );
+    let controls = [
+        heading,
+        h.get_by_label("Move 1").rect(),
+        previous,
+        h.get_by_label("Next move").rect(),
+        h.get_by_label("More move actions").rect(),
+    ];
+    for (i, control) in controls.iter().enumerate() {
+        assert!((heading.center().y - control.center().y).abs() <= 4.0);
+        assert!(control.bottom() <= viewport.top());
+        assert!(
+            control.left() >= viewport.left() - 1.0 && control.right() <= viewport.right() + 1.0,
+            "header control clipped at the minimum sidebar width: {control:?} {viewport:?}"
+        );
+        assert!(
+            controls[i + 1..]
+                .iter()
+                .all(|other| !control.intersects(*other))
+        );
+    }
+    let header_bottom = controls
+        .iter()
+        .map(|r| r.bottom())
+        .fold(heading.bottom(), f32::max);
+    assert!(
+        viewport.top() - header_bottom <= 12.0,
+        "the tree loses space below its header"
+    );
+    for (name, glyph, direction) in [("Previous move", "‹", -1.0_f32), ("Next move", "›", 1.0)]
+    {
+        let bounds = h.get_by_label(name).rect();
+        if painted_text_in(&h, bounds).iter().any(|text| text == glyph) {
+            continue;
+        }
+        let ink_center = |dy| {
+            let dots: Vec<_> = (-8..=8)
+                .filter(|dx| tree_edge_at(&h, bounds.center() + vec2(*dx as f32, dy)).is_some())
+                .collect();
+            assert!(
+                !dots.is_empty(),
+                "{name} has no visible chevron at row {dy}"
+            );
+            (dots[0] + dots[dots.len() - 1]) as f32 / 2.0
+        };
+        let tip = ink_center(0.0);
+        for y in [-3.0, 3.0] {
+            assert!(
+                (tip - ink_center(y)) * direction > 1.0,
+                "{name} points the wrong way"
+            );
+        }
+    }
+    let more = h.get_by_label("More move actions").rect();
+    let font_ellipsis = painted_text_in(&h, more).iter().any(|text| {
+        ["…", "⋯", "..."].contains(&text.as_str())
+            && h.ctx.fonts_mut(|fonts| {
+                fonts.has_glyphs(&eframe::egui::FontId::proportional(16.0), text)
+            })
+    });
+    let dot_centers: Vec<_> = h
+        .output()
+        .shapes
+        .iter()
+        .filter_map(|s| match &s.shape {
+            eframe::egui::Shape::Circle(c) if more.contains(c.center) && c.fill.a() > 0 => {
+                Some(c.center)
+            }
+            _ => None,
+        })
+        .collect();
+    let drawn_ellipsis = dot_centers.len() == 3
+        && dot_centers
+            .windows(2)
+            .all(|p| (p[0].y - p[1].y).abs() < 1.0 && (p[0].x - p[1].x).abs() > 2.0);
+    assert!(
+        font_ellipsis || drawn_ellipsis,
+        "More has no visible three-dot icon in the current font"
+    );
+    assert!(viewport.contains_rect(h.get_by_label("Tree node 2").rect()));
+    assert!(h.query_by_label("Played game on top").is_none());
+    assert_eq!(h.state().review.document().unwrap().selected, 2);
+    h.get_by_label("Previous move").click();
+    h.run();
+    assert_eq!(h.state().review.document().unwrap().selected, 1);
+    h.get_by_label("Move 1");
+    h.get_by_label("Next move").click();
+    h.run();
+    assert_eq!(h.state().review.document().unwrap().selected, 2);
+    h.get_by_label("Next move").click();
+    h.run();
+    h.get_by_label("Move 2");
+    assert_eq!(
+        h.state()
+            .snapshot
+            .board
+            .as_ref()
+            .unwrap()
+            .stone(Point::new(6, 6)),
+        Some(Color::White)
+    );
+    h.get_by_label("Tree node 4").click();
+    h.run();
+    assert!(h.get_by_label("Next move").accesskit_node().is_disabled());
+    h.get_by_label("Tree node 0").click();
+    h.run();
+    assert!(
+        h.get_by_label("Previous move")
+            .accesskit_node()
+            .is_disabled()
+    );
+}
+
+#[test]
+fn variations_header_menu_navigates_dismisses_and_saves_a_pass_branch() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let source = temp.path().join("header.sgf");
+    std::fs::write(&source, "(;SZ[9](;B[cc];W[gg];B[cg])(;B[dd]))").unwrap();
+    let reviews = temp.path().join("reviews");
+    let cache = temp.path().join("cache");
+    let client = Client::spawn(
+        reviews.clone(),
+        cache.clone(),
+        EngineConfig {
+            analysis: Default::default(),
+            executable: Default::default(),
+            model: Default::default(),
+        },
+    );
+    client.send(Command::Open(source.clone())).unwrap();
+    client.send(Command::Select(1)).unwrap();
+    let snapshot = until(&client, |s| {
+        s.document.as_ref().is_some_and(|d| d.selected == 1)
+    });
+    assert_eq!(
+        snapshot.document.as_ref().unwrap().vertical_neighbor(true),
+        Some(4)
+    );
+    let mut h = Harness::builder()
+        .with_size(eframe::egui::vec2(900.0, 680.0))
+        .build_ui_state(
+            |ui, state: &mut WorkerUi| state.render(ui),
+            WorkerUi::new(client, snapshot),
+        );
+    for action in ["First move", "Last move", "Pass"] {
+        assert!(
+            h.query_by_label(action).is_none(),
+            "{action} crowds the closed header"
+        );
+    }
+    h.get_by_label("More move actions").click();
+    h.run();
+    for action in ["First move", "Last move", "Pass"] {
+        h.get_by_label(action);
+    }
+    if let Some(path) = std::env::var_os("KATASTRO_MOVE_MENU_PREVIEW") {
+        h.remove_cursor();
+        h.run();
+        h.render().unwrap().save(path).unwrap();
+    }
+    h.key_press(eframe::egui::Key::ArrowDown);
+    h.run();
+    assert_eq!(
+        h.state().commands_sent,
+        0,
+        "keyboard navigation escaped the open menu"
+    );
+    h.get_by_label("Move 1");
+    h.get_by_label("Pass");
+    h.key_press(eframe::egui::Key::Escape);
+    h.run();
+    assert!(h.query_by_label("Pass").is_none());
+    assert_eq!(
+        h.state().commands_sent,
+        0,
+        "dismissing the menu sent a command"
+    );
+    for (action, node) in [
+        ("Last move", 3),
+        ("First move", 0),
+        ("Next move", 1),
+        ("Pass", 5),
+    ] {
+        if action != "Next move" {
+            h.get_by_label("More move actions").click();
+            h.run();
+        }
+        let before = h.state().commands_sent;
+        h.get_by_label(action).click();
+        h.run();
+        assert_eq!(
+            h.state().commands_sent,
+            before + 1,
+            "{action} did not send one review command"
+        );
+        let updated = until(&h.state().client, |s| {
+            s.document.as_ref().is_some_and(|d| d.selected == node)
+        });
+        h.state_mut().snapshot = updated;
+        h.run();
+        assert!(
+            h.query_by_label("Pass").is_none(),
+            "menu stayed open after choosing {action}"
+        );
+    }
+    h.get_by_label("Move 2");
+    drop(h);
+    let mut reopened = Review::new(&reviews, &cache).unwrap();
+    reopened.import(&source).unwrap();
+    let doc = reopened.document().unwrap();
+    assert_eq!(doc.mainline, vec![0, 1, 2, 3]);
+    assert_eq!(doc.selected, 5);
+    assert_eq!(doc.nodes[5].parent, Some(1));
+    assert_eq!(doc.nodes[5].played.unwrap().color, Color::White);
+    assert_eq!(doc.nodes[5].played.unwrap().point, None);
+}
+
+#[test]
 fn actual_board_and_tree_input_creates_and_selects_persistent_variations() {
     let temp = tempfile::TempDir::new().unwrap();
     let mut h = Harness::builder()
@@ -153,11 +403,11 @@ fn height_filling_board_keeps_review_controls_in_the_sidebar_and_branches_usable
             "Open SGF",
             "Export SGF",
             "Engine settings",
-            "First move",
+            "VARIATIONS",
+            "Move 0",
             "Previous move",
             "Next move",
-            "Last move",
-            "Pass",
+            "More move actions",
             "Timeline viewport",
             "Open an SGF to begin",
         ];
@@ -497,6 +747,8 @@ fn keyboard_navigation_and_pass_work_with_loaded_review() {
     h.key_press(eframe::egui::Key::ArrowRight);
     h.run();
     assert_eq!(h.state().snapshot.document.as_ref().unwrap().selected, 1);
+    h.get_by_label("More move actions").click();
+    h.run();
     h.get_by_label("Pass").click();
     h.run();
     assert!(
@@ -2437,7 +2689,7 @@ fn both_charts_fit_at_the_default_window_size_with_suggestions() {
     let h = Harness::builder()
         .with_size(eframe::egui::vec2(1200.0, 860.0))
         .build_ui_state(|ui, state: &mut State| state.render(ui), state);
-    let controls = h.get_by_label("First move").rect();
+    let controls = h.get_by_label("Previous move").rect();
     for label in ["Score lead chart", "Winrate chart"] {
         let chart = h
             .query_by_label(label)

@@ -1,27 +1,121 @@
-use super::{ACCENT, Action, VARIATION_COLOR, command};
+use super::{ACCENT, Action, VARIATION_COLOR, caption, command};
 use crate::{Color, Document, NodePosition, worker::Command};
 use eframe::egui::{
     self, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, Vec2, WidgetInfo, WidgetType,
 };
 
-pub(super) fn move_buttons(ui: &mut egui::Ui, out: &mut Vec<Action>) {
-    ui.horizontal(|ui| {
-        let width = (ui.available_width() - 4.0 * ui.spacing().item_spacing.x) / 5.0;
-        for (text, label, value) in [
-            ("First", "First move", Command::First),
-            ("Prev", "Previous move", Command::Step(false)),
-            ("Next", "Next move", Command::Step(true)),
-            ("Last", "Last move", Command::Last),
-            ("Pass", "Pass", Command::Play(None)),
-        ] {
-            let response = ui.add_sized(Vec2::new(width, 30.0), egui::Button::new(text));
-            response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, label));
-            if response.clicked() {
-                command(out, value);
-            }
-            response.on_hover_text(label);
+pub(super) fn move_menu_id() -> egui::Id {
+    egui::Id::new("review-move-actions")
+}
+
+fn header_button(
+    ui: &mut egui::Ui,
+    label: &str,
+    enabled: bool,
+    paint: impl FnOnce(&egui::Painter, Pos2, Color32),
+) -> egui::Response {
+    let response = ui.add_enabled(
+        enabled,
+        egui::Button::new("")
+            .frame_when_inactive(false)
+            .min_size(Vec2::new(28.0, 26.0)),
+    );
+    let color = ui.style().interact(&response).text_color();
+    paint(
+        ui.painter(),
+        response.rect.center(),
+        if enabled {
+            color
+        } else {
+            ui.visuals().disable(color)
+        },
+    );
+    response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, enabled, label));
+    response.on_hover_text(label)
+}
+
+fn move_menu(ui: &mut egui::Ui, doc: &Document, out: &mut Vec<Action>) {
+    let more = header_button(ui, "More move actions", true, |painter, center, color| {
+        for dx in [-5.0, 0.0, 5.0] {
+            painter.circle_filled(center + egui::vec2(dx, 0.0), 1.45, color);
         }
     });
+    let menu = egui::Popup::menu(&more)
+        .id(move_menu_id())
+        .align(egui::RectAlign::BOTTOM_END)
+        .show(|ui| {
+            ui.set_min_width(160.0);
+            ui.spacing_mut().button_padding = egui::vec2(6.0, 3.0);
+            for (text, label, key, enabled, value) in [
+                (
+                    "First position",
+                    "First move",
+                    "Home",
+                    doc.selected != 0,
+                    Command::First,
+                ),
+                (
+                    "Last played move",
+                    "Last move",
+                    "End",
+                    doc.mainline.last() != Some(&doc.selected),
+                    Command::Last,
+                ),
+                ("Play a pass", "Pass", "P", true, Command::Play(None)),
+            ] {
+                if matches!(value, Command::Play(None)) {
+                    ui.separator();
+                }
+                let response = ui.add_enabled(enabled, egui::Button::new(text).shortcut_text(key));
+                response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, enabled, label));
+                if response.clicked() {
+                    command(out, value);
+                    ui.close();
+                }
+            }
+        });
+    ui.ctx().accesskit_node_builder(more.id, |node| {
+        node.set_has_popup(egui::accesskit::HasPopup::Menu);
+        node.set_expanded(menu.is_some());
+    });
+}
+
+fn tree_header(ui: &mut egui::Ui, doc: &Document, move_number: usize, out: &mut Vec<Action>) {
+    ui.allocate_ui_with_layout(
+        Vec2::new(ui.available_width(), 28.0),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            ui.label(caption("VARIATIONS").strong())
+                .on_hover_text("Played game on top");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.spacing_mut().button_padding = Vec2::new(3.0, 0.0);
+                ui.spacing_mut().item_spacing.x = 2.0;
+                move_menu(ui, doc, out);
+                let selected = &doc.nodes[doc.selected];
+                for (label, forward, enabled) in [
+                    ("Next move", true, !selected.children.is_empty()),
+                    ("Previous move", false, selected.parent.is_some()),
+                ] {
+                    let response = header_button(ui, label, enabled, |painter, center, color| {
+                        let x = if forward { 2.7 } else { -2.7 };
+                        painter.add(egui::Shape::line(
+                            vec![
+                                center + egui::vec2(-x, -5.0),
+                                center + egui::vec2(x, 0.0),
+                                center + egui::vec2(-x, 5.0),
+                            ],
+                            Stroke::new(1.7, color),
+                        ));
+                    });
+                    if response.clicked() {
+                        command(out, Command::Step(forward));
+                    }
+                }
+                ui.add_space(4.0);
+                ui.label(caption(format!("Move {move_number}")).size(12.0));
+            });
+        },
+    );
 }
 
 const COLUMN_PITCH: f32 = 36.0;
@@ -72,6 +166,7 @@ pub(super) fn tree(
     out: &mut Vec<Action>,
 ) {
     let layout = doc.layout();
+    tree_header(ui, doc, layout[doc.selected].move_number, out);
     let max_col = layout.iter().map(|p| p.column).max().unwrap_or(0);
     let max_row = layout.iter().map(|p| p.row).max().unwrap_or(0);
     let focus = (source.clone(), doc.selected);
