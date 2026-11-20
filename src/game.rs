@@ -128,6 +128,7 @@ pub struct NodePosition {
     pub id: NodeId,
     pub column: usize,
     pub row: usize,
+    pub move_number: usize,
 }
 impl Document {
     pub fn path(&self, node: NodeId) -> Result<Vec<NodeId>> {
@@ -362,36 +363,57 @@ impl Document {
             NodePosition {
                 id: 0,
                 column: 0,
-                row: 0
+                row: 0,
+                move_number: 0
             };
             self.nodes.len()
         ];
-        let mut next_row = 1;
-        fn visit(
-            doc: &Document,
-            id: NodeId,
-            col: usize,
-            row: usize,
-            positions: &mut [NodePosition],
-            next_row: &mut usize,
-        ) {
-            positions[id] = NodePosition {
-                id,
-                column: col,
-                row,
-            };
-            for (index, child) in doc.ordered_children(id).enumerate() {
-                let child_row = if index == 0 {
-                    row
+        let mut next_row = vec![0; self.nodes.len()];
+        let mut pending = vec![0];
+        let mut line = Vec::new();
+        while let Some(start) = pending.pop() {
+            let (first_column, min_row, mut move_number) =
+                self.nodes[start].parent.map_or((0, 0, 0), |parent| {
+                    let parent = &positions[parent];
+                    (parent.column + 1, parent.row + 1, parent.move_number)
+                });
+            let mut current = Some(start);
+            while let Some(id) = current {
+                line.push(id);
+                let children = &self.nodes[id].children;
+                current = if start == 0 {
+                    self.mainline.get(line.len()).copied()
                 } else {
-                    let row = *next_row;
-                    *next_row += 1;
-                    row
+                    children.first().copied()
                 };
-                visit(doc, child, col + 1, child_row, positions, next_row);
+                // Finish the continuation's deeper forks before its shallower forks.
+                // At a shared parent, preserve the recorded sibling order.
+                pending.extend(
+                    children
+                        .iter()
+                        .rev()
+                        .copied()
+                        .filter(|c| Some(*c) != current),
+                );
+            }
+            // Fit the entire horizontal line beneath every previously placed line
+            // in its columns. A fork elsewhere on the timeline costs no rows here.
+            let columns = first_column..first_column + line.len();
+            let row = next_row[columns.clone()]
+                .iter()
+                .copied()
+                .fold(min_row, usize::max);
+            next_row[columns].fill(row + 1);
+            for (offset, id) in line.drain(..).enumerate() {
+                move_number += usize::from(self.nodes[id].played.is_some());
+                positions[id] = NodePosition {
+                    id,
+                    column: first_column + offset,
+                    row,
+                    move_number,
+                };
             }
         }
-        visit(self, 0, 0, 0, &mut positions, &mut next_row);
         positions
     }
 }

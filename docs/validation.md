@@ -816,3 +816,21 @@ cargo test --test analysis_queue an_unread_review
 # On Apple Silicon with Metal, provide a local 19×19 main-line game.
 KATASTRO_MEMORY_SGF=/path/to/game.sgf cargo test --release --test performance live_unattended_review_memory -- --ignored --nocapture
 ```
+
+## Compact variation tree
+
+In a synthetic review with adjacent one-move variations, a nested fork, and a longer overlapping line, the old layout placed the earliest short variation five rows below the game. It now shares the first variation row with later short lines. The longer line stays on one row below the overlapping alternatives. The public review tests select the corresponding board positions, reopen the saved branches, and check that a move played after the imported endpoint starts below the game.
+
+The UI tests click coordinate and pass captions, read the number on a move at the root and on move 120 after scrolling, and distinguish setup and note nodes. They also switch between two sibling lines and verify that the gold trace reaches the shared fork. Adjacent independent variations on the same row have a visible gap between them.
+
+Before implementation the geometry tests found the fork running down the parent column and a selected variation drawn in gray. The label tests found missing board coordinates and a bullet at the start. Temporary regressions caught by the new tests included allocating one row per fork, checking only the first column of a long line, reversing sibling order, extending row zero past the imported game, counting notes as moves, restoring the old column spacing, hiding captions or selection, and ending the highlighted trace one edge early. Each regression was restored before the final checks.
+
+Formatting, strict Clippy, the library build without GUI features, and all 209 routine workspace tests passed. The workspace suite skipped 24 opt-in checks. The rebuilt macOS app passed strict code-signature verification. A GPU-rendered preview was inspected at double pixel density.
+
+The preview uses a synthetic SGF and requires a working wgpu adapter. The geometry and input tests also run in the routine workspace suite.
+
+```sh
+cargo test --test review
+cargo test --test ui
+KATASTRO_TREE_PREVIEW=/tmp/variation-tree.png cargo test --test ui selecting_a_branch_highlights_its_route
+```

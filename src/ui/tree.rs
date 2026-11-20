@@ -1,5 +1,5 @@
-use super::{ACCENT, Action, command};
-use crate::{Color, Document, worker::Command};
+use super::{ACCENT, Action, VARIATION_COLOR, command};
+use crate::{Color, Document, NodePosition, worker::Command};
 use eframe::egui::{
     self, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, Vec2, WidgetInfo, WidgetType,
 };
@@ -22,6 +22,35 @@ pub(super) fn move_buttons(ui: &mut egui::Ui, out: &mut Vec<Action>) {
             response.on_hover_text(label);
         }
     });
+}
+
+const COLUMN_PITCH: f32 = 36.0;
+const ROW_PITCH: f32 = 38.0;
+const STONE_RADIUS: f32 = 10.0;
+
+fn node_bounds(center: Pos2) -> Rect {
+    Rect::from_center_size(center + Vec2::new(0.0, 6.0), Vec2::new(34.0, 36.0))
+}
+
+fn paint_edge(ui: &egui::Ui, from: Pos2, to: Pos2, stroke: Stroke) {
+    if !ui.is_rect_visible(Rect::from_two_pos(from, to).expand(stroke.width)) {
+        return;
+    }
+    if from.y == to.y {
+        ui.painter().line_segment([from, to], stroke);
+    } else {
+        let gutter = (from.x + to.x) * 0.5;
+        let bend = (gutter - from.x).min((to.y - from.y) * 0.5);
+        ui.painter().add(egui::Shape::line(
+            vec![
+                from,
+                Pos2::new(gutter, from.y + bend),
+                Pos2::new(gutter, to.y - bend),
+                to,
+            ],
+            stroke,
+        ));
+    }
 }
 
 pub(super) fn tree(
@@ -49,95 +78,53 @@ pub(super) fn tree(
         .show(ui, |ui| {
             let (rect, _) = ui.allocate_exact_size(
                 Vec2::new(
-                    ((max_col + 1) as f32 * 44.0 + 20.0).max(ui.available_width()),
-                    (max_row + 1) as f32 * 40.0 + 10.0,
+                    (max_col as f32 * COLUMN_PITCH + 42.0).max(ui.available_width()),
+                    max_row as f32 * ROW_PITCH + 44.0,
                 ),
                 Sense::hover(),
             );
             let position = |id: usize| {
                 rect.min
                     + Vec2::new(
-                        26.0 + layout[id].column as f32 * 44.0,
-                        24.0 + layout[id].row as f32 * 40.0,
+                        21.0 + layout[id].column as f32 * COLUMN_PITCH,
+                        16.0 + layout[id].row as f32 * ROW_PITCH,
                     )
             };
             if follow {
                 ui.scroll_to_rect_animation(
-                    Rect::from_center_size(position(doc.selected), Vec2::splat(40.0)),
+                    node_bounds(position(doc.selected)).expand(3.0),
                     None,
                     egui::style::ScrollAnimation::none(),
                 );
             }
-            let painter = ui.painter();
             for p in &layout {
                 if let Some(parent) = doc.nodes[p.id].parent {
-                    let from = position(parent);
-                    let to = position(p.id);
-                    painter.line_segment(
-                        [from, Pos2::new(from.x, to.y)],
-                        Stroke::new(1.5, Color32::from_rgb(67, 76, 85)),
-                    );
-                    painter.line_segment(
-                        [Pos2::new(from.x, to.y), to],
-                        Stroke::new(1.5, Color32::from_rgb(67, 76, 85)),
-                    );
+                    let stroke = if p.row == 0 {
+                        Stroke::new(2.0, Color32::from_rgb(144, 157, 168))
+                    } else {
+                        Stroke::new(1.5, Color32::from_rgb(98, 113, 126))
+                    };
+                    paint_edge(ui, position(parent), position(p.id), stroke);
                 }
             }
-            for p in &layout {
-                let center = position(p.id);
-                let hit = Rect::from_center_size(center, Vec2::splat(32.0));
-                if !ui.is_rect_visible(hit) {
-                    continue;
-                }
-                let response = ui.interact(hit, ui.id().with(("node", p.id)), Sense::click());
-                response.widget_info(|| {
-                    WidgetInfo::labeled(WidgetType::Button, true, format!("Tree node {}", p.id))
-                });
-                if doc.selected == p.id {
-                    painter.rect_filled(hit.expand(2.0), 7, ACCENT);
-                }
-                let color = doc.nodes[p.id].played.map(|m| m.color);
-                let fill = match color {
-                    Some(Color::Black) => Color32::from_rgb(30, 32, 35),
-                    Some(Color::White) => Color32::from_rgb(235, 237, 234),
-                    None => Color32::from_rgb(67, 76, 85),
+            // Draw the selected route last so a sibling sharing its stem can't obscure it.
+            let mut child = doc.selected;
+            while layout[child].row > 0 {
+                let Some(parent) = doc.nodes[child].parent else {
+                    break;
                 };
-                painter.circle_filled(center, 13.0, fill);
-                painter.circle_stroke(
-                    center,
-                    13.0,
-                    Stroke::new(1.0, Color32::from_rgb(114, 125, 134)),
+                paint_edge(
+                    ui,
+                    position(parent),
+                    position(child),
+                    Stroke::new(2.5, VARIATION_COLOR),
                 );
-                painter.text(
-                    center,
-                    Align2::CENTER_CENTER,
-                    if p.id == 0 {
-                        "•".into()
-                    } else {
-                        doc.path(p.id)
-                            .map(|path| {
-                                path.iter()
-                                    .filter(|id| doc.nodes[**id].played.is_some())
-                                    .count()
-                                    .to_string()
-                            })
-                            .unwrap_or_default()
-                    },
-                    FontId::proportional(10.0),
-                    if color == Some(Color::White) {
-                        Color32::from_rgb(30, 32, 35)
-                    } else {
-                        Color32::WHITE
-                    },
-                );
-                if response.clicked() {
+                child = parent;
+            }
+            for p in &layout {
+                if tree_node(ui, doc, p, position(p.id)) {
                     command(out, Command::Select(p.id));
                 }
-                response.on_hover_text(if doc.mainline.contains(&p.id) {
-                    "Played game"
-                } else {
-                    "Saved variation"
-                });
             }
         });
     ui.interact(
@@ -146,4 +133,91 @@ pub(super) fn tree(
         Sense::hover(),
     )
     .widget_info(|| WidgetInfo::labeled(WidgetType::Other, true, "Timeline viewport"));
+}
+
+fn tree_node(ui: &egui::Ui, doc: &Document, p: &NodePosition, center: Pos2) -> bool {
+    let hit = node_bounds(center);
+    if !ui.is_rect_visible(hit) {
+        return false;
+    }
+    let response = ui.interact(hit, ui.id().with(("node", p.id)), Sense::click());
+    response.widget_info(|| {
+        WidgetInfo::labeled(WidgetType::Button, true, format!("Tree node {}", p.id))
+    });
+
+    let node = &doc.nodes[p.id];
+    let selected = doc.selected == p.id;
+    let painter = ui.painter();
+    if selected {
+        painter.circle_stroke(center, STONE_RADIUS + 2.0, Stroke::new(1.5, ACCENT));
+    }
+    let (caption, detail) = if let Some(played) = node.played {
+        let (fill, ink) = match played.color {
+            Color::Black => (Color32::from_rgb(25, 28, 32), Color32::WHITE),
+            Color::White => (Color32::from_rgb(235, 237, 234), Color32::from_gray(30)),
+        };
+        painter.circle(
+            center,
+            STONE_RADIUS,
+            fill,
+            Stroke::new(1.0, Color32::from_rgb(130, 140, 149)),
+        );
+        let number = p.move_number.to_string();
+        let size = 11.0_f32.min(31.0 / number.len() as f32);
+        painter.text(
+            center,
+            Align2::CENTER_CENTER,
+            number,
+            FontId::proportional(size),
+            ink,
+        );
+        let caption = played
+            .point
+            .map(|point| point.gtp(doc.size))
+            .unwrap_or_else(|| "Pass".into());
+        let detail = format!("Move {} · {} {caption}", p.move_number, played.color);
+        (caption, detail)
+    } else {
+        painter.rect_filled(
+            Rect::from_center_size(center, Vec2::splat(9.0)),
+            2,
+            Color32::from_rgb(145, 157, 168),
+        );
+        let caption = if ["AB", "AW", "AE", "PL"]
+            .iter()
+            .any(|key| node.props.contains_key(*key))
+        {
+            "Setup"
+        } else if node.parent.is_none() {
+            "Start"
+        } else if node.property("C").is_some() || node.property("N").is_some() {
+            "Note"
+        } else {
+            "Node"
+        };
+        (caption.to_owned(), caption.to_owned())
+    };
+    painter.text(
+        center + Vec2::new(0.0, 12.0),
+        Align2::CENTER_TOP,
+        &caption,
+        FontId::proportional(10.0),
+        if selected {
+            ACCENT
+        } else {
+            Color32::from_rgb(191, 200, 209)
+        },
+    );
+
+    let line = if p.row == 0 {
+        "Played game"
+    } else {
+        "Variation"
+    };
+    let description = format!("{detail} · {line}");
+    ui.ctx().accesskit_node_builder(response.id, |builder| {
+        builder.set_description(description.as_str());
+        builder.set_selected(selected);
+    });
+    response.on_hover_text(description).clicked()
 }

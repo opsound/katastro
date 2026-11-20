@@ -554,6 +554,141 @@ fn original_game_chart_keeps_gaps_zero_values_and_its_line_when_a_branch_is_sele
 }
 
 const CHART_VARIATION: eframe::egui::Color32 = eframe::egui::Color32::from_rgb(255, 195, 105);
+
+fn forked_tree(root: &Path) -> Harness<'static, State> {
+    let sgf = "(;SZ[9];B[cc](;W[gg];B[cg];W[gc](;B[ee];W[ce];B[cd])(;B[fe];W[fd]))(;W[dd];B[ed])(;W[de];B[ef]))";
+    Harness::builder()
+        .with_size(eframe::egui::vec2(1200.0, 820.0))
+        .with_pixels_per_point(2.0)
+        .build_ui_state(
+            |ui, state: &mut State| state.render(ui),
+            imported_state(root, sgf),
+        )
+}
+
+fn tree_stone(h: &Harness<'_, State>, id: usize) -> eframe::egui::Pos2 {
+    let bounds = h.get_by_label(&format!("Tree node {id}")).rect();
+    h.output()
+        .shapes
+        .iter()
+        .find_map(|s| match &s.shape {
+            eframe::egui::Shape::Circle(c) if bounds.contains(c.center) => Some(c.center),
+            _ => None,
+        })
+        .expect("move should have a visible stone")
+}
+
+// Sample connector strokes in paint order, including a shared stem where the
+// inactive sibling could otherwise cover up the selected path.
+fn tree_edge_at(h: &Harness<'_, State>, at: eframe::egui::Pos2) -> Option<eframe::egui::Color32> {
+    use eframe::egui::{Shape, epaint::ColorMode};
+    h.output()
+        .shapes
+        .iter()
+        .rev()
+        .filter(|s| s.clip_rect.contains(at))
+        .find_map(|s| {
+            let (points, width, color) = match &s.shape {
+                Shape::LineSegment { points, stroke } => (&points[..], stroke.width, stroke.color),
+                Shape::Path(path) if !path.closed => {
+                    let ColorMode::Solid(color) = path.stroke.color else {
+                        return None;
+                    };
+                    (path.points.as_slice(), path.stroke.width, color)
+                }
+                _ => return None,
+            };
+            points
+                .windows(2)
+                .any(|pair| {
+                    let direction = pair[1] - pair[0];
+                    let t = ((at - pair[0]).dot(direction) / direction.length_sq()).clamp(0.0, 1.0);
+                    at.distance(pair[0] + t * direction) <= width / 2.0 + 0.5
+                })
+                .then_some(color)
+        })
+}
+
+#[test]
+fn tree_forks_run_between_columns_and_keep_unrelated_stones_clear() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let h = forked_tree(temp.path());
+    let parent = tree_stone(&h, 1);
+    let first_branch = tree_stone(&h, 10);
+    let second_branch = tree_stone(&h, 12);
+    let gap = parent.lerp(first_branch, 0.5);
+    assert!(
+        tree_edge_at(&h, gap).is_some(),
+        "the fork should descend between move columns"
+    );
+    assert!(
+        tree_edge_at(&h, eframe::egui::pos2(parent.x, gap.y)).is_none(),
+        "the fork runs down the parent column through stone labels"
+    );
+    let between_siblings = first_branch.lerp(second_branch, 0.5);
+    assert!(
+        tree_edge_at(&h, between_siblings).is_none(),
+        "siblings appear directly connected"
+    );
+
+    // Two consecutive turns have one-move alternatives on the same row.
+    let h = Harness::builder().build_ui_state(
+        |ui, state: &mut State| state.render(ui),
+        imported_state(
+            temp.path(),
+            "(;SZ[9];B[cc](;W[gg](;B[cg])(;B[ed]))(;W[dd]))",
+        ),
+    );
+    let first = tree_stone(&h, 5);
+    let next = tree_stone(&h, 4);
+    assert_eq!(first.y, next.y);
+    assert!(
+        tree_edge_at(&h, first.lerp(next, 0.5)).is_none(),
+        "independent forks sharing a row appear to continue into each other"
+    );
+}
+
+#[test]
+fn selecting_a_branch_highlights_its_route_back_to_the_fork() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let mut h = forked_tree(temp.path());
+    let first_line = tree_stone(&h, 10).lerp(tree_stone(&h, 11), 0.5);
+    let second_line = tree_stone(&h, 12).lerp(tree_stone(&h, 13), 0.5);
+    let shared_stem = tree_stone(&h, 1).lerp(tree_stone(&h, 10), 0.5);
+    for (leaf, played, active, other) in [
+        (11, Point::new(4, 3), first_line, second_line),
+        (13, Point::new(4, 5), second_line, first_line),
+    ] {
+        h.get_by_label(&format!("Tree node {leaf}")).click();
+        h.run();
+        assert_eq!(
+            h.state().snapshot.board.as_ref().unwrap().stone(played),
+            Some(Color::Black)
+        );
+        assert_eq!(
+            tree_edge_at(&h, active),
+            Some(CHART_VARIATION),
+            "selected branch lost its trace"
+        );
+        assert_eq!(
+            tree_edge_at(&h, shared_stem),
+            Some(CHART_VARIATION),
+            "trace stops short of the fork"
+        );
+        let inactive = tree_edge_at(&h, other).expect("the alternative must remain visible");
+        assert_ne!(inactive, CHART_VARIATION);
+    }
+    if let Some(path) = std::env::var_os("KATASTRO_TREE_PREVIEW") {
+        h.remove_cursor();
+        h.run();
+        h.render().unwrap().save(path).unwrap();
+    }
+    h.get_by_label("Tree node 2").click();
+    h.run();
+    assert_eq!(h.state().review.document().unwrap().selected, 2);
+    assert_ne!(tree_edge_at(&h, shared_stem), Some(CHART_VARIATION));
+}
+
 fn game_chart_color(score: bool) -> eframe::egui::Color32 {
     if score {
         eframe::egui::Color32::from_rgb(95, 206, 175)
@@ -2539,4 +2674,142 @@ fn delta_labels_fit_inside_equal_circles_on_a_19_by_19_board() {
             }
         }
     }
+}
+
+fn tree_caption_bounds(h: &Harness<'_, State>, id: usize, caption: &str) -> eframe::egui::Rect {
+    let hit = h.get_by_label(&format!("Tree node {id}")).rect();
+    let text = h
+        .output()
+        .shapes
+        .iter()
+        .find_map(|shape| match &shape.shape {
+            eframe::egui::Shape::Text(text)
+                if text.galley.text() == caption && hit.contains(text.pos) =>
+            {
+                Some(text.galley.rect.translate(text.pos.to_vec2()))
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("missing visible {caption:?} on tree node {id}"));
+    assert!(
+        hit.contains_rect(text),
+        "part of {caption} is outside its target"
+    );
+    assert!(
+        h.get_by_label("Timeline viewport")
+            .rect()
+            .contains_rect(text)
+    );
+    text
+}
+
+#[test]
+fn labeled_tree_coordinates_select_alternatives_and_pass() {
+    use egui_kittest::kittest::NodeT;
+    let temp = tempfile::TempDir::new().unwrap();
+    let sgf = "(;SZ[19];B[pd](;W[dp];B[];W[pp];B[dd])(;W[jj](;B[qn];W[nq])(;B[mk])))";
+    let mut h = Harness::builder()
+        .with_size(eframe::egui::vec2(1200.0, 860.0))
+        .build_ui_state(
+            |ui, state: &mut State| state.render(ui),
+            imported_state(temp.path(), sgf),
+        );
+    for (id, caption, number, point) in [
+        (2, "D4", "2", Some(Point::new(3, 15))),
+        (6, "K10", "2", Some(Point::new(9, 9))),
+        (3, "Pass", "3", None),
+    ] {
+        let label = tree_caption_bounds(&h, id, caption);
+        let stone_number = tree_caption_bounds(&h, id, number);
+        assert!(
+            stone_number.bottom() < label.top(),
+            "the caption covers the move number"
+        );
+        let description = h
+            .get_by_label(&format!("Tree node {id}"))
+            .accesskit_node()
+            .description()
+            .unwrap_or_default();
+        for detail in [if id == 3 { "Black" } else { "White" }, number, caption] {
+            assert!(
+                description.contains(detail),
+                "missing {detail} in {description:?}"
+            );
+        }
+        click_at(&mut h, label.center());
+        let doc = h.state().review.document().unwrap();
+        assert_eq!(doc.selected, id);
+        let board = h.state().snapshot.board.as_ref().unwrap();
+        if let Some(point) = point {
+            assert_eq!(board.stone(point), Some(Color::White));
+        } else {
+            assert_eq!(board.next, Color::White);
+            assert_eq!(board.stone(Point::new(9, 9)), None);
+        }
+        let hit = h.get_by_label(&format!("Tree node {id}")).rect();
+        assert!(
+            has_circle(&h, hit, |c| c.fill.a() == 0
+                && c.stroke.color.g() > c.stroke.color.r().saturating_add(40)),
+            "the selected stone lacks a visible outline"
+        );
+    }
+
+    let start = h.get_by_label("Tree node 0").rect();
+    let first = h.get_by_label("Tree node 1").rect();
+    let played = h.get_by_label("Tree node 2").rect();
+    let alternative = h.get_by_label("Tree node 6").rect();
+    assert!(
+        first.center().x - start.center().x <= 38.0,
+        "a narrow sidebar loses columns"
+    );
+    assert!(
+        alternative.center().y - played.center().y <= 39.0,
+        "the first fork is too far from its parent"
+    );
+    assert!(!first.intersects(start) && !played.intersects(alternative));
+}
+
+#[test]
+fn labeled_tree_distinguishes_start_setup_notes_and_played_root_moves() {
+    let temp = tempfile::TempDir::new().unwrap();
+    for (sgf, expected) in [
+        (
+            "(;SZ[9];AB[aa];C[Diagram];B[bb])",
+            vec![vec!["Start"], vec!["Setup"], vec!["Note"], vec!["1", "B8"]],
+        ),
+        (
+            "(;SZ[9]B[hh];W[])",
+            vec![vec!["1", "H2"], vec!["2", "Pass"]],
+        ),
+    ] {
+        let h = Harness::builder()
+            .with_size(eframe::egui::vec2(900.0, 680.0))
+            .build_ui_state(
+                |ui, state: &mut State| state.render(ui),
+                imported_state(temp.path(), sgf),
+            );
+        for (id, captions) in expected.into_iter().enumerate() {
+            let hit = h.get_by_label(&format!("Tree node {id}")).rect();
+            assert_eq!(painted_text_in(&h, hit), captions);
+        }
+    }
+}
+
+#[test]
+fn labeled_tree_keeps_three_digit_moves_and_edge_coordinates_readable_after_scrolling() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let sgf = format!("(;SZ[19]B[pd]{};W[sa])", ";W[];B[]".repeat(59));
+    let mut state = imported_state(temp.path(), &sgf);
+    state.review.select(119).unwrap();
+    state.sync();
+    let h = Harness::builder()
+        .with_size(eframe::egui::vec2(900.0, 680.0))
+        .build_ui_state(|ui, state: &mut State| state.render(ui), state);
+    let caption = tree_caption_bounds(&h, 119, "T19");
+    let number = tree_caption_bounds(&h, 119, "120");
+    let hit = h.get_by_label("Tree node 119").rect();
+    assert!(has_circle(&h, hit, |c| c.fill.a() > 0
+        && (number.center() - c.center).length() < 1.5
+        && number.width() <= 2.0 * c.radius - 1.0));
+    assert!(number.bottom() < caption.top());
 }

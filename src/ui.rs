@@ -23,6 +23,7 @@ pub enum Action {
     Training,
 }
 const ACCENT: Color32 = Color32::from_rgb(95, 206, 175);
+const VARIATION_COLOR: Color32 = Color32::from_rgb(255, 195, 105);
 const SUGGESTION_BLUE: Color32 = Color32::from_rgb(65, 145, 255);
 const MOVE_LOSS_COLORS: [(f64, Color32); 4] = [
     (0.5, Color32::from_rgb(49, 121, 86)),

@@ -193,6 +193,109 @@ fn nested_variations_keep_the_original_line_on_top_and_edges_to_the_right() {
 }
 
 #[test]
+fn compact_rows_reuse_finished_forks_and_keep_overlapping_continuations_traceable() {
+    let temp = TempDir::new().unwrap();
+    let source = fixture(temp.path(), "(;SZ[9];B[];W[];B[];W[];B[];W[])");
+    let mut app = review(temp.path());
+    app.import(&source).unwrap();
+    let line = app.document().unwrap().mainline.clone();
+
+    // Two adjacent one-move forks, then a two-move fork with two replies.
+    app.select(line[1]).unwrap();
+    let early = app.play(Some(Point::new(0, 0))).unwrap();
+    app.select(line[2]).unwrap();
+    let adjacent = app.play(Some(Point::new(1, 0))).unwrap();
+    app.select(line[4]).unwrap();
+    let fork = app.play(Some(Point::new(2, 0))).unwrap();
+    let reply = app.play(Some(Point::new(2, 1))).unwrap();
+    app.select(fork).unwrap();
+    let alternative = app.play(Some(Point::new(3, 1))).unwrap();
+
+    // This line begins beside the short fork but later overlaps both replies.
+    app.select(line[2]).unwrap();
+    let long = [
+        app.play(Some(Point::new(4, 0))).unwrap(),
+        app.play(None).unwrap(),
+        app.play(None).unwrap(),
+        app.play(Some(Point::new(4, 1))).unwrap(),
+    ];
+    let layout = app.document().unwrap().layout();
+    for id in [early, adjacent, fork, reply] {
+        assert_eq!(
+            layout[id].row, 1,
+            "disjoint forks share the first variation row"
+        );
+    }
+    assert!(layout[alternative].row > layout[reply].row);
+    for id in long {
+        assert!(
+            layout[id].row > layout[alternative].row,
+            "overlapping continuations keep their order"
+        );
+        assert_eq!(
+            layout[id].row, layout[long[0]].row,
+            "a continuation stays horizontal"
+        );
+    }
+
+    app.select(reply).unwrap();
+    let neighbor = app.document().unwrap().vertical_neighbor(true).unwrap();
+    assert_eq!(neighbor, alternative);
+    app.select(neighbor).unwrap();
+    let doc = app.document().unwrap();
+    assert_eq!(
+        doc.board(doc.selected).unwrap().stone(Point::new(3, 1)),
+        Some(Color::White)
+    );
+    assert_eq!(doc.vertical_neighbor(true), Some(long[3]));
+    let mut reopened = review(temp.path());
+    reopened.import(&source).unwrap();
+    assert_eq!(reopened.document().unwrap().layout(), layout);
+}
+
+#[test]
+fn playing_beyond_the_imported_game_starts_a_variation_under_the_original_endpoint() {
+    let temp = TempDir::new().unwrap();
+    let source = fixture(temp.path(), "(;SZ[9];B[aa];W[bb])");
+    let mut app = review(temp.path());
+    app.import(&source).unwrap();
+    let original = app.document().unwrap().mainline.clone();
+    let endpoint = *original.last().unwrap();
+    app.select(endpoint).unwrap();
+    let extension = app.play(Some(Point::new(2, 2))).unwrap();
+    let reply = app.play(None).unwrap();
+    let doc = app.document().unwrap();
+    let layout = doc.layout();
+    assert_eq!(
+        layout[extension].row, 1,
+        "the played row ends at the imported endpoint"
+    );
+    assert_eq!(layout[reply].row, layout[extension].row);
+    assert_eq!(layout[extension].column, layout[endpoint].column + 1);
+    assert!(original.iter().all(|id| layout[*id].row == 0));
+    assert_eq!(doc.continuation(endpoint), Some(extension));
+}
+
+#[test]
+fn tree_move_numbers_follow_the_board_across_root_moves_passes_and_nonmove_nodes() {
+    let temp = TempDir::new().unwrap();
+    let source = fixture(temp.path(), "(;SZ[9]B[aa];C[diagram];AW[bb];W[];B[cc])");
+    let mut app = review(temp.path());
+    app.import(&source).unwrap();
+    app.select(2).unwrap();
+    let alternative = app.play(Some(Point::new(3, 3))).unwrap();
+    let doc = app.document().unwrap();
+    let layout = doc.layout();
+    for id in doc.mainline.iter().copied().chain([alternative]) {
+        assert_eq!(
+            layout[id].move_number,
+            doc.board(id).unwrap().move_number,
+            "tree move number at node {id}"
+        );
+    }
+}
+
+#[test]
 fn invalid_import_does_not_destroy_the_current_review() {
     let temp = TempDir::new().unwrap();
     let source = fixture(temp.path(), "(;SZ[9];B[cc])");

@@ -1,8 +1,7 @@
-use super::{ACCENT, Action, command};
+use super::{ACCENT, Action, VARIATION_COLOR, command};
 use crate::worker::{Command, Snapshot};
 use eframe::egui::{self, Color32, WidgetInfo, WidgetType};
 use egui_plot::{Line, Plot, PlotUi, Points};
-const CHART_VARIATION: Color32 = Color32::from_rgb(255, 195, 105);
 
 pub fn chart_points(snapshot: &Snapshot, score: bool) -> Vec<Option<[f64; 2]>> {
     let Some(doc) = &snapshot.document else {
@@ -113,7 +112,7 @@ pub(super) fn chart(ui: &mut egui::Ui, snapshot: &Snapshot, score: bool, out: &m
                 plot_ui,
                 "Variation",
                 &variation[fork..],
-                CHART_VARIATION,
+                VARIATION_COLOR,
                 2.0,
             );
         } else {
