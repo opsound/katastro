@@ -834,3 +834,7 @@ cargo test --test review
 cargo test --test ui
 KATASTRO_TREE_PREVIEW=/tmp/variation-tree.png cargo test --test ui selecting_a_branch_highlights_its_route
 ```
+
+### Rounded fork connectors
+
+Each fork now curves into and out of the vertical line shared by its siblings. The UI test selects a one-row fork and a two-row fork, verifies the white stone on the board, and samples the visible gold stroke every two screen points. With the original angular connectors, the direction changed by 27.1° between adjacent samples on the one-row fork. Both forks pass with the rounded stroke. Temporarily restoring the angular connectors reproduced the failure. The GPU preview above shows both fork heights.

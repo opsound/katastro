@@ -648,6 +648,54 @@ fn tree_forks_run_between_columns_and_keep_unrelated_stones_clear() {
     );
 }
 
+// Find the center of the visible highlight by sampling across its painted width.
+fn selected_fork_x(h: &Harness<'_, State>, left: f32, right: f32, y: f32) -> f32 {
+    let mut hits = (0..=((right - left) * 4.0) as usize)
+        .map(|i| left + i as f32 * 0.25)
+        .filter(|x| tree_edge_at(h, eframe::egui::pos2(*x, y)) == Some(CHART_VARIATION));
+    let first = hits.next().expect("the selected fork has a gap");
+    (first + hits.next_back().unwrap_or(first)) / 2.0
+}
+
+#[test]
+fn short_and_tall_forks_turn_smoothly_through_the_selected_route() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let mut h = forked_tree(temp.path());
+    let parent = tree_stone(&h, 1);
+    for (branch, point) in [(10, Point::new(3, 3)), (12, Point::new(3, 4))] {
+        h.get_by_label(&format!("Tree node {branch}")).click();
+        h.run();
+        assert_eq!(
+            h.state().snapshot.board.as_ref().unwrap().stone(point),
+            Some(Color::White)
+        );
+        let child = tree_stone(&h, branch);
+
+        // Trace only the exposed part of the connector, clear of the endpoint stones.
+        let centers: Vec<_> = (10..=(child.y - parent.y) as usize - 10)
+            .step_by(2)
+            .map(|dy| selected_fork_x(&h, parent.x, child.x, parent.y + dy as f32))
+            .collect();
+        let directions: Vec<_> = centers
+            .windows(2)
+            .map(|w| ((w[1] - w[0]) / 2.0).atan().to_degrees())
+            .collect();
+        let sharpest_turn = directions
+            .windows(2)
+            .map(|w| (w[1] - w[0]).abs())
+            .fold(0.0, f32::max);
+        assert!(
+            sharpest_turn < 16.0,
+            "fork to node {branch} kinks by {sharpest_turn:.1} degrees in two points"
+        );
+        // A straight diagonal is smooth but would never turn down into the gutter.
+        assert!(
+            directions.iter().any(|angle| angle.abs() < 12.0),
+            "fork to node {branch} never approaches the vertical stem"
+        );
+    }
+}
+
 #[test]
 fn selecting_a_branch_highlights_its_route_back_to_the_fork() {
     let temp = tempfile::TempDir::new().unwrap();

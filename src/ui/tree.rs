@@ -41,15 +41,27 @@ fn paint_edge(ui: &egui::Ui, from: Pos2, to: Pos2, stroke: Stroke) {
     } else {
         let gutter = (from.x + to.x) * 0.5;
         let bend = (gutter - from.x).min((to.y - from.y) * 0.5);
-        ui.painter().add(egui::Shape::line(
-            vec![
-                from,
-                Pos2::new(gutter, from.y + bend),
-                Pos2::new(gutter, to.y - bend),
-                to,
-            ],
-            stroke,
-        ));
+        let turn = |points| {
+            egui::epaint::QuadraticBezierShape::from_points_stroke(
+                points,
+                false,
+                Color32::TRANSPARENT,
+                stroke,
+            )
+            .flatten(None)
+        };
+        // Both turns meet the shared stem vertically. Stroke them together to avoid seams.
+        let mut points = turn([
+            from,
+            Pos2::new(gutter, from.y),
+            Pos2::new(gutter, from.y + bend),
+        ]);
+        points.extend(turn([
+            Pos2::new(gutter, to.y - bend),
+            Pos2::new(gutter, to.y),
+            to,
+        ]));
+        ui.painter().add(egui::Shape::line(points, stroke));
     }
 }
 
