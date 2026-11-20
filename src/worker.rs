@@ -1,4 +1,4 @@
-use crate::updates::{self, Wake};
+use crate::updates::Wake;
 use crate::{
     Analysis, Board, Document, EngineProfile, NodeId, Point, Result, Review,
     engine::{Engine, EngineConfig, EngineEvent},
@@ -6,6 +6,8 @@ use crate::{
 };
 use serde_json::json;
 mod discovery;
+mod snapshots;
+pub use snapshots::Snapshots;
 use std::{
     collections::BTreeMap,
     path::PathBuf,
@@ -62,7 +64,7 @@ impl Snapshot {
 }
 pub struct Client {
     pub commands: Sender<Command>,
-    pub snapshots: Receiver<Snapshot>,
+    pub snapshots: Snapshots,
     thread: Option<JoinHandle<()>>,
 }
 impl Client {
@@ -76,7 +78,7 @@ impl Client {
         wake: Wake,
     ) -> Self {
         let (commands, rx) = mpsc::channel();
-        let (publish, snapshots) = updates::channel(wake);
+        let (publish, snapshots) = Snapshots::channel(wake);
         let thread = thread::spawn(move || match Worker::new(reviews, cache, config.clone()) {
             Ok(mut worker) => worker.run(rx, publish),
             Err(error) => {

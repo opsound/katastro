@@ -793,3 +793,26 @@ cargo test --test play_ai
 # On macOS with a working engine backend
 cargo test --test play_ai -- --ignored --test-threads=1
 ```
+
+## Memory during unattended review
+
+The review worker used to queue every full-document snapshot while its UI receiver was idle. On a 201-position 19×19 game, the old worker accumulated 646 snapshots in 30 seconds. A macOS memory-pressure report from a longer session attributed 59.3 GiB to the app and 0.9 GiB to the engine.
+
+The worker now replaces its single unread snapshot and requests a repaint when that slot first fills. The public worker integration test leaves the receiver unread through chart coverage, 64-visit refinement and pause. Its first read returns a complete paused chart, all 21 positions have durable analysis, and a later selection wakes the consumer again. Restoring the FIFO reproduced an empty chart on the first read. Restoring a repaint for every publication produced nine requests while the receiver was idle.
+
+The opt-in release measurement used the same 201-position SGF, fresh databases, default unlimited review settings, and the bundled Metal engine for both runs. The window consumer stopped reading after the initial chart pass. macOS `vmmap -summary` reported the following physical footprints.
+
+| Time unread | Reviewer before | Reviewer after | KataGo before | KataGo after |
+| --- | ---: | ---: | ---: | ---: |
+| 0 seconds | 16.2 MiB | 16.5 MiB | 765.4 MiB | 757.6 MiB |
+| 10 seconds | 528.8 MiB | 22.1 MiB | 767.8 MiB | 760.7 MiB |
+| 20 seconds | 737.3 MiB | 23.5 MiB | 796.1 MiB | 648.0 MiB |
+| 30 seconds | 906.8 MiB | 23.6 MiB | 787.3 MiB | 454.7 MiB |
+
+The fixed run had one unread snapshot when reading resumed. The measurements cover the review worker process and its engine. A separate launch of the signed desktop app, including the renderer, used the same game with fresh storage and no user input. At 90 seconds the old app used 731.2 MiB and the rebuilt app used 117.9 MiB.
+
+```sh
+cargo test --test analysis_queue an_unread_review
+# On Apple Silicon with Metal, provide a local 19×19 main-line game.
+KATASTRO_MEMORY_SGF=/path/to/game.sgf cargo test --release --test performance live_unattended_review_memory -- --ignored --nocapture
+```

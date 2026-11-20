@@ -37,7 +37,7 @@ Current module ownership:
 | Desktop orchestration, library coordination, engine drafts, training/review transitions | `desktop.rs`, `desktop/{library,settings,training}.rs` |
 | Snapshot delivery and repaint notification | `updates.rs` |
 
-Training shares the review database connection; its attempts remain separate from evictable analysis. All three background clients queue snapshots before waking the UI. Archive startup and later commands use the same dispatch loop, including cancellation checks. The review worker's driver preserves command ordering and publication cadence while delegating engine events, refinement, and training preparation to separate methods.
+Training shares the review database connection; its attempts remain separate from evictable analysis. The review worker keeps one unread snapshot. Later updates replace it until the UI reads it, when the next publication can request another repaint. Engine replies still go through the scheduler and cache while the window is idle. Archive startup and later commands use the same dispatch loop, including cancellation checks. The review worker's driver preserves command ordering and publication cadence while delegating engine events, refinement, and training preparation to separate methods.
 
 The desktop library component owns each archive client, its latest snapshot, and its local folder. It routes server/command pairs together and translates library interactions into the same application actions as the main review UI. Engine-setting drafts live with their controls, and training progress snapshots share one constructor. Archive views own password zeroization through the password value's type.
 

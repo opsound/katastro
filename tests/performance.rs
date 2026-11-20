@@ -162,3 +162,64 @@ fn warm_resume_to_worker_snapshot() {
         samples[3].as_secs_f64() * 1000.
     );
 }
+
+// Historical backlog measurement. Run this test alone so process footprint
+// reflects a single reviewer. Only this opt-in measurement uses elapsed time.
+#[cfg(target_os = "macos")]
+#[test]
+#[ignore = "measures an unread review with real KataGo and a representative SGF on macOS"]
+fn live_unattended_review_memory() {
+    use std::process::Command as Process;
+    let source =
+        PathBuf::from(std::env::var_os("KATASTRO_MEMORY_SGF").expect("KATASTRO_MEMORY_SGF"));
+    let temp = tempfile::tempdir().unwrap();
+    let cfg = EngineConfig::discover(temp.path());
+    let client = Client::spawn(temp.path().join("reviews"), temp.path().join("cache"), cfg);
+    client.send(Command::OpenAndAnalyze(source)).unwrap();
+    let warm = until(&client, |s| {
+        s.coverage.0 > 0 && s.coverage.0 == s.coverage.1
+    });
+    println!("positions={}", warm.coverage.0);
+    drop(warm);
+    let pid = std::process::id().to_string();
+    let child = Process::new("/usr/bin/pgrep")
+        .args(["-P", &pid, "-x", "katago"])
+        .output()
+        .unwrap();
+    assert!(child.status.success());
+    let child = String::from_utf8(child.stdout).unwrap();
+    let footprint = |pid: &str| {
+        let out = Process::new("/usr/bin/vmmap")
+            .args(["-summary", pid])
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let report = String::from_utf8(out.stdout).unwrap();
+        report
+            .lines()
+            .find_map(|line| line.strip_prefix("Physical footprint:"))
+            .unwrap()
+            .trim()
+            .to_owned()
+    };
+    let start = Instant::now();
+    for secs in [0, 10, 20, 30] {
+        std::thread::sleep(Duration::from_secs(secs).saturating_sub(start.elapsed()));
+        println!(
+            "unread_s={secs} reviewer={} katago={}",
+            footprint(&pid),
+            footprint(child.trim())
+        );
+    }
+    let mut unread = 0;
+    while client.snapshots.try_recv().is_ok() {
+        unread += 1;
+    }
+    println!("unread_snapshots={unread}");
+    client.send(Command::Pause).unwrap();
+    until(&client, |s| !s.running && s.coverage.0 == s.coverage.1);
+}

@@ -357,3 +357,76 @@ fn selecting_one_turn_of_a_batch_keeps_other_results_and_persists_the_replacemen
     assert_eq!(reopened.document().unwrap().selected, 1);
     assert_eq!(reopened.document().unwrap().mainline.len(), 21);
 }
+
+// A hidden review window can stop consuming repaints for hours. Analysis must
+// still finish and persist, and the first repaint must show the current game.
+#[test]
+fn an_unread_review_receives_the_latest_analysis_with_one_pending_repaint() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    let temp = tempfile::tempdir().unwrap();
+    let source = game(temp.path());
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let config = config(temp.path(), &listener);
+    let profile = Engine::profile(&config).unwrap();
+    let db = temp.path().join("reviews");
+    let cache = temp.path().join("cache");
+    let wakes = Arc::new(AtomicUsize::new(0));
+    let counter = wakes.clone();
+    let client = Client::spawn_with_wake(
+        db.clone(),
+        cache.clone(),
+        config,
+        Some(Arc::new(move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+        })),
+    );
+    client
+        .send(Command::OpenAndAnalyze(source.clone()))
+        .unwrap();
+    let mut engine = control(&listener);
+    loop {
+        let request = query(&mut engine);
+        if request["maxVisits"].as_u64().unwrap() > 64 {
+            break;
+        }
+        for turn in request["analyzeTurns"].as_array().unwrap() {
+            finish(&mut engine, &request, turn.as_u64().unwrap() as usize);
+        }
+    }
+
+    // Seeing the second terminate_all on the wire means the worker has already
+    // published the first pause. The window has consumed nothing yet.
+    for _ in 0..2 {
+        client.send(Command::Pause).unwrap();
+        while query(&mut engine)["action"] != "terminate_all" {}
+    }
+    let pending_wakes = wakes.load(Ordering::SeqCst);
+    let latest = client.recv(Duration::from_secs(5)).unwrap();
+    assert_eq!(
+        latest.coverage,
+        (21, 21),
+        "the first repaint showed an obsolete chart"
+    );
+    assert!(!latest.running);
+    assert_eq!(
+        pending_wakes, 1,
+        "obsolete repaints accumulated while the window was idle"
+    );
+    let mut reader = Review::new(&db, &cache).unwrap();
+    reader.import(&source).unwrap();
+    let saved = reader.cached_analysis(&profile).unwrap();
+    assert_eq!(saved.len(), 21);
+    assert!(saved.values().all(|v| v.visits >= 64));
+
+    client.send(Command::Select(7)).unwrap();
+    until(&client, |s| {
+        s.document.as_ref().is_some_and(|d| d.selected == 7)
+    });
+    client.send(Command::Pause).unwrap();
+    assert_eq!(query(&mut engine)["action"], "terminate_all");
+    assert!(wakes.load(Ordering::SeqCst) > pending_wakes);
+}
