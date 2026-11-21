@@ -33,6 +33,14 @@ struct Services {
     dialogs: Box<dyn FileDialogs>,
     sync: Vec<crate::archive::Options>,
 }
+fn default_archives(folder: &std::path::Path) -> Vec<crate::archive::Options> {
+    use crate::archive::Options;
+    vec![
+        Options::new(folder.join("Pandanet")),
+        Options::fox(folder.join("Fox")),
+        Options::ogs(folder.join("OGS")),
+    ]
+}
 pub struct DesktopApp {
     pub state: Snapshot,
     pub client: Client,
@@ -76,13 +84,11 @@ impl DesktopApp {
         initial: Option<PathBuf>,
         sync: crate::archive::Options,
     ) -> Self {
-        let fox = crate::archive::Options::fox(
-            sync.root
-                .parent()
-                .unwrap_or(std::path::Path::new("."))
-                .join("Fox"),
-        );
-        Self::with_archives(ctx, reviews, cache, config, initial, vec![sync, fox])
+        let folder = sync.root.parent().unwrap_or(std::path::Path::new("."));
+        let mut archives = default_archives(folder);
+        archives.retain(|archive| archive.server != sync.server);
+        archives.insert(0, sync);
+        Self::with_archives(ctx, reviews, cache, config, initial, archives)
     }
     pub fn new(
         ctx: &egui::Context,
@@ -109,10 +115,7 @@ impl DesktopApp {
         dialogs: Box<dyn FileDialogs>,
     ) -> Self {
         let folder = reviews.parent().unwrap_or(std::path::Path::new("."));
-        let sync = vec![
-            crate::archive::Options::new(folder.join("Pandanet")),
-            crate::archive::Options::fox(folder.join("Fox")),
-        ];
+        let sync = default_archives(folder);
         Self::with_services(
             ctx,
             reviews,

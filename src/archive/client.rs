@@ -31,6 +31,14 @@ pub struct Options {
     pub clock: Arc<dyn Clock>,
 }
 impl Options {
+    pub fn ogs(root: PathBuf) -> Self {
+        Self {
+            server: super::Server::Ogs,
+            endpoint: super::ogs::ENDPOINT.into(),
+            ..Self::new(root)
+        }
+    }
+
     pub fn fox(root: PathBuf) -> Self {
         Self {
             server: super::Server::Fox,

@@ -2,6 +2,44 @@
 use egui_kittest::{Harness, kittest::Queryable};
 use katastro::{Color, Point, desktop::DesktopApp, engine::EngineConfig};
 use std::time::{Duration, Instant};
+
+// Both production startup and an application supplying OGS options must expose
+// exactly one OGS connection, so settings and sync commands reach the same worker.
+#[test]
+fn fresh_desktop_offers_ogs_in_sync_settings() {
+    for custom_ogs in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let mut app = Harness::builder()
+            .with_size(eframe::egui::vec2(1200., 820.))
+            .build_eframe(|cc| {
+                let reviews = temp.path().join("reviews");
+                let cache = temp.path().join("cache");
+                let config = EngineConfig {
+                    executable: "unused".into(),
+                    model: "unused".into(),
+                    analysis: Default::default(),
+                };
+                if custom_ogs {
+                    let options = katastro::archive::Options::ogs(temp.path().join("custom"));
+                    DesktopApp::with_sync(&cc.egui_ctx, reviews, cache, config, None, options)
+                } else {
+                    DesktopApp::new(&cc.egui_ctx, reviews, cache, config, None)
+                }
+            });
+        app.get_by_label("Games").click();
+        app.run_steps(3);
+        app.get_by_label("Sync settings").click();
+        app.run_steps(3);
+        assert_eq!(app.query_all_by_label("OGS sync").count(), 1);
+        app.get_by_label("OGS sync").click();
+        app.run_steps(3);
+        app.get_by_label("OGS username");
+        if custom_ogs {
+            assert!(app.query_by_label_contains("custom").is_some());
+        }
+    }
+}
+
 #[test]
 fn desktop_opens_analyzes_and_saves_a_board_variation_through_the_worker() {
     let temp = tempfile::TempDir::new().unwrap();

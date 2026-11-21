@@ -5,7 +5,7 @@ Native macOS Go review app in Rust, powered by KataGo.
 - Cached points and winrate charts that refine in the background.
 - Autosaved variations in a tree that preserves the original game.
 - AI move suggestions and optional group strength overlays.
-- Automatic Fox and Pandanet downloads and a searchable local game library.
+- Automatic OGS, Fox, and Pandanet downloads and a searchable local game library.
 - Play as Black or White against a human-like opponent from 20 kyu to 9 dan.
 - Training from costly mistakes in your games, with a 1-dan opponent and blind retries.
 
@@ -53,7 +53,9 @@ The chevrons beside the move number in **Variations** step backward and forward.
 
 ## Game libraries
 
-For Fox, open **Games → Sync settings → Fox sync** and enter your Fox username. Use the server filter in **Games** to browse either archive or both. See [Fox sync](docs/fox-sync.md).
+For Online Go Server, open **Games → Sync settings → OGS sync**, enter your OGS username, and choose **Connect and sync**. Katastro downloads your finished public games. Select **OGS games** to review them or choose **Train from these games** to practice as that player.
+
+For Fox, open **Games → Sync settings → Fox sync** and enter your Fox username. The filters in **Games** let you browse one server or all of them together. [Fox sync](docs/fox-sync.md)
 
 For Pandanet, click **Pandanet** at the bottom right, enter your login, and choose **Connect and sync**. **Remember login in Keychain** enables automatic sign-in after reopening. With automatic sync enabled, Katastro checks on startup and every 15 minutes while the app is open.
 
@@ -72,7 +74,7 @@ Retry without hints after a failure, choose **Next problem** after any result or
 - Reviews and completed training attempts: `~/Library/Application Support/Katastro/reviews.sqlite`
 - Training review SGFs: `~/Library/Application Support/Katastro/Training/`
 - Games against the AI: `~/Library/Application Support/Katastro/Played Games/`
-- Fox and Pandanet originals and sync indexes are in `~/Library/Application Support/Katastro/Fox/` and `~/Library/Application Support/Katastro/Pandanet/`
+- Each server keeps its originals and sync index in its own folder under `~/Library/Application Support/Katastro/` (`OGS/`, `Fox/`, and `Pandanet/`).
 - Remembered Pandanet password: macOS login Keychain
 - Analysis cache: `~/Library/Caches/Katastro/analysis.sqlite`
 

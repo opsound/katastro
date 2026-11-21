@@ -9,6 +9,7 @@ use std::{
 use zeroize::Zeroizing;
 mod fox;
 mod http;
+mod ogs;
 mod pandanet;
 mod remote;
 mod storage;
@@ -18,12 +19,14 @@ pub enum Server {
     #[default]
     Pandanet,
     Fox,
+    Ogs,
 }
 impl Server {
     pub fn label(self) -> &'static str {
         match self {
             Self::Pandanet => "Pandanet",
             Self::Fox => "Fox",
+            Self::Ogs => "OGS",
         }
     }
 }
@@ -193,8 +196,12 @@ impl Service {
             } => {
                 let password = Zeroizing::new(password);
                 let username = username.trim();
+                let too_long = match self.state.server {
+                    Server::Ogs => username.chars().count() > 128,
+                    Server::Pandanet | Server::Fox => username.len() > 64,
+                };
                 if username.is_empty()
-                    || username.len() > 64
+                    || too_long
                     || username.chars().any(|c| c.is_control())
                     || (self.state.server == Server::Pandanet && password.is_empty())
                 {

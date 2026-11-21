@@ -52,10 +52,14 @@ impl View {
             .default_width(1000.)
             .default_height(580.)
             .show(ctx, |ui| {
-                let Some((state, folder)) = states.iter().find(|(s, _)| s.server == self.server)
+                let Some((state, folder)) = states
+                    .iter()
+                    .find(|(s, _)| s.server == self.server)
+                    .or_else(|| states.first())
                 else {
                     return;
                 };
+                self.server = state.server;
 
                 ui.horizontal(|ui| {
                     ui.heading(format!(
@@ -131,7 +135,8 @@ impl View {
                         }
                         ui.small("Checks every 15 minutes while Katastro is open.");
                     });
-                    if state.server == Server::Fox {
+                    let needs_password = state.server == Server::Pandanet;
+                    if !needs_password {
                         ui.small("Public game records · only your username is needed.");
                     }
                     egui::Grid::new("pandanet-login")
@@ -142,7 +147,7 @@ impl View {
                                 (username_label.as_str(), &mut self.username, false),
                                 ("Pandanet password", &mut *self.password, true),
                             ] {
-                                if secret && state.server == Server::Fox {
+                                if secret && !needs_password {
                                     continue;
                                 }
                                 let label = ui.label(label);
@@ -156,13 +161,13 @@ impl View {
                             }
                         });
                     ui.horizontal(|ui| {
-                        if state.server == Server::Pandanet {
+                        if needs_password {
                             ui.checkbox(&mut self.remember, "Remember login in Keychain");
                         }
                         if ui
                             .add_enabled(
                                 !self.username.trim().is_empty()
-                                    && (state.server == Server::Fox || !self.password.is_empty()),
+                                    && (!needs_password || !self.password.is_empty()),
                                 egui::Button::new("Connect and sync"),
                             )
                             .clicked()
@@ -171,8 +176,12 @@ impl View {
                                 state.server,
                                 Command::Connect {
                                     username: self.username.clone(),
-                                    password: std::mem::take(&mut *self.password),
-                                    remember: self.remember,
+                                    password: if needs_password {
+                                        std::mem::take(&mut *self.password)
+                                    } else {
+                                        String::new()
+                                    },
+                                    remember: needs_password && self.remember,
                                 },
                             ));
                         }
@@ -184,10 +193,10 @@ impl View {
                                 actions.command =
                                     Some((state.server, Command::SetAutomatic(automatic)));
                             }
-                            let label = if state.server == Server::Fox {
-                                "Disconnect Fox"
+                            let label = if needs_password {
+                                "Disconnect and forget login".to_owned()
                             } else {
-                                "Disconnect and forget login"
+                                format!("Disconnect {}", state.server.label())
                             };
                             if ui.button(label).clicked() {
                                 actions.command = Some((state.server, Command::Disconnect));
@@ -229,11 +238,10 @@ impl View {
                 let label = ui
                     .horizontal(|ui| {
                         let label = ui.label("Search synced games");
-                        for (filter, text) in [
-                            (None, "All servers"),
-                            (Some(Server::Pandanet), "Pandanet"),
-                            (Some(Server::Fox), "Fox"),
-                        ] {
+                        let filters = std::iter::once(None)
+                            .chain(states.iter().map(|(snapshot, _)| Some(snapshot.server)));
+                        for filter in filters {
+                            let text = filter.map_or("All servers", Server::label);
                             let response = ui.selectable_label(self.filter == filter, text);
                             response.widget_info(|| {
                                 egui::WidgetInfo::labeled(

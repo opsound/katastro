@@ -1,5 +1,5 @@
 //! Protocol-specific requests; storage and scheduling are shared.
-use super::{Cancellation, Game, Server, fox, pandanet};
+use super::{Cancellation, Game, Server, fox, ogs, pandanet};
 use crate::Result;
 use reqwest::Url;
 use std::time::Duration;
@@ -16,12 +16,14 @@ pub(super) struct Page {
 pub(super) enum Remote {
     Pandanet(pandanet::Remote),
     Fox(fox::Remote),
+    Ogs(ogs::Remote),
 }
 impl Remote {
     pub fn new(endpoint: &str, server: Server) -> Result<Self> {
         Ok(match server {
             Server::Pandanet => Self::Pandanet(pandanet::Remote::new(endpoint)?),
             Server::Fox => Self::Fox(fox::Remote::new(endpoint)?),
+            Server::Ogs => Self::Ogs(ogs::Remote::new(endpoint)?),
         })
     }
     pub fn set_interval(&mut self, interval: Duration) {
@@ -33,12 +35,14 @@ impl Remote {
         match self {
             Self::Pandanet(r) => r.reset(),
             Self::Fox(r) => r.reset(),
+            Self::Ogs(r) => r.reset(),
         }
     }
     pub fn account(&mut self, username: &str, cancel: &Cancellation) -> Result<Option<String>> {
         match self {
             Self::Pandanet(_) => Ok(None),
             Self::Fox(r) => r.account(username, cancel).map(Some),
+            Self::Ogs(r) => r.account(username, cancel).map(Some),
         }
     }
     pub fn page(
@@ -51,12 +55,14 @@ impl Remote {
         match self {
             Self::Pandanet(r) => r.page(username, password, page, cancel),
             Self::Fox(r) => r.page(page, cancel),
+            Self::Ogs(r) => r.page(page, cancel),
         }
     }
     pub fn download(&mut self, url: Url, cancel: &Cancellation) -> Result<Vec<u8>> {
         match self {
             Self::Pandanet(r) => r.download(url, cancel),
             Self::Fox(r) => r.download(url, cancel),
+            Self::Ogs(r) => r.download(url, cancel),
         }
     }
 }

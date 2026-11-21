@@ -133,10 +133,10 @@ impl Service {
         }
         let document =
             crate::Document::parse(bytes).map_err(|e| format!("Could not import this SGF: {e}"))?;
-        if self.state.server == Server::Fox {
+        if matches!(self.state.server, Server::Fox | Server::Ogs) {
             let root = &document.nodes[0];
-            let player = |name, rank| {
-                let name = root.property(name).unwrap_or("");
+            let player = |name, rank, listed: &str| {
+                let name = root.property(name).unwrap_or(listed);
                 let rank = root
                     .property(rank)
                     .unwrap_or("")
@@ -144,8 +144,8 @@ impl Service {
                     .replace('段', "d");
                 format!("{name} {rank}").trim().to_owned()
             };
-            game.black = player("PB", "BR");
-            game.white = player("PW", "WR");
+            game.black = player("PB", "BR", &game.black);
+            game.white = player("PW", "WR", &game.white);
             game.result = root.property("RE").unwrap_or("").into();
         }
         self.store(game, bytes)

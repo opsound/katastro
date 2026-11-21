@@ -69,6 +69,7 @@ impl Service {
                 .limit
                 .map_or(usize::MAX, |limit| limit.saturating_sub(scanned));
             let entries: Vec<_> = page.entries.into_iter().take(remaining).collect();
+            let has_entries = !entries.is_empty();
             scanned += entries.len();
             let pending: Vec<_> = entries
                 .into_iter()
@@ -81,7 +82,7 @@ impl Service {
                 })
                 .filter(|entry| seen.insert(entry.game.id.clone()))
                 .collect();
-            let all_known = pending.is_empty();
+            let all_known = has_entries && pending.is_empty();
             for batch in pending.chunks(self.parallel_downloads) {
                 cancel.check()?;
                 let results = if self.parallel_downloads == 1 {

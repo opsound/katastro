@@ -5,10 +5,10 @@ password or Keychain entry. Katastro checks every 15 minutes while open, beginni
 at startup, and offers a manual sync and an automatic-sync toggle. The default
 scope is the latest 200 games; changing the limit never removes earlier downloads.
 
-The shared Games table offers All servers, Pandanet, and Fox filters, a sortable
+The shared Games table offers a filter for each server, a sortable
 Server column, search, ranks beside names, and trophies based on each archive's
 own player name. Sync controls name their server. Training setup selects one
-server/account; idle preparation processes both archives sequentially on the
+server/account. Idle preparation processes the connected archives sequentially on the
 existing engine. Opening a game, pausing, or entering training still takes priority.
 
 ## Protocol and references
@@ -44,7 +44,7 @@ above were verified directly. No reference implementation code was copied.
 recent-history cap, and retry policy across providers. Protocol implementations
 are separate; `pandanet` remains an alias for the original public application API.
 Each provider has a separate directory and database under Application Support /
-Katastro (`Pandanet` and `Fox`). Existing Pandanet storage and Keychain entries
+Katastro (`Pandanet`, `Fox`, and `OGS`). Existing Pandanet storage and Keychain entries
 need no migration. Fox originals retain their exact downloaded bytes, including
 Fox komi encoding; the existing SGF importer normalizes analysis semantics.
 Ranks and results in the table come from the parsed SGF. Chinese rank suffixes

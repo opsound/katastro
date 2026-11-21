@@ -863,3 +863,21 @@ cargo test --test training_ui report_
 mkdir -p local/training-preview
 KATASTRO_TRAINING_PREVIEW=local/training-preview cargo test --test training_ui report_
 ```
+
+## OGS game sync
+
+The desktop tests open Games → Sync settings on a fresh install and connect by username against a loopback OGS archive. They exercise manual sync, filtering, opening the downloaded original, and selecting the OGS player for training. The fixture gives Fox and OGS the same game ID and different SGFs so opening the wrong archive is observable.
+
+The archive tests use temporary SQLite databases and parse downloaded SGFs. They cover exact account selection from similarly named players, paginated finished-game history, a recent-game limit, SGF ranks and results, retrying a failed download, and reopening a library without downloading the same originals again. An incremental check places a new public game below a page containing only ineligible games. The shared transport test exercises the OGS response-size limit and HTTP 429/503 retries.
+
+```sh
+cargo test --test ogs_sync --test ogs_ui --test desktop --test archive_transport
+# Live check requires network access and an OGS username with a finished public game.
+KATASTRO_OGS_USERNAME='<public username>' cargo test --test ogs_sync live_ogs_imports_one_public_game -- --ignored
+```
+
+The fresh desktop originally lacked the OGS connection. Supplying custom OGS options initially created a duplicate connection, a failure reproduced by removing provider deduplication. A 128-character Unicode username now resolves its own game, and a 129-character name is rejected locally. Reintroducing the byte-based limit prevented the valid account from syncing. Deliberately removing its startup registration or filter, requiring a password, or dropping the OGS-only selection fallback reproduced the corresponding UI failures. Accepting a prefix match or foreign game, allowing a foreign pagination link, including private or ongoing games, dropping team membership, or rejecting a one-game overlap each failed an archive check. Restoring the old metadata or incremental stop condition dropped the SGF rank or missed the next public game.
+
+A live Rust check imported and parsed one finished game from a public OGS bot into temporary storage. OGS rejected a compound date-and-ID sort with HTTP 404. The integration uses the supported descending completion-time sort, and the fixture reproduces that restriction. [OGS API schema](https://online-go.com/api-docs/schema/)
+
+All 221 routine workspace tests passed. The suite reserved 25 opt-in checks, including the live OGS check run separately above. Formatting, strict workspace Clippy, and strict signature verification of the rebuilt macOS app passed.
