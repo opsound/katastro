@@ -850,3 +850,16 @@ cargo test --test ui variations_header
 # On a Mac with a working wgpu adapter
 KATASTRO_MOVE_MENU_PREVIEW=/tmp/move-menu.png cargo test --test ui variations_header_menu
 ```
+
+## Training recap score scale
+
+In a completed exercise spanning −2 to +8 points, the recap showed only zero on the vertical axis. The default grid skipped from one-point ticks, which were too close together to label, to ten-point ticks outside the visible range. The recap now chooses tick intervals based on the visible score range and plot height, labels the axis in points, and reserves space to the left of both curves.
+
+The training UI tests read the painted tick values and verify their heights against both score curves at 900×680 and 1200×820. They also cover half-point scores, a pending comparison between −0.25 and +0.25 points, label clipping, and collisions. Restoring the original axis reproduced the zero-only scale. Removing the unit caption or rounding a 2.5-point tick to 2 also failed the checks.
+
+```sh
+cargo test --test training_ui report_
+# Optional GPU render on a Mac with a working wgpu adapter
+mkdir -p local/training-preview
+KATASTRO_TRAINING_PREVIEW=local/training-preview cargo test --test training_ui report_
+```

@@ -48,6 +48,8 @@ These are explicit training thresholds, not statistical confidence intervals or 
 
 The report includes a score graph with **Recorded** and **Attempt** overlaid from the exercise position through the final reply, aligned by moves from the start and shown from the player's perspective. Both players' moves appear in the graph; only the player's losses affect the pass/fail result. Pass/fail and the report controls are available as soon as grading is complete. Any remaining endpoints appear later under **Finishing comparison…**, on a fixed move axis; missing values are omitted, never plotted as zero. Completion updates the same saved attempt without changing its grade. Leaving the report cancels remaining work, so its saved curves can remain partial. The chart area is resizable and stays hidden during an attempt and after blind retry.
 
+Read the vertical scale in points. Positive values mean you are ahead, zero means even, and negative values mean you are behind. The tick interval adapts to the score range and chart height, including fractional points for close positions.
+
 **Next problem** is available after pass, fail, and while exploring. It skips the whole opportunity for this session, including when completed exercises are enabled, and resets the board, report, and reveal state. Retry still repeats the current position without hints. Skipping a failed problem does not mark it passed or given up; it remains eligible in a later session. If the selection is exhausted, setup explains that no further qualifying position is available.
 
 ## Review and persistence

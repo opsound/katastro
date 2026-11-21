@@ -8,6 +8,80 @@ use katastro::training::{
     view::{Action, View},
 };
 
+fn assert_score_scale<T>(
+    h: &Harness<'_, T>,
+    (attempt_score, attempt_y): (f32, f32),
+    (recorded_score, recorded_y): (f32, f32),
+) {
+    use eframe::egui::Shape;
+    let plot = h.get_by_label("Training score comparison").rect();
+    // Read the numeric labels beside the data rectangle, clear of the move-axis labels below.
+    let mut ticks: Vec<_> = h
+        .output()
+        .shapes
+        .iter()
+        .filter_map(|s| {
+            let Shape::Text(text) = &s.shape else {
+                return None;
+            };
+            let rect = text.galley.rect.translate(text.pos.to_vec2());
+            if rect.right() > plot.left() + 1.0
+                || rect.right() < plot.left() - 70.0
+                || !plot.y_range().contains(rect.center().y)
+                || !s.clip_rect.contains_rect(rect)
+            {
+                return None;
+            }
+            let tick = text.galley.text().trim().replace('−', "-");
+            let value = tick.trim_end_matches("pts").trim().parse::<f32>().ok()?;
+            Some((value, rect))
+        })
+        .collect();
+    ticks.sort_by(|a, b| a.0.total_cmp(&b.0));
+    assert!(
+        ticks.iter().any(|(v, _)| *v < 0.0)
+            && ticks.iter().any(|(v, _)| *v == 0.0)
+            && ticks.iter().any(|(v, _)| *v > 0.0),
+        "the recap needs readable negative, zero, and positive score ticks in {plot:?}; visible: {ticks:?}"
+    );
+    assert!(
+        ticks.iter().any(|(v, _)| (recorded_score..0.0).contains(v))
+            && ticks.iter().any(|(v, _)| *v > 0.0 && *v <= attempt_score),
+        "the scale needs ticks within the range of the two displayed scores"
+    );
+    let scale = (recorded_y - attempt_y) / (attempt_score - recorded_score);
+    for (value, rect) in &ticks {
+        let expected_y = attempt_y + (attempt_score - value) * scale;
+        assert!(
+            (rect.center().y - expected_y).abs() <= 1.5,
+            "tick {value} does not align with the scores on the two curves"
+        );
+    }
+    assert!(
+        ticks.windows(2).all(|p| p[1].1.bottom() <= p[0].1.top()),
+        "score labels overlap in {plot:?}"
+    );
+    let units = h
+        .output()
+        .shapes
+        .iter()
+        .find_map(|s| match &s.shape {
+            Shape::Text(t) if t.galley.text() == "Points" => {
+                let rect = t.visual_bounding_rect();
+                (rect.right() <= plot.left()
+                    && plot.y_range().contains(rect.center().y)
+                    && s.clip_rect.contains_rect(rect))
+                .then_some(rect)
+            }
+            _ => None,
+        })
+        .expect("the score axis should show its unit beside the data");
+    assert!(
+        ticks.iter().all(|(_, tick)| !tick.intersects(units)),
+        "the Points caption overlaps a numeric tick"
+    );
+}
+
 // Benefit: a completed grade remains usable while the last chart points arrive.
 // Missing endpoints must be visibly pending, never shown as zero evaluations.
 #[test]
@@ -56,7 +130,7 @@ fn report_keeps_controls_available_while_comparison_finishes() {
     h.get_by_label("Training score comparison");
     assert!(h.query_by_label("Training winrate comparison").is_none());
     assert!(h.query_by_label("Winrate lost").is_none());
-    let plotted = |h: &Harness<'_, ReportView>| {
+    let plotted = |h: &Harness<'_, ReportView>, color| {
         let bounds = h.get_by_label("Training score comparison").rect();
         h.output()
             .shapes
@@ -65,10 +139,7 @@ fn report_keeps_controls_available_while_comparison_finishes() {
                 egui::Shape::Path(p)
                     if p.points.len() >= 10
                         && p.points.iter().all(|v| bounds.contains(*v))
-                        && p.stroke.color
-                            == egui::epaint::ColorMode::Solid(egui::Color32::from_rgb(
-                                90, 190, 156,
-                            )) =>
+                        && p.stroke.color == egui::epaint::ColorMode::Solid(color) =>
                 {
                     Some(p.points.clone())
                 }
@@ -76,7 +147,8 @@ fn report_keeps_controls_available_while_comparison_finishes() {
             })
             .unwrap()
     };
-    let before = plotted(&h);
+    let attempt_color = egui::Color32::from_rgb(90, 190, 156);
+    let before = plotted(&h, attempt_color);
     assert_eq!(
         before.len(),
         10,
@@ -106,12 +178,46 @@ fn report_keeps_controls_available_while_comparison_finishes() {
     h.run();
     assert!(h.query_by_label("Finishing comparison…").is_none());
     h.get_by_label("Passed");
-    let after = plotted(&h);
+    let after = plotted(&h, attempt_color);
     assert_eq!(after.len(), 11);
     assert!(
         (before[9].x - after[9].x).abs() < 0.1,
         "finishing the endpoint must not rescale the move axis"
     );
+
+    // Half-point scores and close-score prefixes need accurate fractional labels.
+    let graded = h
+        .state()
+        .snapshot
+        .report
+        .as_ref()
+        .unwrap()
+        .comparison
+        .clone();
+    for (low, high, last) in [(-0.5, 2.5, 10), (-0.25, 0.25, 9)] {
+        let comparison = &mut h.state_mut().snapshot.report.as_mut().unwrap().comparison;
+        comparison.clone_from(&graded);
+        comparison.recorded.truncate(last + 1);
+        comparison.attempt.truncate(last + 1);
+        for value in comparison
+            .recorded
+            .iter_mut()
+            .chain(&mut comparison.attempt)
+        {
+            value.score = low + (value.score + 2.0) / 10.0 * (high - low);
+        }
+        h.run_steps(3);
+        if last < graded.total_plies {
+            h.get_by_label("Finishing comparison…");
+        }
+        let attempt = plotted(&h, attempt_color);
+        let recorded = plotted(&h, egui::Color32::from_rgb(126, 167, 244));
+        assert_score_scale(
+            &h,
+            (high as f32, attempt[last].y),
+            (low as f32, recorded[last].y),
+        );
+    }
 }
 struct State {
     trainer: Trainer,
@@ -397,8 +503,8 @@ fn next_problem_advances_after_pass_fail_and_exploration() {
     }
 }
 
-// Benefit: after real board play, two report charts visibly overlay the attempt
-// and recorded continuation. They are absent during blind play and after retry.
+// After real board play, the score scale lets the player compare the attempt
+// with the recorded continuation. The recap stays hidden during a blind retry.
 #[test]
 fn report_draws_score_overlays_without_winrate_and_retry_hides_them() {
     use eframe::egui::{Color32, Shape, epaint::ColorMode};
@@ -433,7 +539,12 @@ fn report_draws_score_overlays_without_winrate_and_retry_hides_them() {
     assert_eq!(h.state().snapshot.phase, Phase::Passed);
     assert!(h.query_by_label("Training winrate comparison").is_none());
     assert!(h.query_by_label("Winrate lost").is_none());
-    {
+    for size in [
+        eframe::egui::vec2(900., 680.),
+        eframe::egui::vec2(1200., 820.),
+    ] {
+        h.set_size(size);
+        h.run_steps(3);
         let label = "Training score comparison";
         let plot = h
             .query_by_label(label)
@@ -469,6 +580,19 @@ fn report_draws_score_overlays_without_winrate_and_retry_hides_them() {
             "recorded loss is visible below the clean attempt"
         );
         assert!((attempt.points[0].y - attempt.points[10].y).abs() < 0.1);
+
+        let comparison = &h.state().snapshot.report.as_ref().unwrap().comparison;
+        assert_score_scale(
+            &h,
+            (
+                comparison.attempt.last().unwrap().score as f32,
+                attempt.points[10].y,
+            ),
+            (
+                comparison.recorded.last().unwrap().score as f32,
+                recorded.points[10].y,
+            ),
+        );
     }
     if let Some(folder) = std::env::var_os("KATASTRO_TRAINING_PREVIEW") {
         h.render()
