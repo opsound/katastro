@@ -11,6 +11,7 @@ mod fox;
 mod http;
 mod ogs;
 mod pandanet;
+pub mod rank_history;
 mod remote;
 mod storage;
 mod sync;
@@ -62,6 +63,7 @@ pub struct Snapshot {
     pub remember: bool,
     pub automatic: bool,
     pub games: Vec<Game>,
+    pub rank_history: Arc<[rank_history::RankPoint]>,
     pub status: String,
     pub error: Option<String>,
     pub syncing: bool,

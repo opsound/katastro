@@ -117,6 +117,7 @@ impl Service {
                 })
             })?
             .collect::<std::result::Result<_, _>>()?;
+        self.state.rank_history = rank_history::series(&self.state).into();
         Ok(())
     }
     pub(super) fn save_config(&self) -> Result<()> {

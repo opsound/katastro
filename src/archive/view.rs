@@ -2,6 +2,7 @@ use super::{Command, Server, Snapshot};
 use eframe::egui;
 use std::path::{Path, PathBuf};
 use zeroize::{Zeroize, Zeroizing};
+mod rank_chart;
 mod table;
 #[derive(Default)]
 pub struct View {
@@ -50,7 +51,7 @@ impl View {
         egui::Window::new("Game library")
             .open(&mut open)
             .default_width(1000.)
-            .default_height(580.)
+            .default_height((ctx.content_rect().height() - 40.).clamp(200., 720.))
             .show(ctx, |ui| {
                 let Some((state, folder)) = states
                     .iter()
@@ -235,6 +236,9 @@ impl View {
                     );
                 }
                 ui.separator();
+                if !self.settings_open {
+                    rank_chart::show(ui, states, self.filter);
+                }
                 let label = ui
                     .horizontal(|ui| {
                         let label = ui.label("Search synced games");

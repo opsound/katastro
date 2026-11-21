@@ -1,4 +1,4 @@
-use crate::archive::{Game, Server, Snapshot};
+use crate::archive::{Game, Server, Snapshot, rank_history::player};
 use eframe::egui::{self, Color32, RichText, WidgetInfo, WidgetType};
 use egui_extras::{Column, TableBuilder};
 use std::{cmp::Ordering, path::PathBuf};
@@ -139,26 +139,6 @@ impl<'a> Row<'a> {
             .then_with(|| other.game.date.cmp(&self.game.date))
             .then_with(|| self.game.id.cmp(&other.game.id))
     }
-}
-fn rank(value: &str) -> Option<i32> {
-    let value = value.trim_end_matches(['+', '-', '*', '?']);
-    let (number, unit) = value.split_at_checked(value.len().checked_sub(1)?)?;
-    let number = number.parse::<i32>().ok().filter(|n| *n > 0 && *n < 100)?;
-    match unit {
-        "k" => Some(-number),
-        "d" => Some(number),
-        "p" => Some(100 + number),
-        _ => None,
-    }
-}
-fn player(value: &str) -> (&str, &str) {
-    let value = value.trim();
-    if let Some((name, rating)) = value.rsplit_once(char::is_whitespace)
-        && (rank(rating).is_some() || matches!(rating, "NR" | "?" | "-"))
-    {
-        return (name.trim_end(), rating);
-    }
-    (value, "—")
 }
 fn outcome(value: &str) -> (&str, String, u8, f64) {
     let value = value.trim();

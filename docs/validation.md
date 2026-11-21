@@ -881,3 +881,24 @@ The fresh desktop originally lacked the OGS connection. Supplying custom OGS opt
 A live Rust check imported and parsed one finished game from a public OGS bot into temporary storage. OGS rejected a compound date-and-ID sort with HTTP 404. The integration uses the supported descending completion-time sort, and the fixture reproduces that restriction. [OGS API schema](https://online-go.com/api-docs/schema/)
 
 All 221 routine workspace tests passed. The suite reserved 25 opt-in checks, including the live OGS check run separately above. Formatting, strict workspace Clippy, and strict signature verification of the rebuilt macOS app passed.
+
+## Rank history in Games
+
+The rank-history checks follow each archive’s configured player through games played as Black and White. They cover the 1k to 1d boundary, Pandanet half ranks, unequal intervals across a leap day, and missing or ambiguous ranks. An archive integration check advances the test clock, imports a game with a new rank, pauses syncing, and reopens the SQLite library to recover the same history offline.
+
+The desktop check reopens synthetic libraries for all three servers, examines painted points and axis labels on their shared scale, selects an individual server, and checks the table still shows its games.
+
+```sh
+cargo test --test rank_history --test rank_chart_ui --test pandanet
+# Optional image on a Mac with a working wgpu adapter
+mkdir -p local/rank-history
+KATASTRO_RANK_HISTORY_PREVIEW=local/rank-history/games.png cargo test --test rank_chart_ui games_overlays
+```
+
+The scheduled-sync check first failed with an empty history. Deliberately skipping rank refresh during automatic sync reproduced that failure. Ignoring the player’s White games, reversing chronology, flattening half ranks, treating missing ranks as 1k, discarding the time of day, or interpreting 10d as a professional rank each failed a rank-history test.
+
+The first rendered layout left two fully visible rows at 1200×900. The default window height now fits the chart and at least five complete rows at that size. With two games four seconds apart, the initial axis had no visible time labels. The compact-window test now checks that the labels are distinct, visible, and separated.
+
+Removing the connecting lines, hiding a one-game marker, ignoring the server filter, and removing the minimum time span each failed the corresponding UI check. The restored chart passed all three desktop checks.
+
+All 226 routine workspace tests passed, with 25 opt-in checks excluded. Formatting, strict workspace Clippy, the no-GUI library check, the separate GPU render, and strict code-signature verification of the rebuilt macOS bundle passed.

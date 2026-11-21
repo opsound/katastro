@@ -160,19 +160,13 @@ fn automatic_sync_uses_the_supplied_clock_and_pause_survives_reopen() {
     let fixture = Fixture::new(move |r| {
         if r.url.contains("mode=sgf") {
             (200, sgf(if r.url.contains("game2") { 2 } else { 1 }))
-        } else {
+        } else if flag.load(Ordering::SeqCst) {
             (
                 200,
-                page(
-                    1,
-                    1,
-                    if flag.load(Ordering::SeqCst) {
-                        &[2, 1]
-                    } else {
-                        &[1]
-                    },
-                ),
+                page(1, 1, &[2, 1]).replacen("example 6k+", "example 4k+", 1),
             )
+        } else {
+            (200, page(1, 1, &[1]))
         }
     });
     let tmp = tempfile::tempdir().unwrap();
@@ -192,6 +186,15 @@ fn automatic_sync_uses_the_supplied_clock_and_pause_survives_reopen() {
         2,
         "scheduled sync must import the new game"
     );
+    let history = s.snapshot().rank_history;
+    assert_eq!(
+        history
+            .iter()
+            .map(|point| katastro::archive::rank_history::rank_label(point.level))
+            .collect::<Vec<_>>(),
+        ["6k+", "4k+"],
+        "the scheduled game should extend the player's rank history from 6k+ to 4k+"
+    );
     assert_eq!(fixture.downloads(), 2);
     s.execute(
         Command::SetAutomatic(false),
@@ -203,6 +206,11 @@ fn automatic_sync_uses_the_supplied_clock_and_pause_survives_reopen() {
     let before = fixture.requests.lock().unwrap().len();
     drop(s);
     let mut s = fixture.service(tmp.path(), vault);
+    assert_eq!(
+        s.snapshot().rank_history,
+        history,
+        "paused archives show their ranks immediately on reopen"
+    );
     s.execute(Command::Tick, 2000, &Cancellation::default(), &mut |_| {})
         .unwrap();
     assert_eq!(
