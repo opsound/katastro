@@ -39,12 +39,7 @@ pub(super) fn show(ui: &mut egui::Ui, states: &[(&Snapshot, &Path)], filter: Opt
         }
     }
     if series.is_empty() {
-        if states
-            .iter()
-            .any(|(s, _)| filter.is_none_or(|f| s.server == f) && !s.games.is_empty())
-        {
-            ui.weak("No recorded player ranks in these games.");
-        }
+        ui.weak("No recorded player ranks in these games.");
         return;
     }
 

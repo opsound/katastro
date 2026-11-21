@@ -902,3 +902,9 @@ The first rendered layout left two fully visible rows at 1200×900. The default 
 Removing the connecting lines, hiding a one-game marker, ignoring the server filter, and removing the minimum time span each failed the corresponding UI check. The restored chart passed all three desktop checks.
 
 All 226 routine workspace tests passed, with 25 opt-in checks excluded. Formatting, strict workspace Clippy, the no-GUI library check, the separate GPU render, and strict code-signature verification of the rebuilt macOS bundle passed.
+
+### Rank history visibility
+
+Games starts with the rank chart hidden. The desktop test opens a library with seven games, toggles **Show rank history** on and off, and counts fully visible game rows in each state. Showing the chart leaves at least five complete rows in the test window, and hiding it restores the initial row count. The test then shows the chart again and filters it to OGS.
+
+The original UI failed the hidden-on-open assertion. Inverting the checkbox condition reproduced that failure. After restoration, all 226 routine workspace tests, formatting, strict Clippy, and strict verification of the rebuilt app signature passed.

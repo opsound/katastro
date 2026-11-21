@@ -10,6 +10,7 @@ pub struct View {
     filter: Option<Server>,
     server: Server,
     settings_open: bool,
+    show_rank_history: bool,
     username: String,
     password: Zeroizing<String>,
     remember: bool,
@@ -61,6 +62,9 @@ impl View {
                     return;
                 };
                 self.server = state.server;
+                let has_games = states
+                    .iter()
+                    .any(|(s, _)| self.filter.is_none_or(|f| f == s.server) && !s.games.is_empty());
 
                 ui.horizontal(|ui| {
                     ui.heading(format!(
@@ -68,12 +72,7 @@ impl View {
                         states.iter().map(|(s, _)| s.games.len()).sum::<usize>()
                     ));
                     if ui
-                        .add_enabled(
-                            states.iter().any(|(s, _)| {
-                                self.filter.is_none_or(|f| f == s.server) && !s.games.is_empty()
-                            }),
-                            egui::Button::new("Train from these games"),
-                        )
+                        .add_enabled(has_games, egui::Button::new("Train from these games"))
                         .clicked()
                     {
                         actions.train = true;
@@ -101,6 +100,9 @@ impl View {
                         .clicked()
                     {
                         actions.command = Some((state.server, Command::SyncNow));
+                    }
+                    if !self.settings_open && has_games {
+                        ui.checkbox(&mut self.show_rank_history, "Show rank history");
                     }
                 });
                 ui.horizontal(|ui| {
@@ -236,7 +238,7 @@ impl View {
                     );
                 }
                 ui.separator();
-                if !self.settings_open {
+                if !self.settings_open && has_games && self.show_rank_history {
                     rank_chart::show(ui, states, self.filter);
                 }
                 let label = ui

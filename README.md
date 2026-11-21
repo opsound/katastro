@@ -11,6 +11,8 @@ Native macOS Go review app in Rust, powered by KataGo.
 
 ## Run
 
+For Apple Silicon Macs running macOS 13 or later, download the Katastro app ZIP from the latest GitHub release, unzip it, and move **Katastro.app** to Applications. The app includes KataGo and its models.
+
 On an Apple Silicon Mac running macOS 13 or later, install Rust 1.95 or newer and the Xcode command-line tools. The first desktop build downloads a SHA-256-pinned runtime (~192 MiB) containing KataGo 1.18.2, a review model, and the HumanSL model. KataGo runs locally using Metal.
 
 ```sh
@@ -59,7 +61,7 @@ For Fox, open **Games → Sync settings → Fox sync** and enter your Fox userna
 
 For Pandanet, click **Pandanet** at the bottom right, enter your login, and choose **Connect and sync**. **Remember login in Keychain** enables automatic sign-in after reopening. With automatic sync enabled, Katastro checks on startup and every 15 minutes while the app is open.
 
-Open **Games → All servers** to see your OGS, Fox, and Pandanet rank histories on one chart. Each point uses the rank recorded for your account in a synced game. The legend shows your latest recorded rank on each server. Choose a server filter to focus on its history, or increase that server’s sync history limit to see older games. Pandanet’s `+` marks the upper half of a rank. [Pandanet’s ranking guide](https://pandanet-igs.com/communities/pandanet/60)
+In **Games → All servers**, select **Show rank history** to compare your OGS, Fox, and Pandanet ranks on one chart. It starts hidden to leave room for the game list. Each point uses the rank recorded for your account in a synced game. The legend shows your latest recorded rank on each server. Choose a server filter to focus on its history, or increase that server’s sync history limit to see older games. Pandanet’s `+` marks the upper half of a rank. [Pandanet’s ranking guide](https://pandanet-igs.com/communities/pandanet/60)
 
 Click **Games** in the toolbar to browse downloaded games in a table with date, players, ranks, winner, win condition, and server. Click any heading to sort; click again to reverse. Player columns sort by name, and point margins sort numerically. A small gold trophy marks your wins. The table grows vertically with the library window, including when sync settings are open. Search by player/date/result, resize columns as needed, and click a row to open its review. **Sync history** defaults to the latest 200 games; choose another limit or all games. Expanding it downloads older records; lowering it keeps existing downloads.
 

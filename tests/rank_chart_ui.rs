@@ -105,6 +105,16 @@ fn legend_color(h: &Harness<'_, DesktopApp>, legend: &str) -> Color32 {
         .unwrap_or_else(|| panic!("missing server and latest rank in legend: {legend}"))
 }
 
+fn toggle_history(h: &mut Harness<'_, DesktopApp>) {
+    h.get_by_label("Show rank history").click();
+    h.run_steps(3);
+}
+
+fn visible_game_rows(h: &Harness<'_, DesktopApp>) -> usize {
+    h.output().shapes.iter().filter(|s| matches!(&s.shape, Shape::Text(t)
+        if t.galley.text().starts_with("2026/11/") && s.clip_rect.contains_rect(t.galley.rect.translate(t.pos.to_vec2())))).count()
+}
+
 fn points(h: &Harness<'_, DesktopApp>, color: Color32) -> Vec<Pos2> {
     let rect = h.get_by_label("Rank history chart").rect();
     let mut points: Vec<_> = h
@@ -141,9 +151,11 @@ fn games_overlays_three_rank_histories_and_filters_them_with_the_table() {
     ];
     let mut h = desktop(temp.path(), games, egui::vec2(1200., 900.));
     assert!(
-        h.query_by_label("Rank history chart").is_some(),
-        "opening Games must show the recorded rank history"
+        h.query_by_label("Rank history chart").is_none(),
+        "Games should give the space to the game list until rank history is expanded"
     );
+    let collapsed_rows = visible_game_rows(&h);
+    toggle_history(&mut h);
     let plot = h.get_by_label("Rank history chart").rect();
     let panda = legend_color(&h, "Pandanet  1d");
     let fox = legend_color(&h, "Fox  3k");
@@ -220,10 +232,14 @@ fn games_overlays_three_rank_histories_and_filters_them_with_the_table() {
                 .all(|pair| pair[0].right() < pair[1].left()),
         "calendar labels must be visible and legible"
     );
+    let expanded_rows = visible_game_rows(&h);
     assert!(
-        h.output().shapes.iter().filter(|s| matches!(&s.shape, Shape::Text(t)
-            if t.galley.text().starts_with("2026/11/") && s.clip_rect.contains_rect(t.galley.rect.translate(t.pos.to_vec2())))).count() >= 5,
-        "the default Games window must leave room for five complete rows beneath the plot"
+        expanded_rows >= 5,
+        "five complete rows must fit beneath the plot"
+    );
+    assert!(
+        collapsed_rows > expanded_rows,
+        "hiding the chart must reveal more games"
     );
     if let Some(path) = std::env::var_os("KATASTRO_RANK_HISTORY_PREVIEW") {
         h.render().unwrap().save(path).unwrap();
@@ -233,6 +249,10 @@ fn games_overlays_three_rank_histories_and_filters_them_with_the_table() {
     assert!(h.output().shapes.iter().any(|s| matches!(&s.shape, Shape::Text(t) if
         t.galley.text().contains("Pandanet  2k") && t.galley.text().contains("2026-11-03 12:00")
     )), "hovering a game rank must reveal the server, recorded rank, and timestamp");
+    toggle_history(&mut h);
+    assert!(h.query_by_label("Rank history chart").is_none());
+    assert_eq!(visible_game_rows(&h), collapsed_rows);
+    toggle_history(&mut h);
     h.get_by_label("OGS games").click();
     h.run_steps(3);
     assert_eq!(points(&h, ogs).len(), 1);
@@ -260,7 +280,12 @@ fn games_overlays_three_rank_histories_and_filters_them_with_the_table() {
 fn missing_account_ranks_leave_the_game_list_available() {
     let temp = tempfile::tempdir().unwrap();
     let unranked = [("2026/11/03 12:00", "local player", "rival 9d")];
-    let h = desktop(temp.path(), [&unranked; 3], egui::vec2(900., 680.));
+    let mut h = desktop(temp.path(), [&unranked; 3], egui::vec2(900., 680.));
+    assert!(
+        h.query_by_label("No recorded player ranks in these games.")
+            .is_none()
+    );
+    toggle_history(&mut h);
     h.get_by_label("No recorded player ranks in these games.");
     assert!(h.query_by_label("Rank history chart").is_none());
     assert_eq!(h.query_all_by_label_contains("Review 2026/11/").count(), 3);
@@ -273,7 +298,8 @@ fn close_game_times_have_a_readable_time_scale_at_compact_width() {
         ("2026/11/03 12:15:04", "local player 3k", "a 2k"),
         ("2026/11/03 12:15:08", "local player 3k", "b 4k"),
     ];
-    let h = desktop(temp.path(), [&[], &[], &records], egui::vec2(900., 680.));
+    let mut h = desktop(temp.path(), [&[], &[], &records], egui::vec2(900., 680.));
+    toggle_history(&mut h);
     let plot = h.get_by_label("Rank history chart").rect();
     let mut times: Vec<_> = h
         .output()
