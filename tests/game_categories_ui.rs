@@ -8,7 +8,7 @@ mod support;
 mod category_scores;
 use category_scores::{cache_scores, profile};
 
-use archive_ui::{archive_desktop, wait_for};
+use archive_ui::{archive_desktop, select_all_time, wait_for};
 use eframe::egui::vec2;
 use egui_kittest::kittest::Queryable;
 use katastro::{
@@ -93,6 +93,11 @@ fn games_counts_and_filters_follow_the_players_outcomes() {
             (4, "fern", "member", "W+R", &[0.]),
         ],
     );
+    // A stale archive result must not turn the ordinary SGF win into a classified loss.
+    rusqlite::Connection::open(panda.root.join("sync.sqlite"))
+        .unwrap()
+        .execute("UPDATE games SET result='B+R' WHERE id='3'", [])
+        .unwrap();
     let ogs_paths = seed_archive(
         &ogs,
         &mut review,
@@ -110,10 +115,11 @@ fn games_counts_and_filters_follow_the_players_outcomes() {
     wait_for(&mut h, "the synced games did not load", |h| {
         h.query_by_label("6 synced games").is_some()
     });
-    let summary = "4 classified · 2 comebacks (50%) · 1 blunder (25%) · 1 pending · 1 unavailable";
+    select_all_time(&mut h);
+    let summary = "Comebacks 2/3 wins (67%) · Blunders 1/1 loss (100%) · 1 pending · 1 unavailable";
     wait_for(
         &mut h,
-        "cached game categories never appeared in Games",
+        "expected comeback rate among classified wins and blunder rate among classified losses",
         |h| h.query_by_label(summary).is_some(),
     );
 
@@ -132,7 +138,7 @@ fn games_counts_and_filters_follow_the_players_outcomes() {
     h.run_steps(3);
     h.get_by_label(sixth);
     assert!(h.query_by_label(first).is_none());
-    h.get_by_label("2 classified · 1 comeback (50%) · 1 blunder (50%) · 1 unavailable");
+    h.get_by_label("Comebacks 1/1 win (100%) · Blunders 1/1 loss (100%) · 1 unavailable");
     h.get_by_label("Blunders").click();
     h.run_steps(3);
     h.get_by_label(second);
@@ -142,7 +148,7 @@ fn games_counts_and_filters_follow_the_players_outcomes() {
     h.get_by_label("Search synced games").type_text("elm");
     h.run_steps(3);
     h.get_by_label("No matching games.");
-    h.get_by_label("1 classified · 1 comeback (100%) · 0 blunders (0%)");
+    h.get_by_label("Comebacks 1/1 win (100%) · Blunders 0/0 losses (—)");
     h.get_by_label("All categories").click();
     h.run_steps(3);
     assert!(h.query_by_label(second).is_none());
@@ -161,8 +167,11 @@ fn a_deeper_review_updates_the_active_blunders_filter() {
     let root = tempfile::tempdir().unwrap();
     let model = root.path().join("model");
     std::fs::write(&model, b"synthetic").unwrap();
+    // The cache identity includes the executable, which another Cargo build can replace.
+    let executable = root.path().join("test-engine");
+    std::fs::copy(env!("CARGO_BIN_EXE_katastro-test-engine"), &executable).unwrap();
     let config = EngineConfig {
-        executable: env!("CARGO_BIN_EXE_katastro-test-engine").into(),
+        executable,
         model: model.clone(),
         analysis: AnalysisSettings {
             max_visits: Some(256),
@@ -192,8 +201,9 @@ fn a_deeper_review_updates_the_active_blunders_filter() {
             && h.state().state.config.analysis.max_visits == Some(256)
     });
     h.get_by_label("Games").click();
+    select_all_time(&mut h);
     wait_for(&mut h, "the cached 20-point swing was missing", |h| {
-        h.query_by_label("1 classified · 0 comebacks (0%) · 1 blunder (100%)")
+        h.query_by_label("Comebacks 0/0 wins (—) · Blunders 1/1 loss (100%)")
             .is_some()
     });
     h.get_by_label("Blunders").click();
@@ -210,7 +220,7 @@ fn a_deeper_review_updates_the_active_blunders_filter() {
         &mut h,
         "the new 0-to-3 point scores did not remove the classified blunder",
         |h| {
-            h.query_by_label("1 classified · 0 comebacks (0%) · 0 blunders (0%)")
+            h.query_by_label("Comebacks 0/0 wins (—) · Blunders 0/1 loss (0%)")
                 .is_some()
         },
     );
@@ -225,8 +235,188 @@ fn a_deeper_review_updates_the_active_blunders_filter() {
         &mut h,
         "the replacement model inherited an earlier model's scores",
         |h| {
-            h.query_by_label("0 classified · 0 comebacks · 0 blunders · 1 pending")
+            h.query_by_label("Comebacks 0/0 wins (—) · Blunders 0/0 losses (—) · 1 pending")
                 .is_some()
         },
+    );
+}
+
+// An independently chosen threshold must apply to both periods and survive relaunch.
+#[test]
+fn period_and_thresholds_survive_relaunch_and_change_the_matching_games() {
+    use eframe::egui::{Key, Modifiers};
+    use egui_kittest::{Harness, kittest::NodeT};
+    use katastro::desktop::DesktopApp;
+
+    fn replace_field(h: &mut Harness<'_, DesktopApp>, label: &str, value: &str) {
+        h.get_by_label(label).focus();
+        h.step();
+        h.key_press_modifiers(Modifiers::COMMAND, Key::A);
+        h.step();
+        h.get_by_label(label).type_text(value);
+        h.step();
+    }
+
+    let temp = tempfile::tempdir().unwrap();
+    let options = || {
+        let mut ogs = Options::ogs(temp.path().join("OGS"));
+        ogs.credentials = Arc::new(support::Vault::default());
+        ogs
+    };
+    let mut review = Review::new(&temp.path().join("reviews"), &temp.path().join("cache")).unwrap();
+    review.save_profile(&profile()).unwrap();
+    seed_archive(
+        &options(),
+        &mut review,
+        &profile(),
+        &[
+            (1, "fir", "member", "B+R", &[0., -5., -4., 2.]),
+            (2, "elm", "member", "W+R", &[0., 35., 3., -4.]),
+            (3, "ash", "member", "B+R", &[0., -12., -3., 4.]),
+            (4, "oak", "member", "W+R", &[0., 22., 3., -2.]),
+            (5, "yew", "member", "B+R", &[0., -30., -3., 1.]),
+        ],
+    );
+    drop(review);
+    let launch = || {
+        let mut h = archive_desktop(temp.path(), vec![options()], vec2(1200., 900.));
+        h.get_by_label("Games").click();
+        wait_for(&mut h, "the local library did not open", |h| {
+            h.query_by_label("5 synced games").is_some()
+        });
+        h
+    };
+    let mut h = launch();
+    archive_ui::wait_for_label(&mut h, "Date range");
+    h.get_by_label("Date range").click();
+    h.run();
+    h.get_by_label("Custom…").click();
+    h.run();
+    replace_field(&mut h, "Start date", "2026-11-03");
+    replace_field(&mut h, "End date", "2026-02-30");
+    h.get_by_label("Enter valid dates in YYYY-MM-DD format.");
+    replace_field(&mut h, "End date", "2026-11-02");
+    h.get_by_label("End date must be on or after the start date.");
+    assert!(h.get_by_label("Apply dates").accesskit_node().is_disabled());
+    replace_field(&mut h, "End date", "2026-11-04");
+    h.run();
+    h.get_by_label("Apply dates").click();
+    h.run();
+    let ash = "Review 2026/11/03 12:00: ash vs member";
+    let oak = "Review 2026/11/04 12:00: oak vs member";
+    h.get_by_label(ash);
+    h.get_by_label(oak);
+    assert_eq!(h.query_all_by_label_contains("Review 2026/11/").count(), 2);
+
+    h.get_by_label("Thresholds").click();
+    h.run();
+    replace_field(&mut h, "Comeback threshold", "0");
+    h.get_by_label("Enter a point value greater than zero for each threshold.");
+    assert!(
+        h.get_by_label("Apply thresholds")
+            .accesskit_node()
+            .is_disabled()
+    );
+    replace_field(&mut h, "Comeback threshold", "12");
+    replace_field(&mut h, "Blunder threshold", "22.5");
+    h.run();
+    h.get_by_label("Apply thresholds").click();
+    h.run();
+    let current = "Comebacks 1/1 win (100%, +100 pp) · Blunders 0/1 loss (0%, -100 pp)";
+    let previous =
+        "Previous 2026-11-01 – 2026-11-02 · Comebacks 0/1 win (0%) · Blunders 1/1 loss (100%)";
+    wait_for(&mut h, "thresholds did not update both periods", |h| {
+        h.query_by_label(current).is_some() && h.query_by_label(previous).is_some()
+    });
+    if let Some(path) = std::env::var_os("KATASTRO_STATISTICS_PREVIEW") {
+        h.render().unwrap().save(path).unwrap();
+    }
+    h.get_by_label("Comebacks").click();
+    h.run();
+    h.get_by_label(ash);
+    assert!(h.query_by_label(oak).is_none());
+    h.get_by_label("Blunders").click();
+    h.run();
+    h.get_by_label("No matching games.");
+    drop(h);
+
+    let mut reopened = launch();
+    wait_for(
+        &mut reopened,
+        "the date range and thresholds were lost on relaunch",
+        |h| h.query_by_label(current).is_some() && h.query_by_label(previous).is_some(),
+    );
+    assert_eq!(
+        reopened
+            .query_all_by_label_contains("Review 2026/11/")
+            .count(),
+        2
+    );
+    reopened.get_by_label("Compare previous period").click();
+    reopened.run();
+    assert!(reopened.query_by_label(previous).is_none());
+    reopened.get_by_label("Thresholds").click();
+    reopened.run();
+    reopened.get_by_label("Restore defaults").click();
+    reopened.run();
+    reopened.get_by_label("Apply thresholds").click();
+    reopened.run();
+    reopened.get_by_label("Comebacks 0/1 win (0%) · Blunders 1/1 loss (100%)");
+}
+
+#[test]
+fn opening_games_while_storage_is_locked_preserves_saved_thresholds() {
+    use egui_kittest::kittest::NodeT;
+    use katastro::archive::{StatisticsSettings, categories::Thresholds};
+
+    let temp = tempfile::tempdir().unwrap();
+    let reviews = temp.path().join("reviews");
+    drop(Review::new(&reviews, &temp.path().join("cache")).unwrap());
+    let db = rusqlite::Connection::open(reviews).unwrap();
+    let saved = StatisticsSettings {
+        thresholds: Thresholds {
+            comeback: 12.,
+            blunder: 34.,
+        },
+        ..Default::default()
+    };
+    db.execute_batch("BEGIN IMMEDIATE").unwrap();
+    db.execute(
+        "INSERT INTO settings(key,value) VALUES ('game_statistics',?1)",
+        [serde_json::to_string(&saved).unwrap()],
+    )
+    .unwrap();
+
+    let mut options = Options::ogs(temp.path().join("OGS"));
+    options.credentials = Arc::new(support::Vault::default());
+    let mut h = archive_desktop(temp.path(), vec![options], vec2(1200., 900.));
+    h.get_by_label("Games").click();
+    h.run();
+    h.get_by_label("0 synced games");
+    if let Some(toggle) = h.query_by_label("Compare previous period")
+        && !toggle.accesskit_node().is_disabled()
+    {
+        toggle.click();
+        h.run();
+    }
+    db.execute_batch("COMMIT").unwrap();
+    wait_for(
+        &mut h,
+        "statistics did not load after unlocking storage",
+        |h| h.query_by_label("Thresholds").is_some(),
+    );
+    drop(h); // Flush any command enqueued before startup finished.
+    let value: String = db
+        .query_row(
+            "SELECT value FROM settings WHERE key='game_statistics'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<StatisticsSettings>(&value)
+            .unwrap()
+            .thresholds,
+        saved.thresholds
     );
 }

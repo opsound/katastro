@@ -12,6 +12,58 @@ pub enum Category {
     Unavailable,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct Thresholds {
+    pub comeback: f64,
+    pub blunder: f64,
+}
+impl Default for Thresholds {
+    fn default() -> Self {
+        Self {
+            comeback: 20.0,
+            blunder: 20.0,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub enum Evidence {
+    #[default]
+    Pending,
+    Unavailable,
+    Scored {
+        won: bool,
+        largest_gain: f64,
+        complete: bool,
+    },
+}
+impl Evidence {
+    pub fn category(self, thresholds: Thresholds) -> Category {
+        match self {
+            Self::Scored {
+                won: true,
+                largest_gain,
+                ..
+            } if largest_gain >= thresholds.comeback => Category::Comeback,
+            Self::Scored {
+                won: false,
+                largest_gain,
+                ..
+            } if largest_gain >= thresholds.blunder => Category::Blunder,
+            Self::Scored { complete: true, .. } => Category::Other,
+            Self::Unavailable => Category::Unavailable,
+            _ => Category::Pending,
+        }
+    }
+    pub fn won(self) -> Option<bool> {
+        match self {
+            Self::Scored { won, .. } => Some(won),
+            _ => None,
+        }
+    }
+}
+
 pub(crate) fn winner_and_reason(result: &str) -> Option<(Color, &str)> {
     let value = result.trim();
     for (prefix, color) in [
@@ -29,22 +81,31 @@ pub(crate) fn winner_and_reason(result: &str) -> Option<(Color, &str)> {
     None
 }
 
-/// Read original SGF metadata and compatible analysis without changing the active review.
 pub fn classify(
     review: &Review,
     game: &Game,
     account: &str,
     profile: Option<&EngineProfile>,
 ) -> Result<Category> {
+    Ok(evidence(review, game, account, profile)?.category(Thresholds::default()))
+}
+
+/// Read the recorded loser's greatest gain once so each threshold can be applied in memory.
+pub fn evidence(
+    review: &Review,
+    game: &Game,
+    account: &str,
+    profile: Option<&EngineProfile>,
+) -> Result<Evidence> {
     let account = account.trim().to_lowercase();
     if account.is_empty() {
-        return Ok(Category::Unavailable);
+        return Ok(Evidence::Unavailable);
     }
     let doc = Document::parse(&std::fs::read(&game.path)?)?;
     let root = &doc.nodes[0];
     let property = |name| root.property(name).map(str::trim).filter(|s| !s.is_empty());
     let Some((winner, _)) = winner_and_reason(property("RE").unwrap_or(&game.result)) else {
-        return Ok(Category::Unavailable);
+        return Ok(Evidence::Unavailable);
     };
 
     let owns = |name, indexed: &str| {
@@ -58,10 +119,10 @@ pub fn classify(
     let owner = match (owns("PB", &game.black), owns("PW", &game.white)) {
         (true, false) => Color::Black,
         (false, true) => Color::White,
-        _ => return Ok(Category::Unavailable),
+        _ => return Ok(Evidence::Unavailable),
     };
     let Some(profile) = profile else {
-        return Ok(Category::Pending);
+        return Ok(Evidence::Pending);
     };
     // One read transaction keeps the starting score and the rest of the recorded
     // line consistent when a worker refines positions during the scan.
@@ -81,25 +142,21 @@ pub fn classify(
             .optional()?)
     };
     let Some(start) = score(doc.mainline[0])? else {
-        return Ok(Category::Pending);
+        return Ok(Evidence::Pending);
     };
     let mut complete = true;
+    let mut largest_gain: f64 = 0.0;
     for &node in &doc.mainline[1..] {
         match score(node)? {
-            Some(value) if winner.other().perspective(value - start) >= 20.0 => {
-                return Ok(if winner == owner {
-                    Category::Comeback
-                } else {
-                    Category::Blunder
-                });
+            Some(value) => {
+                largest_gain = largest_gain.max(winner.other().perspective(value - start))
             }
             None => complete = false,
-            _ => {}
         }
     }
-    Ok(if complete {
-        Category::Other
-    } else {
-        Category::Pending
+    Ok(Evidence::Scored {
+        won: winner == owner,
+        largest_gain,
+        complete,
     })
 }

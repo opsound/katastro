@@ -366,3 +366,31 @@ fn resuming_after_a_model_replacement_uses_the_new_model_for_cached_results() {
     assert_eq!(reopened.cached_analysis(&new).unwrap()[&0].score_lead, 0.0);
     assert!(reopened.cached_analysis(&old).unwrap().is_empty());
 }
+
+#[test]
+fn damaged_game_statistics_do_not_block_opening_a_review() {
+    let root = tempfile::tempdir().unwrap();
+    let reviews = root.path().join("reviews");
+    let cache = root.path().join("cache");
+    drop(katastro::Review::new(&reviews, &cache).unwrap());
+    rusqlite::Connection::open(&reviews)
+        .unwrap()
+        .execute(
+            "INSERT INTO settings(key,value) VALUES ('game_statistics','{')",
+            [],
+        )
+        .unwrap();
+    let sgf = root.path().join("review.sgf");
+    std::fs::write(&sgf, b"(;SZ[9];B[aa])").unwrap();
+    let client = Client::spawn(reviews, cache, config(root.path()));
+    let initial = client.recv(Duration::from_secs(5)).unwrap();
+    assert_eq!(
+        initial.game_statistics,
+        Some(Default::default()),
+        "{:?}",
+        initial.error
+    );
+    client.send(Command::Open(sgf)).unwrap();
+    let opened = until(&client, |state| state.document.is_some());
+    assert_eq!(opened.document.unwrap().mainline.len(), 2);
+}

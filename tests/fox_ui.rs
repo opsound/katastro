@@ -3,18 +3,12 @@
 mod archive_ui;
 #[path = "support/pandanet/mod.rs"]
 mod support;
-use archive_ui::{archive_desktop, wait_for};
+use archive_ui::{archive_desktop, select_all_time, wait_for, wait_for_label};
 use eframe::egui::vec2;
-use egui_kittest::{Harness, kittest::Queryable};
-use katastro::{
-    archive::{Options, Server},
-    desktop::DesktopApp,
-};
+use egui_kittest::kittest::Queryable;
+use katastro::archive::{Options, Server};
 use std::sync::Arc;
 
-fn wait_for_label(h: &mut Harness<'_, DesktopApp>, label: &str) {
-    wait_for(h, label, |h| h.query_by_label(label).is_some());
-}
 // Benefit: both archives share a sortable library but can be filtered and
 // trained independently, even when the user's server names differ.
 #[test]
@@ -53,7 +47,7 @@ fn server_filter_opens_fox_original_and_training_uses_fox_account() {
     }
     let mut h = archive_desktop(root, options, vec2(1200., 900.));
     h.get_by_label("Games").click();
-    h.run_steps(3);
+    select_all_time(&mut h);
     let panda = "Review 2026/11/01 12:00: example 6k+ vs opponent 5k+";
     let fox = "Review 2026/11/02 12:00:00: rival 2d vs foxplayer 3k";
     wait_for_label(&mut h, panda);
@@ -138,6 +132,7 @@ fn fox_settings_connect_with_only_a_username_and_keep_pandanet_separate() {
     h.get_by_label("Fox username").type_text("foxplayer");
     h.run_steps(3);
     h.get_by_label("Connect and sync").click();
+    select_all_time(&mut h);
     wait_for_label(&mut h, "Review 2026/11/02 12:00:00: rival vs foxplayer");
     assert!(vault.0.lock().unwrap().is_empty());
     h.get_by_label("Pandanet sync").click();

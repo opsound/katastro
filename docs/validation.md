@@ -930,3 +930,11 @@ The initial classifier returned Pending for known wins and losses. Changing the 
 An OGS loopback sync recognized scores saved before the game joined the library. Deleting the downloaded original and syncing again exposed a stale unavailable category because the archive row itself had stayed the same. Including repaired downloads in the refresh restored the comeback using the existing scores.
 
 All 230 routine tests passed. The five separate real KataGo checks passed, along with formatting, strict Clippy, a no-GUI build, a GPU Games render and strict verification of the signed Apple Silicon app.
+
+## Date windows and adjustable game thresholds
+
+The desktop integration test opens five synthetic SGFs with saved analysis and the engine offline. It selects a two-day range, rejects an invalid and a reversed date, and sets the comeback cutoff to 12 points and the blunder cutoff to 22.5. The two visible games switch categories. The current and previous periods show opposite 100-percentage-point changes. Relaunching restores the range and thresholds, and applying the 20-point defaults restores the original classifications.
+
+The original desktop had no date selector. Separate mutations dropped the last day of a window, accepted an invalid range, used the wrong threshold or score, counted losses in the comeback denominator, reversed the comparison sign, and skipped saving the preferences. Each failed its corresponding test. Calendar checks cover leap day, year boundaries and undated records. Startup checks use real SQLite to verify that opening Games while preferences are loading preserves saved thresholds and that a damaged preference still allows opening a review.
+
+All 236 routine tests and five separately invoked real KataGo checks passed. GPU renders covered the two-period summary and confirmed five complete game rows beneath the expanded rank chart at 1200 × 900. The profile-sensitive desktop test runs its own copy of the controlled engine. Replacing that binary after seeding the cache reproduced the expected transition to Pending.

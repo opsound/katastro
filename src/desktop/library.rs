@@ -139,6 +139,7 @@ impl Library {
         )
     }
     pub fn render(&mut self, ctx: &egui::Context) -> Vec<Action> {
+        let before = self.view.statistics;
         let actions = self.view.render(
             ctx,
             &self
@@ -154,6 +155,11 @@ impl Library {
             archive.state.error = Some(error.to_string());
         }
         let mut out = Vec::new();
+        if let Some(settings) = self.view.statistics
+            && Some(settings) != before
+        {
+            out.push(Action::Review(Command::SaveGameStatistics(settings)));
+        }
         if actions.train {
             out.push(Action::Training);
         }

@@ -2,7 +2,8 @@ use crate::{
     Color,
     archive::{
         Game, Server, Snapshot,
-        categories::{Category, winner_and_reason},
+        categories::{Category, Evidence, Thresholds, winner_and_reason},
+        period::{Bucket, Windows},
         rank_history::player,
     },
 };
@@ -52,7 +53,7 @@ struct Row<'a> {
     category: Category,
 }
 impl<'a> Row<'a> {
-    fn new(game: &'a Game, state: &'a Snapshot, categories: &HashMap<PathBuf, Category>) -> Self {
+    fn new(game: &'a Game, state: &'a Snapshot, category: Category) -> Self {
         let (white, _) = player(&game.white);
         let (black, _) = player(&game.black);
         let (winner, condition, kind, points) = outcome(&game.result);
@@ -70,10 +71,7 @@ impl<'a> Row<'a> {
             names: [white, black],
             condition: kind,
             points,
-            category: categories
-                .get(&game.path)
-                .copied()
-                .unwrap_or(Category::Pending),
+            category,
         }
     }
     fn show_cell(&self, ui: &mut egui::Ui, column: usize) -> bool {
@@ -98,7 +96,7 @@ impl<'a> Row<'a> {
                 .on_hover_text(match self.category {
                     Category::Comeback => "Comeback win",
                     Category::Blunder => "Blunder loss",
-                    Category::Other => "Classified game without a 20-point reversal",
+                    Category::Other => "Classified game below the selected threshold",
                     Category::Pending => "Category pending analysis",
                     Category::Unavailable => "Game category unavailable",
                 })
@@ -186,66 +184,140 @@ fn outcome(value: &str) -> (&str, String, u8, f64) {
     (winner, condition.into(), kind, 0.)
 }
 
-fn category_summary(rows: &[Row<'_>]) -> String {
-    let (mut comebacks, mut blunders, mut pending, mut unavailable) = (0, 0, 0, 0);
-    for row in rows {
-        match row.category {
-            Category::Comeback => comebacks += 1,
-            Category::Blunder => blunders += 1,
-            Category::Pending => pending += 1,
-            Category::Unavailable => unavailable += 1,
-            Category::Other => {}
+#[derive(Default, Clone, Copy)]
+struct Rate {
+    hits: usize,
+    games: usize,
+}
+
+impl Rate {
+    fn percent(self) -> Option<f64> {
+        (self.games > 0).then(|| 100.0 * self.hits as f64 / self.games as f64)
+    }
+
+    fn label(self, previous: Option<Self>, singular: &str, plural: &str) -> String {
+        let unit = if self.games == 1 { singular } else { plural };
+        let rate = match (self.percent(), previous.and_then(Self::percent)) {
+            (Some(now), Some(then)) => {
+                let delta = (now - then).round() as i32;
+                let sign = if delta > 0 { "+" } else { "" };
+                format!("{now:.0}%, {sign}{delta} pp")
+            }
+            (Some(now), None) => format!("{now:.0}%"),
+            (None, _) => "—".into(),
+        };
+        format!("{}/{} {unit} ({rate})", self.hits, self.games)
+    }
+}
+
+#[derive(Default)]
+struct Stats {
+    wins: Rate,
+    losses: Rate,
+    pending: usize,
+    unavailable: usize,
+}
+
+impl Stats {
+    fn count(&mut self, category: Category, won: Option<bool>) {
+        match category {
+            Category::Pending => self.pending += 1,
+            Category::Unavailable => self.unavailable += 1,
+            Category::Comeback | Category::Blunder | Category::Other => match won {
+                Some(true) => {
+                    self.wins.games += 1;
+                    self.wins.hits += usize::from(category == Category::Comeback);
+                }
+                Some(false) => {
+                    self.losses.games += 1;
+                    self.losses.hits += usize::from(category == Category::Blunder);
+                }
+                None => self.unavailable += 1,
+            },
         }
     }
-    let classified = rows.len() - pending - unavailable;
-    let rate = |count: usize, singular| {
-        let plural = if count == 1 { "" } else { "s" };
-        let mut text = format!("{count} {singular}{plural}");
-        if classified > 0 {
-            text.push_str(&format!(
-                " ({:.0}%)",
-                100. * count as f64 / classified as f64
-            ));
+
+    fn summary(&self, previous: Option<&Self>) -> String {
+        let wins = self.wins.label(previous.map(|p| p.wins), "win", "wins");
+        let losses = self
+            .losses
+            .label(previous.map(|p| p.losses), "loss", "losses");
+        let mut text = format!("Comebacks {wins} · Blunders {losses}");
+        for (count, name) in [(self.pending, "pending"), (self.unavailable, "unavailable")] {
+            if count > 0 {
+                text.push_str(&format!(" · {count} {name}"));
+            }
         }
         text
-    };
-    let mut summary = format!(
-        "{classified} classified · {} · {}",
-        rate(comebacks, "comeback"),
-        rate(blunders, "blunder")
-    );
-    for (count, name) in [(pending, "pending"), (unavailable, "unavailable")] {
-        if count > 0 {
-            summary.push_str(&format!(" · {count} {name}"));
-        }
     }
-    summary
+}
+
+pub(super) struct Filter<'a> {
+    pub server: Option<Server>,
+    pub search: &'a str,
+    pub category: Option<Category>,
+    pub evidence: &'a HashMap<PathBuf, Evidence>,
+    pub thresholds: Thresholds,
+    pub period: Windows,
+    pub compare: bool,
 }
 
 pub(super) fn show(
     ui: &mut egui::Ui,
     states: &[&Snapshot],
-    filter: Option<Server>,
-    query: &str,
-    category: Option<Category>,
-    categories: &HashMap<PathBuf, Category>,
     sort: &mut Sort,
+    filter: Filter<'_>,
 ) -> Option<PathBuf> {
-    let query = query.trim().to_lowercase();
+    let query = filter.search.trim().to_lowercase();
     let total = states.iter().map(|s| s.games.len()).sum::<usize>();
-    let mut rows: Vec<_> = states
+    let mut rows = Vec::new();
+    let mut current = Stats::default();
+    let mut previous = Stats::default();
+    let previous_period = filter.period.previous.filter(|_| filter.compare);
+    for state in states
         .iter()
-        .filter(|s| filter.is_none_or(|f| s.server == f))
-        .flat_map(|s| s.games.iter().map(|g| Row::new(g, s, categories)))
-        .filter(|row| {
-            query.is_empty()
-                || row.cells.join(" ").to_lowercase().contains(&query)
-                || row.game.result.to_lowercase().contains(&query)
-        })
-        .collect();
-    let summary = category_summary(&rows);
-    if let Some(category) = category {
-        rows.retain(|r| r.category == category);
+        .filter(|s| filter.server.is_none_or(|f| s.server == f))
+    {
+        for game in &state.games {
+            let Some(bucket) = filter.period.bucket(&game.date) else {
+                continue;
+            };
+            if bucket == Bucket::Previous && previous_period.is_none() {
+                continue;
+            }
+            let evidence = filter.evidence.get(&game.path).copied().unwrap_or_default();
+            let category = evidence.category(filter.thresholds);
+            let show_row =
+                bucket == Bucket::Current && filter.category.is_none_or(|c| c == category);
+            if show_row || !query.is_empty() {
+                let row = Row::new(game, state, category);
+                if !query.is_empty()
+                    && !row.cells.join(" ").to_lowercase().contains(&query)
+                    && !game.result.to_lowercase().contains(&query)
+                {
+                    continue;
+                }
+                if show_row {
+                    rows.push(row);
+                }
+            }
+            let stats = match bucket {
+                Bucket::Current => &mut current,
+                Bucket::Previous => &mut previous,
+            };
+            stats.count(category, evidence.won());
+        }
+    }
+    if total > 0 {
+        ui.horizontal_wrapped(|ui| {
+            ui.small(format!("{} of {} games · Click a row to review", rows.len(), total));
+            ui.separator();
+            ui.label(current.summary(previous_period.map(|_| &previous)))
+                .on_hover_text("Rates use classified wins and losses. Changes are measured in percentage points from the previous period.");
+        });
+        if let Some(range) = previous_period {
+            ui.label(format!("Previous {range} · {}", previous.summary(None)));
+        }
     }
     let mut open = None;
     if rows.is_empty() {
@@ -256,15 +328,14 @@ pub(super) fn show(
         });
     }
     let width = ui.available_width().max(800.);
-    // Reserve the header, row count and the window's close controls; the body
+    // Reserve the header and the window's close controls; the body
     // consumes the remaining height instead of imposing a fixed pixel cap.
     let body_height = (ui.available_height()
         - 32.
-        - ui.text_style_height(&egui::TextStyle::Body)
         - (ui.text_style_height(&egui::TextStyle::Body) + 2. * ui.spacing().button_padding.y)
             .max(ui.spacing().interact_size.y)
         - 6.
-        - 5. * ui.spacing().item_spacing.y)
+        - 4. * ui.spacing().item_spacing.y)
         .max(0.);
     egui::ScrollArea::horizontal()
         .id_salt("library-table-horizontal")
@@ -356,18 +427,6 @@ pub(super) fn show(
                     });
                 });
         });
-    ui.horizontal_wrapped(|ui| {
-        ui.small(format!(
-            "{} of {} games · Click a row to review",
-            rows.len(),
-            total
-        ));
-        if total > 0 {
-            ui.separator();
-            ui.label(summary)
-                .on_hover_text("Percentages use classified games matching your server and search.");
-        }
-    });
     open
 }
 

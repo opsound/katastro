@@ -3,7 +3,7 @@ use crate::{
     EngineProfile, Review,
     archive::{
         Game,
-        categories::{Category, classify},
+        categories::{Evidence, evidence},
     },
     engine::{Engine, EngineConfig},
 };
@@ -21,7 +21,7 @@ struct Mailbox {
     revision: u64,
     request: Option<(EngineConfig, Rows)>,
     focus: Option<PathBuf>,
-    results: HashMap<PathBuf, Category>,
+    results: HashMap<PathBuf, Evidence>,
     clear_results: bool,
 }
 
@@ -69,7 +69,7 @@ impl Scanner {
                         review.as_ref(),
                         profile,
                         focus.as_deref(),
-                        |game, category, clear| {
+                        |game, evidence, clear| {
                             let mut mail = shared.lock().unwrap();
                             if mail.revision != revision {
                                 return false;
@@ -79,7 +79,7 @@ impl Scanner {
                                 mail.clear_results = true;
                             }
                             let wake = mail.results.is_empty();
-                            mail.results.insert(game.path.clone(), category);
+                            mail.results.insert(game.path.clone(), evidence);
                             drop(mail);
                             if wake {
                                 ctx.request_repaint();
@@ -101,7 +101,7 @@ impl Scanner {
         let _ = self.wake.try_send(());
     }
 
-    pub(super) fn collect(&self, view: &mut HashMap<PathBuf, Category>, focus: Option<&Path>) {
+    pub(super) fn collect(&self, view: &mut HashMap<PathBuf, Evidence>, focus: Option<&Path>) {
         let mut mail = self.mail.lock().unwrap();
         if mail.focus.as_deref() != focus {
             mail.focus = focus.map(Path::to_owned);
@@ -180,7 +180,7 @@ impl Scan {
         review: Option<&Review>,
         profile: Option<EngineProfile>,
         focus: Option<&Path>,
-        mut publish: impl FnMut(&Game, Category, bool) -> bool,
+        mut publish: impl FnMut(&Game, Evidence, bool) -> bool,
     ) {
         let version = review.and_then(|r| {
             r.cache
@@ -223,10 +223,10 @@ impl Scan {
                     || focus
                         .is_some_and(|p| p == game.path || self.aliases.get(p) == Some(&game.path))
                 {
-                    let category = review
-                        .and_then(|r| classify(r, game, account, profile.as_ref()).ok())
-                        .unwrap_or(Category::Unavailable);
-                    if !publish(game, category, std::mem::take(&mut clear)) {
+                    let result = review
+                        .and_then(|r| evidence(r, game, account, profile.as_ref()).ok())
+                        .unwrap_or(Evidence::Unavailable);
+                    if !publish(game, result, std::mem::take(&mut clear)) {
                         return;
                     }
                 }

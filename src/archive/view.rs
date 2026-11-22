@@ -1,18 +1,26 @@
-use super::{Command, Server, Snapshot, categories::Category};
+use super::{
+    Command, Server, Snapshot, StatisticsSettings,
+    categories::{Category, Evidence, Thresholds},
+};
 use eframe::egui;
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
 };
 use zeroize::{Zeroize, Zeroizing};
+mod period;
 mod rank_chart;
 mod table;
+mod thresholds;
 #[derive(Default)]
 pub struct View {
     pub open: bool,
     filter: Option<Server>,
     category: Option<Category>,
-    pub(crate) categories: HashMap<PathBuf, Category>,
+    pub(crate) categories: HashMap<PathBuf, Evidence>,
+    pub(crate) statistics: Option<StatisticsSettings>,
+    period_controls: period::Controls,
+    threshold_editor: Option<thresholds::Editor>,
     server: Server,
     settings_open: bool,
     show_rank_history: bool,
@@ -45,6 +53,62 @@ impl View {
     }
     pub fn training_server(&self) -> Server {
         self.filter.unwrap_or(self.server)
+    }
+    fn game_filters(
+        &mut self,
+        ui: &mut egui::Ui,
+        states: &[(&Snapshot, &Path)],
+        has_games: bool,
+        thresholds: Thresholds,
+    ) {
+        let filters =
+            std::iter::once(None).chain(states.iter().map(|(snapshot, _)| Some(snapshot.server)));
+        for filter in filters {
+            let text = filter.map_or("All servers", Server::label);
+            let response = ui.selectable_label(self.filter == filter, text);
+            response.widget_info(|| {
+                egui::WidgetInfo::labeled(
+                    egui::WidgetType::SelectableLabel,
+                    true,
+                    if filter.is_some() {
+                        format!("{text} games")
+                    } else {
+                        text.into()
+                    },
+                )
+            });
+            if response.clicked() {
+                self.filter = filter;
+                if let Some((other, _)) = states.iter().find(|(s, _)| Some(s.server) == filter) {
+                    let settings_open = self.settings_open;
+                    self.show(other);
+                    self.settings_open = settings_open;
+                }
+            }
+        }
+        if has_games {
+            ui.separator();
+            ui.selectable_value(&mut self.category, None, "All categories");
+            for (category, name, who, gain) in [
+                (
+                    Category::Comeback,
+                    "Comebacks",
+                    "Your opponent’s gain in a game you won",
+                    thresholds.comeback,
+                ),
+                (
+                    Category::Blunder,
+                    "Blunders",
+                    "Your gain in a game you lost",
+                    thresholds.blunder,
+                ),
+            ] {
+                ui.selectable_value(&mut self.category, Some(category), name)
+                    .on_hover_text(format!(
+                        "{who}, at least {gain} points from the opening score."
+                    ));
+            }
+        }
     }
     pub fn render(&mut self, ctx: &egui::Context, states: &[(&Snapshot, &Path)]) -> Actions {
         let mut actions = Actions {
@@ -126,6 +190,10 @@ impl View {
                         actions.command = Some((state.server, Command::SetLimit(limit)));
                     }
                     ui.small("Older downloads are kept.");
+                    if !self.settings_open && !state.syncing {
+                        ui.separator();
+                        ui.label(&state.status);
+                    }
                 });
                 if self.settings_open {
                     ui.separator();
@@ -222,7 +290,7 @@ impl View {
                             state.status, state.downloaded
                         ));
                     });
-                } else {
+                } else if self.settings_open {
                     ui.label(&state.status);
                 }
                 if let Some(error) = &state.error {
@@ -246,64 +314,47 @@ impl View {
                 if !self.settings_open && has_games && self.show_rank_history {
                     rank_chart::show(ui, states, self.filter);
                 }
-                let label = ui
-                    .horizontal(|ui| {
-                        let label = ui.label("Search synced games");
-                        let filters = std::iter::once(None)
-                            .chain(states.iter().map(|(snapshot, _)| Some(snapshot.server)));
-                        for filter in filters {
-                            let text = filter.map_or("All servers", Server::label);
-                            let response = ui.selectable_label(self.filter == filter, text);
-                            response.widget_info(|| {
-                                egui::WidgetInfo::labeled(
-                                    egui::WidgetType::SelectableLabel,
-                                    true,
-                                    if filter.is_some() {
-                                        format!("{text} games")
-                                    } else {
-                                        text.into()
-                                    },
-                                )
-                            });
-                            if response.clicked() {
-                                self.filter = filter;
-                                if let Some((other, _)) =
-                                    states.iter().find(|(s, _)| Some(s.server) == filter)
-                                {
-                                    let settings_open = self.settings_open;
-                                    self.show(other);
-                                    self.settings_open = settings_open;
-                                }
-                            }
-                        }
-                        if has_games {
-                            ui.separator();
-                            for (category, name, description) in [
-                                (None, "All categories", "Show every matching game."),
-                                (Some(Category::Comeback), "Comebacks", "Games you won after your opponent gained at least 20 points from the opening estimate."),
-                                (Some(Category::Blunder), "Blunders", "Games you lost after you gained at least 20 points from the opening estimate."),
-                            ] {
-                                ui.selectable_value(&mut self.category, category, name)
-                                    .on_hover_text(description);
-                            }
-                        }
-                        label
-                    })
-                    .inner;
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.search)
-                        .hint_text("Date, player, or result")
-                        .desired_width(f32::INFINITY),
-                )
-                .labelled_by(label.id);
+                let today = super::period::local_today();
+                let mut statistics = self.statistics.unwrap_or_default();
+                ui.horizontal_wrapped(|ui| {
+                    self.game_filters(ui, states, has_games, statistics.thresholds)
+                });
+                ui.horizontal_wrapped(|ui| {
+                    if self.statistics.is_some() {
+                        self.period_controls.show(
+                            ui,
+                            &mut statistics.period,
+                            &mut statistics.compare,
+                            today,
+                        );
+                        thresholds::show(
+                            ui,
+                            &mut self.threshold_editor,
+                            &mut statistics.thresholds,
+                        );
+                        self.statistics = Some(statistics);
+                    }
+                    let label = ui.label("Search synced games");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.search)
+                            .hint_text("Search by date, player, or result")
+                            .desired_width((ui.available_size_before_wrap().x - 12.0).max(130.0)),
+                    )
+                    .labelled_by(label.id);
+                });
                 if let Some(path) = table::show(
                     ui,
                     &states.iter().map(|(s, _)| *s).collect::<Vec<_>>(),
-                    self.filter,
-                    &self.search,
-                    self.category,
-                    &self.categories,
                     &mut self.sort,
+                    table::Filter {
+                        server: self.filter,
+                        search: &self.search,
+                        category: self.category,
+                        evidence: &self.categories,
+                        thresholds: statistics.thresholds,
+                        period: statistics.period.windows(today),
+                        compare: statistics.compare,
+                    },
                 ) {
                     actions.review = Some(path);
                     close = true;

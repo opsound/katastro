@@ -4,7 +4,7 @@ mod archive_ui;
 #[path = "support/pandanet/mod.rs"]
 mod support;
 
-use archive_ui::{archive_desktop, wait_for};
+use archive_ui::{archive_desktop, select_all_time, wait_for};
 use eframe::egui::{self, Color32, Pos2, Shape};
 use egui_kittest::{Harness, kittest::Queryable};
 use katastro::{
@@ -70,7 +70,7 @@ fn desktop(
     wait_for(&mut h, "library snapshots never arrived", |h| {
         h.query_by_label(&expected).is_some()
     });
-    h.run_steps(3);
+    select_all_time(&mut h);
     h
 }
 
@@ -214,18 +214,18 @@ fn games_overlays_three_rank_histories_and_filters_them_with_the_table() {
                 .all(|pair| pair[0].right() < pair[1].left()),
         "calendar labels must be visible and legible"
     );
+    if let Some(path) = std::env::var_os("KATASTRO_RANK_HISTORY_PREVIEW") {
+        h.render().unwrap().save(path).unwrap();
+    }
     let expanded_rows = visible_game_rows(&h);
     assert!(
         expanded_rows >= 5,
-        "five complete rows must fit beneath the plot"
+        "five complete rows must fit beneath the plot, saw {expanded_rows}"
     );
     assert!(
         collapsed_rows > expanded_rows,
         "hiding the chart must reveal more games"
     );
-    if let Some(path) = std::env::var_os("KATASTRO_RANK_HISTORY_PREVIEW") {
-        h.render().unwrap().save(path).unwrap();
-    }
     h.hover_at(a[1]);
     h.run_steps(3);
     assert!(h.output().shapes.iter().any(|s| matches!(&s.shape, Shape::Text(t) if

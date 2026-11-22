@@ -2,7 +2,7 @@ use katastro::{
     Analysis, EngineProfile, Review,
     archive::{
         Game,
-        categories::{Category, classify},
+        categories::{Category, Thresholds, classify, evidence},
     },
 };
 use std::fs;
@@ -151,5 +151,42 @@ fn indexed_names_ranks_and_pandanet_results_supply_missing_sgf_metadata() {
         draw.category("Black Player"),
         Category::Unavailable,
         "explicit SGF draw outranks stale indexed result"
+    );
+}
+
+// Both owners can apply their own cutoff to the same recorded swing. With
+// incomplete coverage, raising the cutoff can put a game back into Pending.
+#[test]
+fn independent_thresholds_use_the_largest_observed_gain_and_keep_partial_games_pending() {
+    let mut f = Fixture::new("PB[Black Player]PW[White Player]RE[W+T]");
+    f.score(0, -9.0, 64);
+    f.score(1, 12.0, 64);
+    f.score(2, 23.5, 128);
+    let cached =
+        |f: &Fixture, player| evidence(&f.review, &f.game, player, Some(&f.profile)).unwrap();
+    let win = cached(&f, "White Player");
+    let loss = cached(&f, "Black Player");
+    let high_blunder = Thresholds {
+        comeback: 32.5,
+        blunder: 33.0,
+    };
+    let high_comeback = Thresholds {
+        comeback: 33.0,
+        blunder: 32.5,
+    };
+    assert_eq!(win.category(high_blunder), Category::Comeback);
+    assert_eq!(loss.category(high_blunder), Category::Pending);
+    assert_eq!(win.category(high_comeback), Category::Pending);
+    assert_eq!(loss.category(high_comeback), Category::Blunder);
+    assert_eq!((win.won(), loss.won()), (Some(true), Some(false)));
+
+    f.score(3, -16.0, 64);
+    assert_eq!(
+        cached(&f, "Black Player").category(high_blunder),
+        Category::Other
+    );
+    assert_eq!(
+        cached(&f, "White Player").category(high_blunder),
+        Category::Comeback
     );
 }

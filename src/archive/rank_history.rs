@@ -1,6 +1,6 @@
 //! The synced player's recorded rank over the dates in one server archive.
-use super::{Server, Snapshot};
-use time::{Date, Time, UtcDateTime, macros::format_description};
+use super::{Server, Snapshot, period::parse_date};
+use time::{Time, UtcDateTime, macros::format_description};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RankPoint {
@@ -58,11 +58,7 @@ pub fn rank_label(level: i32) -> String {
 fn timestamp(value: &str) -> Option<i64> {
     let value = value.trim();
     let (date, clock) = value.split_once(' ').unwrap_or((value, "00:00"));
-    let date = Date::parse(
-        &date.replace('/', "-"),
-        format_description!("[year]-[month]-[day]"),
-    )
-    .ok()?;
+    let date = parse_date(date)?;
     let clock = Time::parse(
         clock,
         format_description!("[hour]:[minute][optional [:[second]]]"),

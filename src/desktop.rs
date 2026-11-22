@@ -257,6 +257,9 @@ impl eframe::App for DesktopApp {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let mut config_changed = false;
         while let Ok(state) = self.client.snapshots.try_recv() {
+            if self.library.view.statistics.is_none() {
+                self.library.view.statistics = state.game_statistics;
+            }
             config_changed |= state.config.executable != self.state.config.executable
                 || state.config.model != self.state.config.model;
             self.state = state;

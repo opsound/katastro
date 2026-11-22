@@ -7,7 +7,7 @@ mod support;
 #[path = "support/category_scores.rs"]
 mod category_scores;
 
-use archive_ui::{archive_desktop, wait_for};
+use archive_ui::{archive_desktop, select_all_time, wait_for};
 use eframe::egui::vec2;
 use egui_kittest::{
     Harness,
@@ -114,6 +114,7 @@ fn ogs_settings_connect_using_only_a_username_and_preserve_the_other_accounts() 
     let (mut h, http) = desktop(temp.path());
     h.get_by_label("Games").click();
     h.run();
+    select_all_time(&mut h);
     h.get_by_label("Sync settings").click();
     h.run();
     h.get_by_label("Pandanet password").focus();
@@ -196,6 +197,7 @@ fn ogs_filter_trains_the_selected_account_and_opens_its_original_when_game_ids_m
     let (mut h, _http) = desktop(temp.path());
     h.get_by_label("Games").click();
     h.run();
+    select_all_time(&mut h);
     wait_for(&mut h, "the seeded Fox game was not loaded", |h| {
         h.query_by_label_contains(FOX_ROW).is_some()
     });
@@ -213,7 +215,7 @@ fn ogs_filter_trains_the_selected_account_and_opens_its_original_when_game_ids_m
         &mut h,
         "the newly synced OGS game did not inherit its review analysis",
         |h| {
-            h.query_by_label("1 classified · 1 comeback (100%) · 0 blunders (0%)")
+            h.query_by_label("Comebacks 1/1 win (100%) · Blunders 0/0 losses (—)")
                 .is_some()
         },
     );
@@ -257,7 +259,7 @@ fn ogs_filter_trains_the_selected_account_and_opens_its_original_when_game_ids_m
     std::fs::remove_file(&source).unwrap();
     h.get_by_label("Games").click();
     wait_for(&mut h, "the missing original was still classified", |h| {
-        h.query_by_label("0 classified · 0 comebacks · 0 blunders · 1 unavailable")
+        h.query_by_label("Comebacks 0/0 wins (—) · Blunders 0/0 losses (—) · 1 unavailable")
             .is_some()
     });
     h.get_by_label("Sync OGS now").click();
@@ -265,7 +267,7 @@ fn ogs_filter_trains_the_selected_account_and_opens_its_original_when_game_ids_m
         &mut h,
         "the repaired original did not regain its comeback classification",
         |h| {
-            h.query_by_label("1 classified · 1 comeback (100%) · 0 blunders (0%)")
+            h.query_by_label("Comebacks 1/1 win (100%) · Blunders 0/0 losses (—)")
                 .is_some()
         },
     );

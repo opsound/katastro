@@ -29,6 +29,7 @@ pub enum Command {
     Start,
     Pause,
     Configure(EngineConfig),
+    SaveGameStatistics(crate::archive::StatisticsSettings),
     PrepareTrainingLibraries(Vec<(String, Vec<PathBuf>)>),
     PrepareTraining {
         games: Vec<PathBuf>,
@@ -44,6 +45,7 @@ pub struct Snapshot {
     pub values: BTreeMap<NodeId, Analysis>,
     pub source: Option<PathBuf>,
     pub config: EngineConfig,
+    pub game_statistics: Option<crate::archive::StatisticsSettings>,
     pub status: String,
     pub error: Option<String>,
     pub diagnostic: Option<String>,
@@ -144,9 +146,18 @@ impl Worker {
         } else {
             config
         };
+        let stats = match review.setting::<crate::archive::StatisticsSettings>("game_statistics") {
+            Ok(settings) => settings,
+            Err(error) if error.is::<serde_json::Error>() => None,
+            Err(error) => return Err(error),
+        };
+        let state = Snapshot {
+            game_statistics: Some(stats.filter(|s| s.is_valid()).unwrap_or_default()),
+            ..Snapshot::empty(config)
+        };
         Ok(Self {
             review,
-            state: Snapshot::empty(config),
+            state,
             engine: None,
             values_profile: None,
             scheduler: None,
@@ -318,6 +329,13 @@ impl Worker {
                 }
             }
             Command::Pause => self.pause(),
+            Command::SaveGameStatistics(settings) => {
+                if !settings.is_valid() {
+                    return Err("Choose a valid date range and positive point thresholds".into());
+                }
+                self.review.save_setting("game_statistics", &settings)?;
+                self.state.game_statistics = Some(settings);
+            }
             Command::Configure(config) => {
                 config.analysis.validate()?;
                 let mut saved = config.clone();

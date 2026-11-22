@@ -1,5 +1,5 @@
 use eframe::egui;
-use egui_kittest::Harness;
+use egui_kittest::{Harness, kittest::Queryable};
 use katastro::{archive::Options, desktop::DesktopApp, engine::EngineConfig};
 use std::{
     path::Path,
@@ -38,4 +38,16 @@ pub fn wait_for(
         assert!(Instant::now() < deadline, "{message}");
         std::thread::yield_now();
     }
+}
+
+pub fn wait_for_label(h: &mut Harness<'_, DesktopApp>, label: &str) {
+    wait_for(h, label, |h| h.query_by_label(label).is_some());
+}
+
+pub fn select_all_time(h: &mut Harness<'_, DesktopApp>) {
+    wait_for_label(h, "Date range");
+    h.get_by_label("Date range").click();
+    wait_for_label(h, "All time");
+    h.get_by_label("All time").click();
+    h.run_steps(3);
 }

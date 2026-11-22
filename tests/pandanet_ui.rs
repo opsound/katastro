@@ -1,8 +1,11 @@
 #![cfg(feature = "desktop")]
+#[path = "support/archive_ui.rs"]
+pub mod archive_ui;
 #[path = "support/pandanet/mod.rs"]
 mod support;
 #[path = "support/training.rs"]
 mod training_support;
+use archive_ui::{select_all_time, wait_for, wait_for_label};
 use egui_kittest::{Harness, kittest::Queryable};
 use katastro::{
     desktop::DesktopApp,
@@ -12,7 +15,7 @@ use katastro::{
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
-    time::{Duration, Instant},
+    time::Duration,
 };
 fn desktop(
     root: &Path,
@@ -67,15 +70,9 @@ fn sync(root: &Path, fixture: &support::Fixture, vault: Arc<support::Vault>) -> 
 }
 
 fn wait(h: &mut Harness<'_, DesktopApp>, done: impl Fn(&DesktopApp) -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while !done(h.state()) {
-        h.step();
-        assert!(
-            Instant::now() < deadline,
-            "desktop did not finish the requested operation"
-        );
-        std::thread::yield_now();
-    }
+    wait_for(h, "desktop did not finish the requested operation", |h| {
+        done(h.state())
+    });
 }
 // Benefit: a synced library actually starts preparing in an empty window, and
 // the user can pause it or enter training without competing background work.
@@ -222,15 +219,11 @@ fn desktop_signs_in_remembers_downloads_and_opens_a_game_without_disturbing_a_re
     });
     release.0.send(()).unwrap();
     h.get_by_label("Pandanet").click();
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while h
-        .query_by_label("Review 2026/11/01 12:00: example 6k+ vs opponent 5k+")
-        .is_none()
-    {
-        h.step();
-        assert!(Instant::now() < deadline);
-        std::thread::yield_now();
-    }
+    select_all_time(&mut h);
+    wait_for_label(
+        &mut h,
+        "Review 2026/11/01 12:00: example 6k+ vs opponent 5k+",
+    );
     assert_eq!(
         h.state().state.document.as_ref().unwrap().nodes.len(),
         4,
@@ -268,15 +261,10 @@ fn games_library_filters_synced_games_and_opens_the_selected_record_directly() {
     sync(temp.path(), &fixture, vault.clone());
     let mut h = desktop(temp.path(), &fixture, vault, None, 860.);
     h.get_by_label("Games").click();
-    h.run_steps(3);
+    select_all_time(&mut h);
     let first = "Review 2026/11/01 12:00: example 6k+ vs opponent 5k+";
     let second = "Review 2026/11/02 12:00: example 6k+ vs opponent 5k+";
-    let deadline = Instant::now() + Duration::from_secs(3);
-    while h.query_by_label(second).is_none() {
-        h.step();
-        assert!(Instant::now() < deadline);
-        std::thread::yield_now();
-    }
+    wait_for_label(&mut h, second);
     if let Some(path) = std::env::var_os("KATASTRO_PANDANET_UI_PREVIEW") {
         h.render().unwrap().save(path).unwrap();
     }
@@ -361,12 +349,8 @@ fn library_table_sorts_every_column_and_opens_the_correct_game_after_filtering()
         .collect();
     let mut h = desktop(temp.path(), &fixture, vault, None, 860.);
     h.get_by_label("Games").click();
-    let deadline = Instant::now() + Duration::from_secs(3);
-    while h.query_by_label(&labels[0]).is_none() {
-        h.step();
-        assert!(Instant::now() < deadline);
-        std::thread::yield_now();
-    }
+    select_all_time(&mut h);
+    wait_for_label(&mut h, &labels[0]);
     h.run_steps(3);
     let order = |h: &Harness<'_, DesktopApp>| {
         let mut rows: Vec<_> = labels
@@ -506,15 +490,11 @@ fn library_table_uses_extra_window_height_to_show_and_open_more_games() {
     sync(temp.path(), &fixture, vault.clone());
     let mut h = desktop(temp.path(), &fixture, vault, None, 1500.);
     h.get_by_label("Games").click();
-    let deadline = Instant::now() + Duration::from_secs(3);
-    while h
-        .query_by_label("Review 2026/11/20 12:00: example 6k+ vs opponent 5k+")
-        .is_none()
-    {
-        h.step();
-        assert!(Instant::now() < deadline);
-        std::thread::yield_now();
-    }
+    select_all_time(&mut h);
+    wait_for_label(
+        &mut h,
+        "Review 2026/11/20 12:00: example 6k+ vs opponent 5k+",
+    );
     h.run_steps(3);
     let before = h.query_all_by_label_contains("Review 2026/11/").count();
     let window = h.get_by_label("Game library").rect();
@@ -570,16 +550,11 @@ fn library_opens_training_setup_with_the_synced_account_and_returns_to_review() 
     sync(temp.path(), &fixture, vault.clone());
     let mut h = desktop(temp.path(), &fixture, vault, None, 860.);
     h.get_by_label("Games").click();
-    h.run_steps(3);
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while h
-        .query_by_label("Review 2026/11/01 12:00: example 6k+ vs opponent 5k+")
-        .is_none()
-    {
-        h.step();
-        assert!(Instant::now() < deadline);
-        std::thread::yield_now();
-    }
+    select_all_time(&mut h);
+    wait_for_label(
+        &mut h,
+        "Review 2026/11/01 12:00: example 6k+ vs opponent 5k+",
+    );
     h.get_by_label("Train from these games").click();
     h.run_steps(3);
     assert!(h.query_by_label("Start training").is_some());

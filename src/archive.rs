@@ -12,6 +12,7 @@ mod fox;
 mod http;
 mod ogs;
 mod pandanet;
+pub mod period;
 pub mod rank_history;
 mod remote;
 mod storage;
@@ -32,6 +33,31 @@ impl Server {
         }
     }
 }
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct StatisticsSettings {
+    pub period: period::Period,
+    pub compare: bool,
+    pub thresholds: categories::Thresholds,
+}
+impl Default for StatisticsSettings {
+    fn default() -> Self {
+        Self {
+            period: Default::default(),
+            compare: true,
+            thresholds: Default::default(),
+        }
+    }
+}
+impl StatisticsSettings {
+    pub(crate) fn is_valid(self) -> bool {
+        [self.thresholds.comeback, self.thresholds.blunder]
+            .into_iter()
+            .all(|v| v.is_finite() && v > 0.0)
+            && !matches!(self.period, period::Period::Custom(range) if range.start > range.end)
+    }
+}
+
 pub const ENDPOINT: &str = "https://my.pandanet.co.jp/cgi-bin/cgi.exe?MH";
 pub const SYNC_INTERVAL: u64 = 15 * 60;
 
