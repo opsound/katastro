@@ -270,7 +270,7 @@ fn period_and_thresholds_survive_relaunch_and_change_the_matching_games() {
         &mut review,
         &profile(),
         &[
-            (1, "fir", "member", "B+R", &[0., -5., -4., 2.]),
+            (1, "red oak", "member", "B+R", &[0., -5., -4., 2.]),
             (2, "elm", "member", "W+R", &[0., 35., 3., -4.]),
             (3, "ash", "member", "B+R", &[0., -12., -3., 4.]),
             (4, "oak", "member", "W+R", &[0., 22., 3., -2.]),
@@ -362,6 +362,15 @@ fn period_and_thresholds_survive_relaunch_and_change_the_matching_games() {
     reopened.get_by_label("Apply thresholds").click();
     reopened.run();
     reopened.get_by_label("Comebacks 0/1 win (0%) · Blunders 1/1 loss (100%)");
+
+    reopened.get_by_label("Win/loss by time").click();
+    reopened.run();
+    replace_field(&mut reopened, "Search synced games", "oak");
+    reopened.run();
+    reopened.get_by_label("Unknown time · 0 W / 1 L · 0% win rate");
+    reopened.get_by_label("Compare previous period").click();
+    reopened.run();
+    reopened.get_by_label("Unknown time · 0 W / 1 L · 0% win rate · Previous 1 W / 0 L · -100 pp");
 }
 
 #[test]
@@ -419,4 +428,186 @@ fn opening_games_while_storage_is_locked_preserves_saved_thresholds() {
             .thresholds,
         saved.thresholds
     );
+}
+
+#[path = "support/timezone.rs"]
+mod timezone;
+
+#[cfg(unix)]
+#[test]
+fn scanning_results_keeps_read_games_visible_without_counting_unread_games_as_unknown() {
+    use std::{fs, io::Write, process::Command};
+
+    let temp = tempfile::tempdir().unwrap();
+    let mut review = Review::new(&temp.path().join("reviews"), &temp.path().join("cache")).unwrap();
+    let mut ogs = Options::ogs(temp.path().join("OGS"));
+    ogs.credentials = Arc::new(support::Vault::default());
+    let paths = seed_archive(
+        &ogs,
+        &mut review,
+        &profile(),
+        &[
+            (1, "member", "ash", "B+R", &[]),
+            (2, "member", "elm", "W+R", &[]),
+            (3, "member", "oak", "0", &[]),
+        ],
+    );
+    drop(review);
+    // The archive scans newest first. Hold the oldest SGF until the two others are displayed.
+    let delayed_sgf = fs::read(&paths[0]).unwrap();
+    fs::remove_file(&paths[0]).unwrap();
+    assert!(
+        Command::new("mkfifo")
+            .arg(&paths[0])
+            .status()
+            .unwrap()
+            .success()
+    );
+    let mut h = archive_desktop(temp.path(), vec![ogs], vec2(1200., 900.));
+    h.get_by_label("Games").click();
+    select_all_time(&mut h);
+    h.get_by_label("Win/loss by time").click();
+    wait_for(&mut h, "the completed win did not appear", |h| {
+        h.query_by_label("Unknown time · 1 W / 0 L · 100% win rate")
+            .is_some()
+    });
+    h.get_by_label("1 game without a win/loss result");
+    h.get_by_label("Reading game results…");
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&paths[0])
+        .unwrap()
+        .write_all(&delayed_sgf)
+        .unwrap();
+    wait_for(&mut h, "the completed loss did not appear", |h| {
+        h.query_by_label("Unknown time · 1 W / 1 L · 50% win rate")
+            .is_some()
+    });
+    h.get_by_label("1 game without a win/loss result");
+    assert!(h.query_by_label("Reading game results…").is_none());
+}
+
+// Results without engine analysis must follow local weekday and clock boundaries.
+#[test]
+fn wins_by_play_time_follow_local_dates_and_the_visible_library_scope() {
+    if timezone::rerun_if_needed(
+        "wins_by_play_time_follow_local_dates_and_the_visible_library_scope",
+        "America/Los_Angeles",
+    ) {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let mut review = Review::new(&temp.path().join("reviews"), &temp.path().join("cache")).unwrap();
+    let mut panda = Options::new(temp.path().join("Pandanet"));
+    let mut ogs = Options::ogs(temp.path().join("OGS"));
+    panda.credentials = Arc::new(support::Vault::default());
+    ogs.credentials = panda.credentials.clone();
+    let mut seed = |options: &Options, games: &[Game<'_>], dates: &[&str]| {
+        seed_archive(options, &mut review, &profile(), games);
+        let db = rusqlite::Connection::open(options.root.join("sync.sqlite")).unwrap();
+        for (&(id, ..), &date) in games.iter().zip(dates) {
+            db.execute(
+                "UPDATE games SET date=?1 WHERE id=?2",
+                params![date, id.to_string()],
+            )
+            .unwrap();
+        }
+    };
+    seed(
+        &ogs,
+        &[
+            (1, "ash", "member", "B+R", &[]),
+            (2, "member", "birch", "B+R", &[]),
+            (3, "member", "ash", "W+T", &[]),
+            (4, "maple", "member", "0", &[]),
+            (5, "alder", "member", "W+T", &[]),
+            (6, "yew", "member", "W+R", &[]),
+        ],
+        &[
+            "2026/08/08 06:59",
+            "2026/08/08 07:00",
+            "2026-08-08",
+            "2026-08-06",
+            "",
+            "2026/08/01 06:20",
+        ],
+    );
+    seed(
+        &panda,
+        &[(1, "ash", "member", "W+2.5", &[])],
+        &["2026/08/08 15:59"],
+    );
+    drop(review);
+    use katastro::archive::{
+        StatisticsSettings,
+        period::{Interval, Period},
+    };
+    use time::macros::date;
+    let saved = StatisticsSettings {
+        period: Period::Custom(
+            Interval::new(date!(2026 - 08 - 03), date!(2026 - 08 - 09)).unwrap(),
+        ),
+        ..Default::default()
+    };
+    rusqlite::Connection::open(temp.path().join("reviews"))
+        .unwrap()
+        .execute(
+            "INSERT INTO settings(key,value) VALUES ('game_statistics',?1)",
+            [serde_json::to_string(&saved).unwrap()],
+        )
+        .unwrap();
+    let mut h = archive_desktop(temp.path(), vec![panda, ogs], vec2(1200., 900.));
+    h.get_by_label("Games").click();
+    archive_ui::wait_for_label(&mut h, "Date range");
+    h.get_by_label("Blunders").click();
+    h.run_steps(3);
+    h.get_by_label("Win/loss by time").click();
+    wait_for(
+        &mut h,
+        "Friday should include one OGS win and one Pandanet loss",
+        |h| {
+            h.query_by_label("Friday · 1 W / 1 L · 50% win rate · Previous 0 W / 1 L · +50 pp")
+                .is_some()
+        },
+    );
+    if let Some(path) = std::env::var_os("KATASTRO_PLAY_TIMES_PREVIEW") {
+        h.render().unwrap().save(path).unwrap();
+    }
+    select_all_time(&mut h);
+    h.get_by_label("Friday · 1 W / 2 L · 33% win rate");
+    for label in [
+        "Saturday · 1 W / 1 L · 50% win rate",
+        "Unknown day · 0 W / 1 L · 0% win rate",
+        "18:00–23:59 · 1 W / 2 L · 33% win rate",
+        "00:00–05:59 · 0 W / 1 L · 0% win rate",
+        "12:00–17:59 · 0 W / 0 L · — win rate",
+        "Unknown time · 1 W / 1 L · 50% win rate",
+        "1 game without a win/loss result",
+    ] {
+        h.get_by_label(label);
+    }
+    h.get_by_label("By hour").click();
+    h.run_steps(3);
+    h.get_by_label("00:00 · 0 W / 1 L · 0% win rate");
+    assert!(
+        h.query_by_label("00:00–05:59 · 0 W / 1 L · 0% win rate")
+            .is_none()
+    );
+    h.get_by_label("OGS games").click();
+    h.run_steps(3);
+    h.get_by_label("Friday · 1 W / 1 L · 50% win rate");
+    h.get_by_label("Search synced games").focus();
+    h.get_by_label("Search synced games").type_text("birch");
+    h.run_steps(3);
+    h.get_by_label("Saturday · 0 W / 1 L · 0% win rate");
+    h.get_by_label("00:00 · 0 W / 1 L · 0% win rate");
+    h.get_by_label("Game list").click();
+    h.run_steps(3);
+    h.get_by_label("No matching games.");
+    h.get_by_label("All categories").click();
+    h.run_steps(3);
+    h.get_by_label_contains("member vs birch").click();
+    wait_for(&mut h, "the filtered game did not open", |h| {
+        h.state().state.document.is_some()
+    });
 }

@@ -1,7 +1,7 @@
 use katastro::{
     Analysis, EngineProfile, Review,
     archive::{
-        Game,
+        Game, Options, Service,
         categories::{Category, Thresholds, classify, evidence},
     },
 };
@@ -27,15 +27,15 @@ impl Fixture {
         let mut review =
             Review::new(&root.path().join("reviews"), &root.path().join("cache")).unwrap();
         review.import(&path).unwrap();
-        let game = Game {
-            id: "1".into(),
-            timestamp: None,
-            date: "2026-01-01".into(),
-            white: "White Player 2k".into(),
-            black: "Black Player 1d".into(),
-            result: "Black won by time".into(),
-            path,
-        };
+        let options = Options::new(root.path().into());
+        let archive =
+            || Service::open(root.path(), &options.endpoint, options.credentials.clone()).unwrap();
+        drop(archive());
+        rusqlite::Connection::open(root.path().join("sync.sqlite")).unwrap().execute_batch(
+            "INSERT INTO config(singleton,username,remember,automatic) VALUES(1,'White Player',0,0);
+             INSERT INTO games VALUES('White Player','1','2026-01-01','White Player 2k','Black Player 1d','Black won by time','game.sgf','');",
+        ).unwrap();
+        let game = archive().snapshot().games.pop().unwrap();
         let profile = EngineProfile {
             model_sha256: "model".into(),
             engine_sha256: "engine".into(),
@@ -85,6 +85,26 @@ fn twenty_point_swing_identifies_both_accounts_from_the_sgf_result_and_players()
         assert_eq!(f.category(winner_name), Category::Comeback);
         assert_eq!(f.category("spectator"), Category::Unavailable);
     }
+}
+
+#[test]
+fn unanalyzed_games_keep_the_recorded_outcome_for_each_account() {
+    // The archive lists a Black win. The original records White winning on time.
+    let f = Fixture::new("PB[Black Player]PW[White Player]RE[W+T]");
+    for profile in [None, Some(&f.profile)] {
+        for (account, won) in [("White Player", true), ("Black Player", false)] {
+            let record = evidence(&f.review, &f.game, account, profile).unwrap();
+            assert_eq!(record.won(), Some(won));
+            assert_eq!(record.category(Thresholds::default()), Category::Pending);
+        }
+    }
+    let draw = Fixture::new("PB[Black Player]PW[White Player]RE[0]");
+    assert_eq!(
+        evidence(&draw.review, &draw.game, "Black Player", None)
+            .unwrap()
+            .won(),
+        None
+    );
 }
 
 // Incomplete coverage cannot rule a swing out. A user's variation, an older

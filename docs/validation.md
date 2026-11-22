@@ -944,3 +944,11 @@ All 236 routine tests and five separately invoked real KataGo checks passed. GPU
 A desktop test syncs a Pandanet game stamped 00:15 on the next day in Japan while **Last 30 days** is selected in Honolulu. Before the fix the open library reported one downloaded game and zero visible rows. It now displays the game at 05:15 on the local day. Reopening the same index offline restores the row and the review opens. A mutation that passed the stored server date through to the table reproduced the missing row.
 
 SQLite fixtures check winter and summer timestamps from all three servers, date-only and undated records, and OGS finishes expressed with different UTC offsets. Two games played across the autumn clock change keep their true order in the table and rank history. The tests also align observations from three servers at the same instant and verify the local date on hover.
+
+## Win/loss by weekday and time of day
+
+A desktop test opens an offline library with Pandanet and OGS games either side of local midnight. It checks wins and losses from the connected player’s perspective, the hourly and six-hour views, the weekday of a date-only game, and the separate counts for missing timestamps and draws. It changes date, server and search filters, compares against the preceding week, and opens the original game on returning to the game list. A GPU render at 1200 × 900 shows both tables with their comparison columns.
+
+The new desktop checks first failed when the time view was absent. Counting the current period as its own comparison then removed an expected drop of 100 percentage points. Disabling the hourly toggle hid the expected midnight row. Shifting the six-hour boundaries failed the calendar test. Discarding an unanalyzed game’s outcome failed an offline SGF and SQLite test where the archived result disagreed with the downloaded original.
+
+A separate desktop test holds one SGF read open while a win and a draw are already visible. Before the loading indicator was added, it reported two games without results. The test expects one draw throughout the scan and a win rate that changes from 100% to 50% when the last result arrives.

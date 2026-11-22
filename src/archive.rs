@@ -13,6 +13,7 @@ mod http;
 mod ogs;
 mod pandanet;
 pub mod period;
+pub mod play_times;
 pub mod rank_history;
 mod remote;
 mod storage;

@@ -4,6 +4,7 @@ use crate::{
         Game, Server, Snapshot,
         categories::{Category, Evidence, Thresholds, winner_and_reason},
         period::{Bucket, Windows},
+        play_times::PlayTimes,
         rank_history::player,
     },
 };
@@ -273,12 +274,16 @@ pub(super) fn show(
     states: &[&Snapshot],
     sort: &mut Sort,
     filter: Filter<'_>,
+    by_hour: Option<&mut bool>,
 ) -> Option<PathBuf> {
     let query = filter.search.trim().to_lowercase();
     let total = states.iter().map(|s| s.games.len()).sum::<usize>();
     let mut rows = Vec::new();
     let mut current = Stats::default();
     let mut previous = Stats::default();
+    let mut reading_results = false;
+    let mut breakdown =
+        by_hour.map(|by_hour| (by_hour, PlayTimes::default(), PlayTimes::default()));
     let previous_period = filter.period.previous.filter(|_| filter.compare);
     for state in states
         .iter()
@@ -293,8 +298,9 @@ pub(super) fn show(
             }
             let evidence = filter.evidence.get(&game.path).copied().unwrap_or_default();
             let category = evidence.category(filter.thresholds);
-            let show_row =
-                bucket == Bucket::Current && filter.category.is_none_or(|c| c == category);
+            let show_row = breakdown.is_none()
+                && bucket == Bucket::Current
+                && filter.category.is_none_or(|c| c == category);
             if show_row || !query.is_empty() {
                 let row = Row::new(game, state, category);
                 if !query.is_empty()
@@ -307,12 +313,34 @@ pub(super) fn show(
                     rows.push(row);
                 }
             }
-            let stats = match bucket {
-                Bucket::Current => &mut current,
-                Bucket::Previous => &mut previous,
-            };
-            stats.count(category, evidence.won());
+            if let Some((_, now, before)) = &mut breakdown {
+                if matches!(evidence, Evidence::Pending) {
+                    reading_results = true;
+                    continue;
+                }
+                match bucket {
+                    Bucket::Current => now,
+                    Bucket::Previous => before,
+                }
+                .count(&game.date, evidence.won());
+            } else {
+                match bucket {
+                    Bucket::Current => &mut current,
+                    Bucket::Previous => &mut previous,
+                }
+                .count(category, evidence.won());
+            }
         }
+    }
+    if let Some((by_hour, now, before)) = breakdown {
+        if reading_results {
+            ui.weak("Reading game results…");
+        }
+        if let Some(range) = previous_period {
+            ui.weak(format!("Previous period {range}"));
+        }
+        super::play_times::show(ui, &now, previous_period.map(|_| &before), by_hour);
+        return None;
     }
     if total > 0 {
         ui.horizontal_wrapped(|ui| {

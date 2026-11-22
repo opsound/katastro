@@ -93,3 +93,40 @@ fn a_custom_leap_day_compares_with_the_day_before_and_all_time_restores_undated_
     assert_eq!(partition(Period::AllTime, day, &dates), [Some(C); 6]);
     assert!(Period::AllTime.windows(day).previous.is_none());
 }
+
+#[test]
+fn local_records_count_decided_games_on_each_side_of_hour_and_weekday_boundaries() {
+    use katastro::archive::play_times::PlayTimes;
+
+    let mut times = PlayTimes::default();
+    for (played, won) in [
+        ("2024/03/03 23:59", Some(false)), // Sunday
+        ("2024/03/04 00:00", Some(true)),  // Monday
+        ("2024/03/04 05:59", Some(false)),
+        ("2024/03/04 06:00", Some(false)),
+        ("2024/03/04 11:59:59", Some(true)),
+        ("2024/03/04 12:00", Some(true)),
+        ("2024/03/04 17:59", Some(true)),
+        ("2024/03/04 18:00", Some(false)),
+        ("2024-03-04", Some(true)),
+        ("", Some(false)),
+        ("2024/03/04 06:05", None),
+    ] {
+        times.count(played, won);
+    }
+    let monday = times.weekdays[0];
+    assert_eq!(
+        (monday.wins, monday.losses, monday.win_rate()),
+        (5, 3, Some(62.5))
+    );
+    assert_eq!(times.weekdays[6].losses, 1);
+    assert_eq!(times.weekdays[1].win_rate(), None);
+    assert_eq!((times.hours[0].wins, times.hours[23].losses), (1, 1));
+    assert_eq!(
+        times.six_hour_blocks().map(|r| (r.wins, r.losses)),
+        [(1, 1), (1, 1), (2, 0), (0, 2)]
+    );
+    assert_eq!((times.unknown_time.wins, times.unknown_time.losses), (1, 1));
+    assert_eq!((times.unknown_day.wins, times.unknown_day.losses), (0, 1));
+    assert_eq!(times.unknown_outcome, 1);
+}

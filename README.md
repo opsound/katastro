@@ -69,6 +69,10 @@ In **Games**, **Blunders** shows losses where your score gained at least the cho
 
 Comeback rates use classified wins. Blunder rates use classified losses. Both follow your server and search filters. Games uses the connected account, the recorded result, and saved KataGo scores of at least 64 visits on the played line. Incomplete games stay pending until the available scores establish a category. Draws and games with an unreadable original, unidentified player, or unknown winner appear as unavailable.
 
+Open **Games → Win/loss by time** to see wins, losses and win rate for each weekday and six-hour block. Select **By hour** for individual hours. The breakdown follows the date range, server and search filters. **Compare previous period** adds the previous record and the change in win rate in percentage points. These counts use the recorded result and work before a game has any KataGo analysis.
+
+Times use your Mac’s local clock. Fox supplies the start time, OGS supplies the finish time, and Pandanet supplies its archived game time. Date-only games count toward their weekday and appear under **Unknown time**. Games without a decisive result for the connected player are tallied separately.
+
 Click **Games** in the toolbar to browse downloaded games in a table with date, players, ranks, winner, win condition, and server. Click any heading to sort; click again to reverse. Player columns sort by name, and point margins sort numerically. A small gold trophy marks your wins. The table grows vertically with the library window, including when sync settings are open. Search by player/date/result, resize columns as needed, and click a row to open its review. **Sync history** defaults to the latest 200 games; choose another limit or all games. Expanding it downloads older records; lowering it keeps existing downloads.
 
 Downloads run two at a time. Existing game IDs with local SGFs are skipped, and failed downloads are retried. Routine checks stop at a fully downloaded archive page; a daily scan checks the selected history range for gaps. Downloaded originals are preserved separately from autosaved review variations.

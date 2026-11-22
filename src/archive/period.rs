@@ -3,7 +3,7 @@ use super::Server;
 use serde::{Deserialize, Serialize};
 use std::{fmt, ops::RangeInclusive};
 use time::{
-    Date, Duration, OffsetDateTime, PlainDateTime, Time, UtcOffset,
+    Date, Duration, OffsetDateTime, Time, UtcOffset,
     macros::{format_description, offset, time},
 };
 
@@ -115,20 +115,22 @@ pub(super) fn parse_date(text: &str) -> Option<Date> {
     Date::parse(text, format).ok()
 }
 
-fn wall_time(text: &str) -> Option<PlainDateTime> {
-    let (date, clock) = text.trim().split_once([' ', 'T'])?;
+pub(super) fn play_date_time(text: &str) -> Option<(Date, Option<Time>)> {
+    let text = text.trim();
+    let (day, clock) = text.split_once([' ', 'T']).unwrap_or((text, ""));
+    let day = parse_date(day)?;
     let clock = Time::parse(
         clock,
         format_description!("[hour]:[minute][optional [:[second]]]"),
     )
-    .ok()?;
-    Some(parse_date(date)?.with_time(clock))
+    .ok();
+    Some((day, clock))
 }
 
 /// The index retains server time. Convert timed records when loading a library,
 /// using the Mac's offset on the day played. Date-only records have no instant.
 pub(super) fn local_play_time(server: Server, recorded: String) -> (String, Option<i64>) {
-    let Some(wall) = wall_time(&recorded) else {
+    let Some((day, Some(clock))) = play_date_time(&recorded) else {
         // Place date-only observations at local noon while displaying just the recorded day.
         let timestamp = parse_date(recorded.trim()).map(|date| {
             let noon = date.with_time(time!(12:00));
@@ -137,7 +139,7 @@ pub(super) fn local_play_time(server: Server, recorded: String) -> (String, Opti
         });
         return (recorded, timestamp);
     };
-    let instant = wall.assume_offset(match server {
+    let instant = day.with_time(clock).assume_offset(match server {
         Server::Pandanet => offset!(+9),
         Server::Fox => offset!(+8),
         Server::Ogs => UtcOffset::UTC,

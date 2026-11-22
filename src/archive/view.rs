@@ -9,6 +9,7 @@ use std::{
 };
 use zeroize::{Zeroize, Zeroizing};
 mod period;
+mod play_times;
 mod rank_chart;
 mod table;
 mod thresholds;
@@ -24,6 +25,8 @@ pub struct View {
     server: Server,
     settings_open: bool,
     show_rank_history: bool,
+    show_play_times: bool,
+    by_hour: bool,
     username: String,
     password: Zeroizing<String>,
     remember: bool,
@@ -61,6 +64,9 @@ impl View {
         has_games: bool,
         thresholds: Thresholds,
     ) {
+        ui.selectable_value(&mut self.show_play_times, false, "Game list");
+        ui.selectable_value(&mut self.show_play_times, true, "Win/loss by time");
+        ui.separator();
         let filters =
             std::iter::once(None).chain(states.iter().map(|(snapshot, _)| Some(snapshot.server)));
         for filter in filters {
@@ -86,7 +92,7 @@ impl View {
                 }
             }
         }
-        if has_games {
+        if has_games && !self.show_play_times {
             ui.separator();
             ui.selectable_value(&mut self.category, None, "All categories");
             for (category, name, who, gain) in [
@@ -170,7 +176,7 @@ impl View {
                     {
                         actions.command = Some((state.server, Command::SyncNow));
                     }
-                    if !self.settings_open && has_games {
+                    if !self.settings_open && has_games && !self.show_play_times {
                         ui.checkbox(&mut self.show_rank_history, "Show rank history");
                     }
                 });
@@ -311,7 +317,11 @@ impl View {
                     );
                 }
                 ui.separator();
-                if !self.settings_open && has_games && self.show_rank_history {
+                if !self.settings_open
+                    && has_games
+                    && self.show_rank_history
+                    && !self.show_play_times
+                {
                     rank_chart::show(ui, states, self.filter);
                 }
                 let today = super::period::local_today();
@@ -327,11 +337,13 @@ impl View {
                             &mut statistics.compare,
                             today,
                         );
-                        thresholds::show(
-                            ui,
-                            &mut self.threshold_editor,
-                            &mut statistics.thresholds,
-                        );
+                        if !self.show_play_times {
+                            thresholds::show(
+                                ui,
+                                &mut self.threshold_editor,
+                                &mut statistics.thresholds,
+                            );
+                        }
                         self.statistics = Some(statistics);
                     }
                     let label = ui.label("Search synced games");
@@ -355,6 +367,7 @@ impl View {
                         period: statistics.period.windows(today),
                         compare: statistics.compare,
                     },
+                    self.show_play_times.then_some(&mut self.by_hour),
                 ) {
                     actions.review = Some(path);
                     close = true;
