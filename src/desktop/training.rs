@@ -13,7 +13,7 @@ impl DesktopApp {
                 account,
                 settings,
             } => {
-                let _ = self.client.send(Command::Pause);
+                let _ = self.client.send(Command::SuspendForPlay);
                 let _ = self.client.send(Command::NumberFrom(None));
                 self.training_client = None;
                 self.training_selection = None;
@@ -33,7 +33,7 @@ impl DesktopApp {
             }
             Action::Command(command) => {
                 if matches!(command, client::Command::Next) {
-                    let _ = self.client.send(Command::Pause);
+                    let _ = self.client.send(Command::SuspendForPlay);
                     let _ = self.client.send(Command::NumberFrom(None));
                     self.training_selection = None;
                 }

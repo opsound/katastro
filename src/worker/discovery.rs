@@ -1,6 +1,7 @@
 use super::*;
 use crate::{
     EngineProfile,
+    analysis::MIN_CACHE_VISITS,
     training::{GRADE_VISITS, Phase, Trainer},
 };
 
@@ -8,7 +9,9 @@ use crate::{
 pub(super) struct Discovery {
     storage: (PathBuf, PathBuf),
     libraries: Vec<(String, Vec<PathBuf>)>,
-    pending: std::collections::VecDeque<usize>,
+    // Newest game from each server first. Walk this order once per visit tier.
+    order: Vec<(usize, usize)>,
+    next: usize,
     pub trainer: Option<Trainer>,
     profile: Option<EngineProfile>,
     completed: BTreeMap<NodeId, u64>,
@@ -37,12 +40,13 @@ impl Discovery {
         self.libraries = libraries;
         self.resume();
     }
-    pub fn pending(&self) -> bool {
-        !self.pending.is_empty()
+    fn pending(&self) -> bool {
+        self.next < self.order.len() * 2
     }
     pub fn pause(&mut self) {
         self.trainer = None;
-        self.pending.clear();
+        self.order.clear();
+        self.next = 0;
     }
     pub fn opened(&mut self) {
         self.pause();
@@ -115,35 +119,89 @@ impl Discovery {
         }
         Ok(())
     }
-    pub fn start_idle(&mut self, config: &EngineConfig) -> Result<()> {
-        if self.pending.is_empty()
+    pub fn start_idle(&mut self, config: &EngineConfig) -> Result<Option<EngineProfile>> {
+        if !self.pending()
             || self
                 .trainer
                 .as_ref()
                 .is_some_and(|t| t.snapshot().phase != Phase::Idle)
         {
-            return Ok(());
+            return Ok(None);
         }
-        let (account, games) = &self.libraries[self.pending.pop_front().unwrap()];
-        if account.is_empty()
-            || games.is_empty()
-            || !config.model.is_file()
-            || !config.executable.is_file()
-        {
-            return Ok(());
+        let mut started = None;
+        if self.trainer.is_none() {
+            if !config.model.is_file() || !config.executable.is_file() {
+                self.pause();
+                return Ok(None);
+            }
+            let profile = Engine::profile(config)?;
+            self.trainer = Some(
+                self.trainer(profile.clone())?
+                    .with_analysis_settings(&config.analysis)?,
+            );
+            started = Some(profile);
         }
-        let mut trainer = self
-            .trainer(Engine::profile(config)?)?
-            .with_analysis_settings(&config.analysis)?;
-        trainer.prepare(games.clone(), account.clone(), false)?;
-        self.trainer = Some(trainer);
-        Ok(())
+        let count = self.order.len();
+        let (library, game) = self.order[self.next % count];
+        let (account, games) = &self.libraries[library];
+        let trainer = self.trainer.as_mut().unwrap();
+        if self.next < count {
+            trainer.screen_game(&games[game])?;
+        } else {
+            trainer.prepare(vec![games[game].clone()], account.clone(), false)?;
+        }
+        self.next += 1;
+        Ok(started)
     }
+
+    pub fn progress(&self, phase: Phase) -> (bool, String) {
+        let total = self.order.len();
+        let unit = if total == 1 { "game" } else { "games" };
+        if phase == Phase::Idle && !self.pending() {
+            (
+                false,
+                format!("Library analysis and training discovery complete · {total} {unit}"),
+            )
+        } else if self.next <= total {
+            (
+                true,
+                format!(
+                    "Analyzing library · {MIN_CACHE_VISITS} visits per position · game {} of {total}",
+                    self.next
+                ),
+            )
+        } else {
+            (
+                true,
+                format!(
+                    "Preparing training · confirming opportunities · game {} of {total}",
+                    self.next - total
+                ),
+            )
+        }
+    }
+
     pub fn reconfigure(&mut self) {
         self.opened();
-        self.pending = (0..self.libraries.len()).collect();
+        self.resume();
     }
+
     pub fn resume(&mut self) {
-        self.pending = (0..self.libraries.len()).collect();
+        self.order.clear();
+        self.next = 0;
+        let longest = self
+            .libraries
+            .iter()
+            .map(|(_, games)| games.len())
+            .max()
+            .unwrap_or(0);
+        for game in 0..longest {
+            self.order
+                .extend(self.libraries.iter().enumerate().filter_map(
+                    |(library, (account, games))| {
+                        (!account.is_empty() && game < games.len()).then_some((library, game))
+                    },
+                ));
+        }
     }
 }

@@ -960,3 +960,11 @@ The desktop tests use a saved date range, scored and unscored SGFs, and a draw. 
 Rank history starts collapsed in Overview. A desktop test narrows the dates and searches among games with identical timestamps. Including the previous period added an extra point. Ignoring the search displayed the wrong latest rank. Desktop geometry checks cover chart ticks, all seven weekdays in the default overview, and scrolling down to the last hourly result with the filters and Close button still accessible.
 
 To render the synthetic library with a Metal-capable desktop, run `KATASTRO_PLAY_TIMES_PREVIEW=/tmp/games-overview.png cargo test --test game_categories_ui wins_by_play_time`. For the expanded rank graph, run `KATASTRO_RANK_HISTORY_PREVIEW=/tmp/overview-ranks.png cargo test --test rank_chart_ui games_overlays`.
+
+## Shared background analysis for Games and training
+
+A controlled KataGo subprocess screens three original lines from two server accounts. Their 33 positions include a shared opening, so 32 distinct shallow searches cover the library. Before the first 512-visit reply, Games can classify a comeback, a blunder, and an ordinary game whose player names come from the archive index. Both owners subsequently open a prepared exercise. Reopening the same library reaches completion without connecting to an engine. The earlier scheduler started confirming the first game while the second server was still pending.
+
+Worker and desktop tests hold requests open during pause, review, sync and training transitions. A new game interrupts a deep confirmation. Its late reply leaves the cached score at 64 visits. Games can show a newly classified loss over a paused review while preserving the selected move. Disabling browser visibility, ignoring manual pause or dropping the repair notification each failed their regression checks.
+
+The separate real-KataGo library check uses a synthetic 9×9 SGF and temporary SQLite databases. Background screening completed with no review open. The saved profile, classification and all three played-line evaluations were available on reopen. Run the explicit engine checks with the model prerequisites in [the training instructions](training.md).

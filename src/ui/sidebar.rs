@@ -42,10 +42,11 @@ pub(super) fn review_controls(
         let preparing = snapshot.preparing_training;
         if ui
             .button(if preparing {
-                "Pause preparation"
+                "Pause library analysis"
             } else {
-                "Prepare training"
+                "Analyze library"
             })
+            .on_hover_text("Library analysis supplies comeback and blunder statistics and finds training opportunities.")
             .clicked()
         {
             command(

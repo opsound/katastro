@@ -1,6 +1,72 @@
 use katastro::engine::{Engine, EngineConfig, EngineEvent};
 use serde_json::json;
 use std::time::{Duration, Instant};
+
+#[test]
+#[ignore = "Requires KATASTRO_TEST_ENGINE and KATASTRO_TEST_MODEL"]
+fn live_library_screen_populates_review_and_statistics_from_a_synced_original() {
+    use katastro::{
+        Review,
+        archive::{
+            Game,
+            categories::{Category, Thresholds, evidence},
+        },
+        worker::{Client, Command},
+    };
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("game.sgf");
+    std::fs::write(&source, "(;FF[4]GM[1]SZ[9]KM[6.5]RE[W+R];B[dd];W[ff])").unwrap();
+    let config = EngineConfig {
+        executable: std::env::var_os("KATASTRO_TEST_ENGINE").unwrap().into(),
+        model: std::env::var_os("KATASTRO_TEST_MODEL").unwrap().into(),
+        analysis: Default::default(),
+    };
+    let reviews = temp.path().join("reviews");
+    let cache = temp.path().join("cache");
+    let c = Client::spawn(reviews.clone(), cache.clone(), config);
+    c.send(Command::PrepareTrainingLibraries(vec![(
+        "member".into(),
+        vec![source.clone()],
+    )]))
+    .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(120);
+    loop {
+        let snapshot = c
+            .recv(deadline.saturating_duration_since(Instant::now()))
+            .unwrap();
+        assert!(snapshot.error.is_none(), "{:?}", snapshot.error);
+        assert!(snapshot.document.is_none());
+        if snapshot.status.contains("discovery complete") {
+            break;
+        }
+    }
+    drop(c);
+    let mut reopened = Review::new(&reviews, &cache).unwrap();
+    let profile = reopened.last_profile().unwrap().unwrap();
+    let game = Game {
+        id: "1".into(),
+        date: "2026-01-01".into(),
+        timestamp: None,
+        white: "member".into(),
+        black: "other".into(),
+        result: "W+R".into(),
+        path: source.clone(),
+    };
+    let outcome = evidence(&reopened, &game, "member", Some(&profile)).unwrap();
+    assert_eq!(outcome.won(), Some(true));
+    assert_eq!(
+        outcome.category(Thresholds {
+            comeback: 999.,
+            blunder: 999.
+        }),
+        Category::Other
+    );
+    reopened.import(&source).unwrap();
+    let scores = reopened.cached_analysis(&profile).unwrap();
+    assert_eq!(scores.len(), 3);
+    assert!(scores.values().all(|score| score.visits >= 64));
+}
+
 fn response(engine: &Engine) -> serde_json::Value {
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {

@@ -45,6 +45,7 @@ pub struct DesktopApp {
     pub state: Snapshot,
     pub client: Client,
     library: library::Library,
+    browsing_games: bool,
     settings: settings::Settings,
     opponent: Option<opponent::OpponentView>,
     dialogs: Box<dyn FileDialogs>,
@@ -158,6 +159,7 @@ impl DesktopApp {
             opponent: None,
             dialogs: services.dialogs,
             library: library::Library::new(services.sync, ctx, training_databases.clone()),
+            browsing_games: false,
             pending_dialog: None,
             training_view: Default::default(),
             training_state: Default::default(),
@@ -190,7 +192,7 @@ impl DesktopApp {
             }
             Action::PlayAi => {
                 self.opponent = Some(Default::default());
-                Some(Command::Pause)
+                Some(Command::SuspendForPlay)
             }
             Action::Training => {
                 self.training_client = None;
@@ -199,7 +201,7 @@ impl DesktopApp {
                     self.training_view.show(state);
                 }
                 self.library.view.open = false;
-                Some(Command::Pause)
+                Some(Command::SuspendForPlay)
             }
             Action::Pandanet => {
                 self.library.show_settings(crate::archive::Server::Pandanet);
@@ -218,6 +220,14 @@ impl DesktopApp {
     }
     fn prepare_libraries(&self) {
         let _ = self.client.send(self.library.prepare());
+    }
+
+    fn update_library_visibility(&mut self) {
+        let visible = self.library.view.open && !self.training_view.open && self.opponent.is_none();
+        if self.browsing_games != visible {
+            self.browsing_games = visible;
+            let _ = self.client.send(Command::BrowseGames(visible));
+        }
     }
 
     fn begin_dialog(&mut self, request: DialogRequest, frame: &eframe::Frame) {
@@ -285,6 +295,7 @@ impl eframe::App for DesktopApp {
                 self.prepare_libraries();
                 ui.ctx().request_repaint();
             }
+            self.update_library_visibility();
             return;
         }
         self.poll_training();
@@ -321,10 +332,11 @@ impl eframe::App for DesktopApp {
         }
         self.library.categories(&self.state, config_changed, true);
         if self.library.view.open {
-            for action in self.library.render(ui.ctx()) {
+            for action in self.library.render(ui.ctx(), &self.state) {
                 self.action(action, frame);
             }
         }
         self.poll_dialog(ui.ctx(), frame);
+        self.update_library_visibility();
     }
 }

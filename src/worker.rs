@@ -28,6 +28,9 @@ pub enum Command {
     Export(PathBuf),
     Start,
     Pause,
+    SuspendForPlay,
+    BrowseGames(bool),
+    SetLibraryAnalysis(bool),
     Configure(EngineConfig),
     SaveGameStatistics(crate::archive::StatisticsSettings),
     PrepareTrainingLibraries(Vec<(String, Vec<PathBuf>)>),
@@ -50,7 +53,9 @@ pub struct Snapshot {
     pub error: Option<String>,
     pub diagnostic: Option<String>,
     pub running: bool,
+    /// The idle worker is screening the library or preparing training opportunities.
     pub preparing_training: bool,
+    pub library_paused: bool,
     pub training_indexed: bool,
     pub coverage: (usize, usize),
     pub analysis_target: Option<u64>,
@@ -120,6 +125,7 @@ struct Worker {
     generation: u64,
     number_from: Option<NodeId>,
     unsupported_mainline: bool,
+    browsing_games: bool,
     discovery: discovery::Discovery,
 }
 fn ensure_engine<'a>(
@@ -164,6 +170,7 @@ impl Worker {
             generation: 0,
             number_from: None,
             unsupported_mainline: false,
+            browsing_games: false,
             discovery: discovery::Discovery::new(reviews, cache),
         })
     }
@@ -192,20 +199,54 @@ impl Worker {
         }
         publish(snapshot);
     }
+    fn terminate_searches(&mut self) {
+        if let Some((_, engine)) = self.engine.as_mut() {
+            let _ = engine
+                .send(&json!({"id":format!("pause-{}",self.generation),"action":"terminate_all"}));
+        }
+    }
+    fn interrupt_library(&mut self) {
+        if self.discovery.trainer.is_some() {
+            self.terminate_searches();
+        }
+        self.discovery.pause();
+        self.state.preparing_training = false;
+    }
     fn pause(&mut self) {
         self.discovery.pause();
         self.state.preparing_training = false;
         if let Some(scheduler) = self.scheduler.take() {
             self.state.values = scheduler.values;
         }
-        if let Some((_, engine)) = self.engine.as_mut() {
-            let _ = engine
-                .send(&json!({"id":format!("pause-{}",self.generation),"action":"terminate_all"}));
-        }
+        self.terminate_searches();
         self.state.running = false;
         self.state.status = "Analysis paused · variations autosave".into();
     }
+    fn library_analysis(&mut self, enabled: bool) {
+        self.state.library_paused = !enabled;
+        if enabled {
+            if self.discovery.trainer.is_none() {
+                self.discovery.resume();
+            }
+        } else {
+            self.interrupt_library();
+            if !self.state.running {
+                self.state.status = "Library analysis paused".into();
+            }
+        }
+    }
+    fn update_libraries(&mut self, libraries: Vec<(String, Vec<PathBuf>)>) {
+        self.interrupt_library();
+        self.discovery.libraries(libraries);
+    }
+    fn prioritize_review(&mut self) {
+        if self.discovery.trainer.is_some() {
+            self.interrupt_library();
+            self.discovery.resume();
+        }
+    }
     fn start(&mut self) -> Result<()> {
+        self.prioritize_review();
         let doc = self.review.document().cloned().ok_or("Open an SGF first")?;
         let profile = Engine::profile(&self.state.config)?;
         let mut values = self.review.cached_analysis(&profile)?;
@@ -237,6 +278,9 @@ impl Worker {
         Ok(())
     }
     fn changed_selection(&mut self) -> Result<()> {
+        if self.scheduler.is_some() {
+            self.prioritize_review();
+        }
         if let Some(scheduler) = self.scheduler.as_mut() {
             let doc = self.review.document().cloned().ok_or("Open an SGF first")?;
             let canceled = scheduler.select(doc);
@@ -253,13 +297,16 @@ impl Worker {
         Ok(())
     }
     fn command(&mut self, command: Command) -> Result<()> {
-        self.state.error = None;
+        if !matches!(command, Command::BrowseGames(_)) {
+            self.state.error = None;
+        }
         match command {
             Command::Open(path) | Command::OpenAndAnalyze(path) => {
                 // Validate import before stopping or replacing a working review.
                 self.review.import(&path)?;
                 self.number_from = None;
                 self.pause();
+                self.browsing_games = false;
                 self.discovery.opened();
                 self.state.training_indexed = false;
                 self.generation += 1;
@@ -323,12 +370,30 @@ impl Worker {
             }
             Command::Start => {
                 if self.review.document().is_none() {
-                    self.discovery.resume();
+                    self.library_analysis(true);
                 } else if !self.state.running {
                     self.start()?;
                 }
             }
-            Command::Pause => self.pause(),
+            Command::Pause if self.review.document().is_none() => self.library_analysis(false),
+            Command::Pause | Command::SuspendForPlay => self.pause(),
+            Command::SetLibraryAnalysis(enabled) => self.library_analysis(enabled),
+            Command::BrowseGames(open) => {
+                if self.browsing_games == open {
+                    return Ok(());
+                }
+                self.browsing_games = open;
+                if self.review.document().is_some() {
+                    if open {
+                        self.discovery.resume();
+                    } else {
+                        self.interrupt_library();
+                        if !self.state.running {
+                            self.state.status = "Review ready · saved variations restored".into();
+                        }
+                    }
+                }
+            }
             Command::SaveGameStatistics(settings) => {
                 if !settings.is_valid() {
                     return Err("Choose a valid date range and positive point thresholds".into());
@@ -359,10 +424,10 @@ impl Worker {
             }
             Command::Shutdown => {}
             Command::PrepareTraining { games, account } => {
-                self.discovery.libraries(vec![(account, games)])
+                self.update_libraries(vec![(account, games)])
             }
             Command::PrepareTrainingLibraries(libraries) => {
-                self.discovery.libraries(libraries);
+                self.update_libraries(libraries);
             }
         }
         Ok(())
@@ -490,19 +555,29 @@ impl Worker {
                 let indexed = self.discovery.indexed();
                 dirty |= self.state.training_indexed != indexed;
                 self.state.training_indexed = indexed;
-            } else {
-                self.discovery.start_idle(&self.state.config)?;
+            }
+            if !self.state.library_paused
+                && !self.state.running
+                && (self.review.document().is_none() || self.browsing_games)
+            {
+                if let Some(profile) = self.discovery.start_idle(&self.state.config)?
+                    && self.review.last_profile()?.as_ref() != Some(&profile)
+                {
+                    self.review.save_profile(&profile)?;
+                }
                 if let Some(trainer) = &mut self.discovery.trainer {
                     while let Some(query) = trainer.next_request()? {
                         ensure_engine(&mut self.engine, &self.state.config, trainer.profile())?
                             .send(&query)?;
                     }
-                    let snapshot = trainer.snapshot();
-                    self.state.preparing_training = snapshot.phase
-                        == crate::training::Phase::Searching
-                        || self.discovery.pending();
-                    dirty |= self.state.status != snapshot.status;
-                    self.state.status = snapshot.status;
+                    let phase = trainer.snapshot().phase;
+                    let (busy, status) = self.discovery.progress(phase);
+                    dirty |= self.state.preparing_training != busy || self.state.status != status;
+                    self.state.preparing_training = busy;
+                    self.state.status = status;
+                    if !busy {
+                        self.discovery.pause();
+                    }
                 }
             }
             Ok(())

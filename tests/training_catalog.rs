@@ -6,6 +6,123 @@ use katastro::{
 mod support;
 use support::*;
 
+#[test]
+fn shallow_screening_resumes_into_statistics_and_training_from_the_same_scores() {
+    use katastro::archive::{
+        Game,
+        categories::{Category, classify},
+    };
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let source = root.join("archived.sgf");
+    let original = "(;SZ[9]KM[6.5]RE[W+R];B[aa];W[bb](;B[cc];W[dd])(;B[ff]))";
+    std::fs::write(&source, original).unwrap();
+    let game = Game {
+        id: "shared".into(),
+        date: "2026-01-02".into(),
+        timestamp: None,
+        white: "opponent".into(),
+        black: "me".into(),
+        result: "W+R".into(),
+        path: source.clone(),
+    };
+    let mut review = Review::new(&root.join("reviews"), &root.join("cache")).unwrap();
+    review.import(&source).unwrap();
+    let opening = review.analysis_key(0, &profile()).unwrap();
+    review
+        .store_analysis(
+            &opening,
+            &Analysis {
+                visits: 1024,
+                score_lead: 0.,
+                winrate: 0.5,
+                suggestions: searched_moves(0, 1024),
+                ownership: vec![],
+                ownership_visits: 0,
+            },
+        )
+        .unwrap();
+    let mut interrupted = trainer(root);
+    interrupted.screen_game(&source).unwrap();
+    let first = interrupted
+        .next_request()
+        .unwrap()
+        .expect("an unscored position must be screened");
+    assert_eq!(first["analyzeTurns"][0], 1);
+    assert_eq!(first["maxVisits"], 64);
+    let mut result = reply(&first, false, false);
+    result["rootInfo"]["scoreLead"] = (-8).into();
+    interrupted.accept(&result, 0.5).unwrap();
+    drop(interrupted);
+
+    let mut background = trainer(root);
+    background.screen_game(&source).unwrap();
+    let remaining = settle_with(&mut background, |q| {
+        let mut r = reply(q, false, false);
+        r["rootInfo"]["scoreLead"] = 24.into();
+        r
+    });
+    assert!(remaining.iter().all(|q| q["maxVisits"] == 64));
+    assert_eq!(
+        remaining
+            .iter()
+            .map(|q| q["analyzeTurns"][0].as_u64().unwrap())
+            .collect::<Vec<_>>(),
+        [2, 3, 4]
+    );
+    assert_eq!(background.snapshot().phase, Phase::Idle);
+    assert_eq!(
+        classify(&review, &game, "me", Some(&profile())).unwrap(),
+        Category::Blunder
+    );
+    assert_eq!(review.cached_analysis(&profile()).unwrap()[&0].visits, 1024);
+    // A surviving budget-specific entry can restore an evicted chart score.
+    let evicted = review.analysis_key(2, &profile()).unwrap();
+    let cache = rusqlite::Connection::open(root.join("cache")).unwrap();
+    assert_eq!(
+        cache
+            .execute("DELETE FROM analysis WHERE key=?1", [&evicted])
+            .unwrap(),
+        1
+    );
+    background.screen_game(&source).unwrap();
+    assert!(background.next_request().unwrap().is_none());
+    assert!(
+        review.cached_analysis(&profile()).unwrap().contains_key(&2),
+        "Games needs the canonical score even when Training can reuse its budget-specific copy"
+    );
+
+    // Training on the same positions uses the screen even when the archived
+    // copy obtains its player names from the index, and the review has SGF names.
+    let named = root.join("named.sgf");
+    std::fs::write(&named, original.replace("RE[", "PB[me]PW[opponent]RE[")).unwrap();
+    background.prepare(vec![named], "me".into(), false).unwrap();
+    let confirmation = background
+        .next_request()
+        .unwrap()
+        .expect("a screened loss needs confirmation");
+    assert_eq!(confirmation["maxVisits"], 512);
+}
+
+#[test]
+fn shallow_screening_handles_a_missing_game_and_keeps_the_prefix_before_setup_edits() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("prefix.sgf");
+    let mut t = trainer(temp.path());
+    t.screen_game(&path).unwrap();
+    assert!(t.next_request().unwrap().is_none());
+    std::fs::write(&path, "(;SZ[9];B[aa];AB[cc];W[dd])").unwrap();
+    t.screen_game(&path).unwrap();
+    let scanned = settle(&mut t, false, false);
+    assert_eq!(
+        scanned
+            .iter()
+            .map(|q| q["analyzeTurns"][0].as_u64().unwrap())
+            .collect::<Vec<_>>(),
+        [0, 1]
+    );
+}
+
 // Benefit: ready problems open immediately after restart, even if a newer game
 // has not been analyzed. Regression: starting a new screening pass first.
 #[test]

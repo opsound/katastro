@@ -1,6 +1,8 @@
 #![cfg(feature = "desktop")]
 #[path = "support/archive_ui.rs"]
 pub mod archive_ui;
+#[path = "support/controlled_engine.rs"]
+mod controlled_engine;
 #[path = "support/pandanet/mod.rs"]
 mod support;
 #[path = "support/timezone.rs"]
@@ -141,16 +143,134 @@ fn last_30_days_shows_a_new_pandanet_game_across_midnight() {
     assert_eq!(h.state().state.document.as_ref().unwrap().mainline.len(), 4);
     assert!(offline.requests.lock().unwrap().is_empty());
 }
+// A repaired download retains its archive ID and can now supply the missing scores.
+#[test]
+fn repairing_an_existing_library_row_starts_its_missing_analysis() {
+    use katastro::worker::Command as ReviewCommand;
+
+    let fixture = support::Fixture::new(|r| {
+        if r.url.contains("mode=sgf") {
+            (200, support::sgf(1))
+        } else {
+            (200, support::page(1, 1, &[1]))
+        }
+    });
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let vault = Arc::new(support::Vault::default());
+    let game = sync(root, &fixture, vault.clone()).games.pop().unwrap();
+    std::fs::remove_file(&game.path).unwrap();
+    let model = root.join("model");
+    std::fs::write(&model, "synthetic").unwrap();
+    let mut h = desktop(root, &fixture, vault, None, 900.);
+    h.state()
+        .client
+        .send(ReviewCommand::Configure(EngineConfig {
+            executable: env!("CARGO_BIN_EXE_katastro-test-engine").into(),
+            model,
+            analysis: Default::default(),
+        }))
+        .unwrap();
+    h.get_by_label("Games").click();
+    select_all_time(&mut h);
+    wait(&mut h, |app| {
+        app.state.status.contains("discovery complete")
+    });
+    h.get_by_label("Sync Pandanet now").click();
+    wait_for(
+        &mut h,
+        "the repaired game never received its missing analysis",
+        |h| {
+            h.query_by_label("Comebacks 0/1 win (0%) · Blunders 0/0 losses (—)")
+                .is_some()
+        },
+    );
+    assert!(h.state().state.document.is_none());
+}
+
+#[test]
+fn a_live_sync_starts_early_and_keeps_shallow_queries_running_across_downloads() {
+    use katastro::{archive::StatisticsSettings, worker::Command as ReviewCommand};
+    use serde_json::json;
+    use std::io::Write;
+
+    let (allow_page, gate) = std::sync::mpsc::channel();
+    let fixture = support::Fixture::new(move |r| {
+        if r.url.contains("mode=sgf") {
+            let id = (1..=3)
+                .find(|id| r.url.contains(&format!("game{id}")))
+                .unwrap();
+            return (200, support::sgf(id).replace("6.5", &format!("{id}.5")));
+        }
+        let page = (2..=3)
+            .find(|p| r.body.contains(&format!("PageNo={p}")))
+            .unwrap_or(1);
+        if page > 1 {
+            gate.recv_timeout(Duration::from_secs(12)).unwrap();
+        }
+        (200, support::page(page, 3, &[page]))
+    });
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let mut config = controlled_engine::config(root, &listener);
+    config.analysis.parallel_positions = 1;
+    let mut h = desktop(
+        root,
+        &fixture,
+        Arc::new(support::Vault::default()),
+        None,
+        900.,
+    );
+    h.state()
+        .client
+        .send(ReviewCommand::Configure(config))
+        .unwrap();
+    h.get_by_label("Pandanet").click();
+    wait_for_label(&mut h, "Pandanet username");
+    for (label, value) in [
+        ("Pandanet username", "example"),
+        ("Pandanet password", "test-secret"),
+    ] {
+        h.get_by_label(label).focus();
+        h.get_by_label(label).type_text(value);
+    }
+    h.get_by_label("Connect and sync").click();
+    wait(&mut h, |app| app.state.preparing_training);
+    let mut engine = controlled_engine::connection(&listener);
+    let opening = controlled_engine::query(&mut engine);
+    allow_page.send(()).unwrap();
+    wait_for_label(&mut h, "2 synced games");
+    // The settings acknowledgement fences any work submitted when Games showed the new row.
+    let mut marker = StatisticsSettings::default();
+    marker.thresholds.blunder = 31.;
+    h.state()
+        .client
+        .send(ReviewCommand::SaveGameStatistics(marker))
+        .unwrap();
+    wait(&mut h, |app| app.state.game_statistics == Some(marker));
+    writeln!(
+        engine.get_mut(),
+        "{}",
+        training_support::reply(&opening, false, true)
+    )
+    .unwrap();
+    let next = controlled_engine::query(&mut engine);
+    allow_page.send(()).unwrap();
+    assert_eq!(
+        next["analyzeTurns"],
+        json!([1]),
+        "a mid-sync download interrupted the first game's shallow pass"
+    );
+    assert_eq!(next["komi"], opening["komi"]);
+    wait_for_label(&mut h, "3 synced games");
+}
+
 // Benefit: a synced library actually starts preparing in an empty window, and
 // the user can pause it or enter training without competing background work.
 #[test]
 fn empty_desktop_prepares_the_synced_library_and_yields_to_training() {
-    use std::io::{BufRead, BufReader, Write};
-    fn next(engine: &mut BufReader<std::net::TcpStream>) -> serde_json::Value {
-        let mut line = String::new();
-        engine.read_line(&mut line).unwrap();
-        serde_json::from_str(&line).unwrap()
-    }
+    use std::io::Write;
     let fixture = support::Fixture::new(|r| {
         if r.url.contains("mode=sgf") {
             (200, support::sgf(1))
@@ -171,12 +291,7 @@ fn empty_desktop_prepares_the_synced_library_and_yields_to_training() {
     )
     .unwrap();
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let model = root.join("model");
-    std::fs::write(
-        &model,
-        format!("controlled:{}", listener.local_addr().unwrap()),
-    )
-    .unwrap();
+    let config = controlled_engine::config(root, &listener);
     let mut h = Harness::builder()
         .with_size(eframe::egui::vec2(1200., 820.))
         .build_eframe(|cc| {
@@ -184,11 +299,7 @@ fn empty_desktop_prepares_the_synced_library_and_yields_to_training() {
                 &cc.egui_ctx,
                 root.join("reviews.sqlite"),
                 root.join("cache.sqlite"),
-                EngineConfig {
-                    analysis: Default::default(),
-                    executable: env!("CARGO_BIN_EXE_katastro-test-engine").into(),
-                    model,
-                },
+                config,
                 None,
                 Options {
                     server: Default::default(),
@@ -201,15 +312,16 @@ fn empty_desktop_prepares_the_synced_library_and_yields_to_training() {
             )
         });
     wait(&mut h, |app| app.state.preparing_training);
-    let (engine, _) = listener.accept().unwrap();
-    engine
-        .set_read_timeout(Some(Duration::from_secs(5)))
-        .unwrap();
-    let mut engine = BufReader::new(engine);
-    let held = (0..8).map(|_| next(&mut engine)).collect::<Vec<_>>();
-    h.get_by_label("Pause preparation").click();
+    let mut engine = controlled_engine::connection(&listener);
+    let held = (0..8)
+        .map(|_| controlled_engine::query(&mut engine))
+        .collect::<Vec<_>>();
+    h.get_by_label("Pause library analysis").click();
     wait(&mut h, |app| !app.state.preparing_training);
-    assert_eq!(next(&mut engine)["action"], "terminate_all");
+    assert_eq!(
+        controlled_engine::query(&mut engine)["action"],
+        "terminate_all"
+    );
     for query in &held {
         writeln!(
             engine.get_mut(),
@@ -219,9 +331,9 @@ fn empty_desktop_prepares_the_synced_library_and_yields_to_training() {
         .unwrap();
     }
     h.run_steps(3);
-    h.get_by_label("Prepare training").click();
+    h.get_by_label("Analyze library").click();
     wait(&mut h, |app| app.state.preparing_training);
-    let restarted = next(&mut engine);
+    let restarted = controlled_engine::query(&mut engine);
     assert_ne!(restarted["id"], held[0]["id"]);
     assert_eq!(
         restarted["moves"].as_array().unwrap().len(),
@@ -232,6 +344,8 @@ fn empty_desktop_prepares_the_synced_library_and_yields_to_training() {
     wait(&mut h, |app| !app.state.preparing_training);
     h.run_steps(3);
     assert!(h.query_by_label("Start training").is_some());
+    h.get_by_label("Back to review").click();
+    wait_for_label(&mut h, "Pause library analysis");
 }
 #[test]
 fn desktop_signs_in_remembers_downloads_and_opens_a_game_without_disturbing_a_review() {

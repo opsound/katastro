@@ -70,11 +70,15 @@ impl Library {
                     .games
                     .iter()
                     .map(entry));
-                changed |= account_changed || games_changed;
                 // A repair downloads a missing original into its existing archive row.
-                archive.pending_games |=
+                let originals_changed =
                     games_changed || state.downloaded > archive.state.downloaded;
+                // Start on the first game, then let the worker finish its pending searches
+                // while the archive downloads the remaining games in this sync.
+                changed |= archive.state.games.is_empty() && !state.games.is_empty();
+                archive.pending_games |= originals_changed;
                 if account_changed || (!state.syncing && archive.pending_games) {
+                    changed = true;
                     self.rescan = true;
                     archive.pending_games = false;
                 }
@@ -138,8 +142,9 @@ impl Library {
                 .collect(),
         )
     }
-    pub fn render(&mut self, ctx: &egui::Context) -> Vec<Action> {
+    pub fn render(&mut self, ctx: &egui::Context, worker: &crate::worker::Snapshot) -> Vec<Action> {
         let before = self.view.statistics;
+        let mut out = Vec::new();
         let actions = self.view.render(
             ctx,
             &self
@@ -147,6 +152,28 @@ impl Library {
                 .iter()
                 .map(|a| (&a.state, a.folder.as_path()))
                 .collect::<Vec<_>>(),
+            |ui| {
+                let label = if worker.library_paused {
+                    "Resume background analysis"
+                } else {
+                    "Pause background analysis"
+                };
+                if ui
+                    .small_button(label)
+                    .on_hover_text("Controls analysis for all synced games.")
+                    .clicked()
+                {
+                    out.push(Action::Review(Command::SetLibraryAnalysis(
+                        worker.library_paused,
+                    )));
+                }
+                if worker.preparing_training {
+                    ui.add(egui::Label::new(egui::RichText::new(&worker.status).weak()).truncate())
+                        .on_hover_text(&worker.status);
+                } else if worker.running && !worker.library_paused {
+                    ui.weak("Waiting for review analysis");
+                }
+            },
         );
         if let Some((server, command)) = actions.command
             && let Some(archive) = self.archives.iter_mut().find(|a| a.state.server == server)
@@ -154,7 +181,6 @@ impl Library {
         {
             archive.state.error = Some(error.to_string());
         }
-        let mut out = Vec::new();
         if let Some(settings) = self.view.statistics
             && Some(settings) != before
         {

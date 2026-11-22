@@ -17,7 +17,7 @@ mod reveal;
 pub use grading::{Comparison, Evaluation, MoveLoss, Report};
 #[cfg(feature = "desktop")]
 pub mod view;
-const SCREEN_VISITS: u64 = 64;
+const SCREEN_VISITS: u64 = crate::analysis::MIN_CACHE_VISITS;
 const POLICY: &str = "training-score-v2";
 const MAJOR_LOSS: f64 = 5.0;
 pub const GRADE_VISITS: u64 = 512;
@@ -25,6 +25,7 @@ pub const GRADE_VISITS: u64 = 512;
 pub enum Phase {
     #[default]
     Idle,
+    Screening,
     Searching,
     YourTurn,
     Opponent,
@@ -315,6 +316,11 @@ impl Trainer {
         Ok(())
     }
     fn advance(&mut self) -> Result<()> {
+        if self.state.phase == Phase::Screening && self.queue.is_empty() && self.pending.is_empty()
+        {
+            self.state.phase = Phase::Idle;
+            self.state.status = "Library screening complete".into();
+        }
         while self.state.phase == Phase::Searching
             && self.queue.is_empty()
             && self.pending.is_empty()

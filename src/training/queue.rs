@@ -1,5 +1,6 @@
 //! Budgeted evaluation caching and request priority.
 use super::*;
+use crate::analysis::Position;
 impl Trainer {
     pub fn next_request(&mut self) -> Result<Option<Value>> {
         // Grade readiness changes on commands/replies, not each worker poll.
@@ -18,7 +19,10 @@ impl Trainer {
         }))
     }
     pub(super) fn query(&mut self, doc: &Document, node: usize, visits: u64) -> Result<Value> {
-        let mut q = serde_json::to_value(doc.position(node)?)?;
+        self.position_query(&doc.position(node)?, visits)
+    }
+    fn position_query(&mut self, position: &Position, visits: u64) -> Result<Value> {
+        let mut q = serde_json::to_value(position)?;
         self.sequence += 1;
         q["id"] = json!(format!("training-{}-{}", self.instance, self.sequence));
         q["maxVisits"] = json!(visits);
@@ -31,7 +35,10 @@ impl Trainer {
         node: usize,
         visits: u64,
     ) -> Result<(String, String)> {
-        let position = doc.position(node)?.analysis_key(&self.profile)?;
+        self.position_keys(&doc.position(node)?, visits)
+    }
+    fn position_keys(&self, position: &Position, visits: u64) -> Result<(String, String)> {
+        let position = position.analysis_key(&self.profile)?;
         Ok((
             digest(&serde_json::to_vec(&("training-v1", &position, visits))?),
             position,
@@ -44,7 +51,15 @@ impl Trainer {
         visits: u64,
         reuse_deeper: bool,
     ) -> Result<()> {
-        let (key, position) = self.keys(doc, node, visits)?;
+        self.need_position(&doc.position(node)?, visits, reuse_deeper)
+    }
+    pub(super) fn need_position(
+        &mut self,
+        request: &Position,
+        visits: u64,
+        reuse_deeper: bool,
+    ) -> Result<()> {
+        let (key, position) = self.position_keys(request, visits)?;
         if self.memo.contains_key(&key)
             || self
                 .queue
@@ -66,13 +81,18 @@ impl Trainer {
                     || visits == SCREEN_VISITS
                     || value.visits == visits
                 {
+                    // The review key was missing or too shallow. Restore it from the
+                    // compatible training entry so library statistics can use it too.
+                    if reuse_deeper && cached_key == &key {
+                        self.review.store_analysis(&position, &value)?;
+                    }
                     self.memo.insert(key, value);
                     return Ok(());
                 }
                 break;
             }
         }
-        let query = self.query(doc, node, visits)?;
+        let query = self.position_query(request, visits)?;
         self.queue.push_back(Job {
             query,
             kind: Kind::Evaluation {

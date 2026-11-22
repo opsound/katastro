@@ -54,6 +54,28 @@ impl Entry {
 }
 
 impl Trainer {
+    /// Screen the recorded line for shared library statistics and training discovery.
+    pub fn screen_game(&mut self, source: &Path) -> Result<()> {
+        self.cancel();
+        let Some(doc) = std::fs::read(source)
+            .ok()
+            .and_then(|bytes| Document::parse(&bytes).ok())
+        else {
+            return Ok(());
+        };
+        self.state.phase = Phase::Screening;
+        self.state.status =
+            format!("Screening library games · {SCREEN_VISITS} visits per position");
+        for &node in &doc.mainline {
+            // KataGo can still evaluate the prefix before mid-game setup edits.
+            let Ok(position) = doc.position(node) else {
+                break;
+            };
+            self.need_position(&position, SCREEN_VISITS, true)?;
+        }
+        self.advance()
+    }
+
     /// Prepare every candidate without starting an attempt or loading HumanSL.
     /// Refresh uses the latest compatible review values, including deeper searches.
     pub fn prepare(&mut self, games: Vec<PathBuf>, account: String, refresh: bool) -> Result<()> {

@@ -6,9 +6,11 @@ The application pauses review analysis and background discovery while training. 
 
 ## Finding turning points
 
-With no game open, the review worker prepares the synced library using the normal model and its existing engine process; HumanSL is not loaded for discovery. **Pause preparation** stops this work, and **Prepare training** resumes it. Opening a game or entering training cancels pending discovery requests. Compatible completed results remain reusable; late canceled replies cannot become results for another preparation session.
+The review worker first screens the original main lines of synced games at 64 visits per position with the normal model. It takes one recent game from each server in turn. After each eligible game has had its shallow pass, it confirms potential training problems at 512 visits and prepares their recorded continuations. Shared positions and deeper compatible review scores are reused. An SGF with missing player names can still receive a shallow pass and contribute to statistics using its archive metadata.
 
-Review refinement has no practical final endpoint. After a complete, durably cached main-line pass at 512 visits or more (currently the 1024-visit tier), candidates are indexed directly from those evaluations without extra engine requests. The index refreshes after later complete fourfold-deeper passes. Unfinished streamed estimates never trigger indexing. Review interaction keeps priority; new engine work for unreviewed library games runs only with no game open.
+**Games → Overview** shows progress, including when the worker is waiting for foreground review analysis. **Pause background analysis** and **Resume background analysis** control the entire library. Work runs with no review open or while browsing Games over a paused or finished review. Returning to that board, starting foreground analysis, entering training, or playing the AI releases the engine for the foreground task. Completed scores remain cached. A manual library pause lasts for the current session, including across sync updates.
+
+After a complete, durably cached main-line review pass at 512 visits or more (normally the 1024-visit tier), candidates can also be indexed directly from those evaluations. The index refreshes after later complete fourfold-deeper passes. Only finished evaluations contribute to the index.
 
 Search original main-line moves made by the named player. Reuse compatible cached analysis at 64 visits or deeper for screening: a loss of at least 3 points, giving the coarse pass a wider net. Confirm candidates at a requested 512 visits, or reuse the latest compatible review results at 512 visits or deeper during background preparation. A confirmed exercise requires a loss of **at least 5 points on one of your moves**, whether you were ahead or behind. Winrate does not affect selection, grading, suggested-line filtering, or training reports. Values are converted from the engine's fixed Black perspective to the player's perspective.
 
@@ -89,6 +91,13 @@ KATASTRO_TEST_ENGINE=/path/to/katago \
 KATASTRO_TEST_MODEL=/path/to/normal.bin.gz \
 KATASTRO_TEST_HUMAN_MODEL=/path/to/b18c384nbt-humanv0.bin.gz \
 cargo test --test engine real_human_policy -- --ignored
+```
+
+A synthetic library check runs the complete background pass with the normal model, reopens the cache and verifies both the game classification and the review chart:
+
+```sh
+KATASTRO_TEST_ENGINE=/path/to/katago KATASTRO_TEST_MODEL=/path/to/normal.bin.gz \
+cargo test --test engine live_library_screen -- --ignored
 ```
 
 The complete real-library check additionally requires permission to read the user's local Pandanet library. It reads the configured account name, never a credential; it uses temporary training databases and verifies original-file hashes. It may take several minutes and requires a qualifying position among the five newest records:

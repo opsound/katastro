@@ -116,7 +116,12 @@ impl View {
             }
         }
     }
-    pub fn render(&mut self, ctx: &egui::Context, states: &[(&Snapshot, &Path)]) -> Actions {
+    pub fn render(
+        &mut self,
+        ctx: &egui::Context,
+        states: &[(&Snapshot, &Path)],
+        background_controls: impl FnOnce(&mut egui::Ui),
+    ) -> Actions {
         let mut actions = Actions {
             command: None,
             review: None,
@@ -317,7 +322,11 @@ impl View {
                 let today = super::period::local_today();
                 let mut statistics = self.statistics.unwrap_or_default();
                 ui.horizontal_wrapped(|ui| {
-                    self.game_filters(ui, states, has_games, statistics.thresholds)
+                    self.game_filters(ui, states, has_games, statistics.thresholds);
+                    if self.show_overview && has_games {
+                        ui.separator();
+                        background_controls(ui);
+                    }
                 });
                 ui.horizontal_wrapped(|ui| {
                     if self.statistics.is_some() {

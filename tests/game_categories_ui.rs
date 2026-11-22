@@ -6,6 +6,8 @@ mod support;
 
 #[path = "support/category_scores.rs"]
 mod category_scores;
+#[path = "support/controlled_engine.rs"]
+mod controlled_engine;
 use category_scores::{cache_scores, profile};
 
 use archive_ui::{archive_desktop, select_all_time, wait_for};
@@ -70,6 +72,113 @@ fn seed_archive(
         paths.push(path.canonicalize().unwrap());
     }
     paths
+}
+
+// A newer exercise's confirmation must not hold up the older game's Overview result.
+#[test]
+fn overview_classifies_an_unopened_game_while_training_confirmation_is_waiting() {
+    check_overview_background_analysis(false);
+}
+
+#[test]
+fn browsing_games_classifies_the_library_without_disturbing_a_paused_review() {
+    check_overview_background_analysis(true);
+}
+
+fn check_overview_background_analysis(with_review: bool) {
+    use egui_kittest::Harness;
+    use katastro::desktop::DesktopApp;
+    use serde_json::json;
+    use std::io::Write;
+
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let config = controlled_engine::config(root, &listener);
+    let mut review = Review::new(&root.join("reviews"), &root.join("cache")).unwrap();
+    let mut ogs = Options::ogs(root.join("OGS"));
+    ogs.credentials = Arc::new(support::Vault::default());
+    seed_archive(
+        &ogs,
+        &mut review,
+        &profile(),
+        &[
+            (3, "cedar", "member", "W+R", &[]),
+            (4, "oak", "member", "W+T", &[]),
+        ],
+    );
+    drop(review);
+    let reviewing = with_review.then(|| {
+        let path = root.join("my-review.sgf");
+        std::fs::write(&path, "(;SZ[9];B[aa];W[bb])").unwrap();
+        path.canonicalize().unwrap()
+    });
+    let mut h = Harness::builder()
+        .with_size(vec2(1200., 900.))
+        .build_eframe(|cc| {
+            let app = DesktopApp::with_archives(
+                &cc.egui_ctx,
+                root.join("reviews"),
+                root.join("cache"),
+                config,
+                None,
+                vec![ogs],
+            );
+            if let Some(source) = &reviewing {
+                app.client
+                    .send(katastro::worker::Command::Open(source.clone()))
+                    .unwrap();
+            }
+            app
+        });
+    h.get_by_label("Games").click();
+    select_all_time(&mut h);
+    h.get_by_label("Overview").click();
+    h.get_by_label("Search synced games").focus();
+    h.get_by_label("Search synced games").type_text("cedar");
+    archive_ui::wait_for_label(&mut h, "1 game awaiting classification");
+
+    h.get_by_label("Pause background analysis");
+    wait_for(
+        &mut h,
+        "browsing Games did not start background library analysis",
+        |h| h.state().state.preparing_training,
+    );
+    let mut engine = controlled_engine::connection(&listener);
+    if with_review {
+        h.get_by_label("Pause background analysis").click();
+        archive_ui::wait_for_label(&mut h, "Resume background analysis");
+        while controlled_engine::query(&mut engine)["action"] != "terminate_all" {}
+        assert!(!h.state().state.running);
+        h.get_by_label("Resume background analysis").click();
+        archive_ui::wait_for_label(&mut h, "Pause background analysis");
+    }
+    loop {
+        let q = controlled_engine::query(&mut engine);
+        if q["maxVisits"] != 64 {
+            assert_eq!(q["maxVisits"], 512);
+            break;
+        }
+        for turn in q["analyzeTurns"].as_array().unwrap() {
+            let score = match turn.as_u64().unwrap() {
+                1 => -8.,
+                2 => 24.,
+                _ => 0.,
+            };
+            let response = json!({"id": q["id"], "turnNumber": turn, "isDuringSearch": false,
+                "rootInfo": {"visits": 64, "scoreLead": score, "winrate": 0.5}});
+            writeln!(engine.get_mut(), "{response}").unwrap();
+        }
+    }
+    wait_for(
+        &mut h,
+        "the overview stayed pending behind deeper training work",
+        |h| {
+            h.query_by_label("Blunders · 100% · 1 of 1 classified loss")
+                .is_some()
+        },
+    );
+    assert_eq!(h.state().state.source.as_ref(), reviewing.as_ref());
 }
 
 #[test]
