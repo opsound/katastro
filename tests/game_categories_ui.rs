@@ -58,7 +58,7 @@ fn seed_archive(
             "INSERT INTO games(username,id,date,white,black,result,filename,sha) VALUES('member',?1,?2,?3,?4,?5,?6,'')",
             params![
                 day.to_string(),
-                format!("2026/11/{day:02} 12:00"),
+                format!("2026/11/{day:02}"),
                 white,
                 black,
                 result,
@@ -123,10 +123,10 @@ fn games_counts_and_filters_follow_the_players_outcomes() {
         |h| h.query_by_label(summary).is_some(),
     );
 
-    let first = "Review 2026/11/01 12:00: maple vs member";
-    let second = "Review 2026/11/02 12:00: member vs ash";
-    let other = "Review 2026/11/03 12:00: member vs cherry";
-    let sixth = "Review 2026/11/06 12:00: elm vs member";
+    let first = "Review 2026/11/01: maple vs member";
+    let second = "Review 2026/11/02: member vs ash";
+    let other = "Review 2026/11/03: member vs cherry";
+    let sixth = "Review 2026/11/06: elm vs member";
     h.get_by_label("Comebacks").click();
     h.run_steps(3);
     h.get_by_label(first);
@@ -208,7 +208,7 @@ fn a_deeper_review_updates_the_active_blunders_filter() {
     });
     h.get_by_label("Blunders").click();
     h.run_steps(3);
-    let row = "Review 2026/11/07 12:00: oak vs member";
+    let row = "Review 2026/11/07: oak vs member";
     h.get_by_label(row);
 
     h.state().client.send(Command::Start).unwrap();
@@ -302,8 +302,8 @@ fn period_and_thresholds_survive_relaunch_and_change_the_matching_games() {
     h.run();
     h.get_by_label("Apply dates").click();
     h.run();
-    let ash = "Review 2026/11/03 12:00: ash vs member";
-    let oak = "Review 2026/11/04 12:00: oak vs member";
+    let ash = "Review 2026/11/03: ash vs member";
+    let oak = "Review 2026/11/04: oak vs member";
     h.get_by_label(ash);
     h.get_by_label(oak);
     assert_eq!(h.query_all_by_label_contains("Review 2026/11/").count(), 2);

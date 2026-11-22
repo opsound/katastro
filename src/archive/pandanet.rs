@@ -230,6 +230,7 @@ fn parse_page(doc: &Html, base: &Url, username: &str, requested: usize) -> Resul
             game: Game {
                 id,
                 date: values[1].clone(),
+                timestamp: None,
                 white: values[2].clone(),
                 black: values[3].clone(),
                 result: values[7].clone(),

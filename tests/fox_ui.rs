@@ -3,7 +3,7 @@
 mod archive_ui;
 #[path = "support/pandanet/mod.rs"]
 mod support;
-use archive_ui::{archive_desktop, select_all_time, wait_for, wait_for_label};
+use archive_ui::{archive_desktop, select_all_time, wait_for};
 use eframe::egui::vec2;
 use egui_kittest::kittest::Queryable;
 use katastro::archive::{Options, Server};
@@ -48,34 +48,40 @@ fn server_filter_opens_fox_original_and_training_uses_fox_account() {
     let mut h = archive_desktop(root, options, vec2(1200., 900.));
     h.get_by_label("Games").click();
     select_all_time(&mut h);
-    let panda = "Review 2026/11/01 12:00: example 6k+ vs opponent 5k+";
-    let fox = "Review 2026/11/02 12:00:00: rival 2d vs foxplayer 3k";
-    wait_for_label(&mut h, panda);
+    let panda = "example 6k+ vs opponent 5k+";
+    let fox = "rival 2d vs foxplayer 3k";
+    wait_for(&mut h, panda, |h| {
+        h.query_by_label_contains(panda).is_some()
+    });
     h.get_by_label("All servers");
-    wait_for_label(&mut h, fox);
-    h.get_by_label("You won on 2026/11/02 12:00:00");
+    wait_for(&mut h, fox, |h| h.query_by_label_contains(fox).is_some());
+    assert_eq!(h.query_all_by_label_contains("You won on ").count(), 2);
     h.get_by_label("Sort by Server").click();
     h.run_steps(3);
-    assert!(h.get_by_label(fox).rect().top() < h.get_by_label(panda).rect().top());
+    assert!(
+        h.get_by_label_contains(fox).rect().top() < h.get_by_label_contains(panda).rect().top()
+    );
     h.get_by_label("Sort by Server").click();
     h.run_steps(3);
-    assert!(h.get_by_label(panda).rect().top() < h.get_by_label(fox).rect().top());
+    assert!(
+        h.get_by_label_contains(panda).rect().top() < h.get_by_label_contains(fox).rect().top()
+    );
     if let Some(path) = std::env::var_os("KATASTRO_FOX_UI_PREVIEW") {
         h.render().unwrap().save(path).unwrap();
     }
 
     h.get_by_label("Fox games").click();
     h.run_steps(3);
-    h.get_by_label(fox);
-    assert!(h.query_by_label(panda).is_none());
+    h.get_by_label_contains(fox);
+    assert!(h.query_by_label_contains(panda).is_none());
     h.get_by_label("Pandanet games").click();
     h.run_steps(3);
-    h.get_by_label(panda);
-    assert!(h.query_by_label(fox).is_none());
+    h.get_by_label_contains(panda);
+    assert!(h.query_by_label_contains(fox).is_none());
     h.get_by_label("All servers").click();
     h.run_steps(3);
-    h.get_by_label(fox);
-    h.get_by_label(panda);
+    h.get_by_label_contains(fox);
+    h.get_by_label_contains(panda);
     h.get_by_label("Fox games").click();
     h.run_steps(3);
     h.get_by_label("Train from these games").click();
@@ -89,7 +95,7 @@ fn server_filter_opens_fox_original_and_training_uses_fox_account() {
     h.run_steps(3);
     h.get_by_label("Games").click();
     h.run_steps(3);
-    h.get_by_label(fox).click();
+    h.get_by_label_contains(fox).click();
     wait_for(&mut h, "the Fox review did not open", |h| {
         h.state().state.document.is_some()
     });
@@ -133,7 +139,9 @@ fn fox_settings_connect_with_only_a_username_and_keep_pandanet_separate() {
     h.run_steps(3);
     h.get_by_label("Connect and sync").click();
     select_all_time(&mut h);
-    wait_for_label(&mut h, "Review 2026/11/02 12:00:00: rival vs foxplayer");
+    wait_for(&mut h, "Fox game not shown", |h| {
+        h.query_by_label_contains("rival vs foxplayer").is_some()
+    });
     assert!(vault.0.lock().unwrap().is_empty());
     h.get_by_label("Pandanet sync").click();
     h.run_steps(3);

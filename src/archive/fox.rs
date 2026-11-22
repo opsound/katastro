@@ -121,6 +121,7 @@ impl Remote {
                 game: Game {
                     id: id.clone(),
                     date: field(game, "starttime").replace('-', "/"),
+                    timestamp: None,
                     white: field(game, "whitenick"),
                     black: field(game, "blacknick"),
                     result: String::new(),

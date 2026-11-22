@@ -272,6 +272,7 @@ fn training_screen_plays_grades_and_retries_without_leaking_review_hints() {
         username: "me".into(),
         games: vec![katastro::pandanet::Game {
             id: "test".into(),
+            timestamp: None,
             date: "2026-01-01".into(),
             white: "opponent".into(),
             black: "me".into(),

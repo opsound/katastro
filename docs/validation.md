@@ -938,3 +938,9 @@ The desktop integration test opens five synthetic SGFs with saved analysis and t
 The original desktop had no date selector. Separate mutations dropped the last day of a window, accepted an invalid range, used the wrong threshold or score, counted losses in the comeback denominator, reversed the comparison sign, and skipped saving the preferences. Each failed its corresponding test. Calendar checks cover leap day, year boundaries and undated records. Startup checks use real SQLite to verify that opening Games while preferences are loading preserves saved thresholds and that a damaged preference still allows opening a review.
 
 All 236 routine tests and five separately invoked real KataGo checks passed. GPU renders covered the two-period summary and confirmed five complete game rows beneath the expanded rank chart at 1200 × 900. The profile-sensitive desktop test runs its own copy of the controlled engine. Replacing that binary after seeding the cache reproduced the expected transition to Pending.
+
+## Recent games across time zones
+
+A desktop test syncs a Pandanet game stamped 00:15 on the next day in Japan while **Last 30 days** is selected in Honolulu. Before the fix the open library reported one downloaded game and zero visible rows. It now displays the game at 05:15 on the local day. Reopening the same index offline restores the row and the review opens. A mutation that passed the stored server date through to the table reproduced the missing row.
+
+SQLite fixtures check winter and summer timestamps from all three servers, date-only and undated records, and OGS finishes expressed with different UTC offsets. Two games played across the autumn clock change keep their true order in the table and rank history. The tests also align observations from three servers at the same instant and verify the local date on hover.

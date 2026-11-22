@@ -134,7 +134,13 @@ impl<'a> Row<'a> {
         false
     }
     fn compare(&self, other: &Self, column: usize) -> Ordering {
+        let date_order = self
+            .game
+            .timestamp
+            .cmp(&other.game.timestamp)
+            .then_with(|| self.game.date.cmp(&other.game.date));
         let primary = match column {
+            0 => date_order,
             1 | 2 => self.names[column - 1]
                 .to_lowercase()
                 .cmp(&other.names[column - 1].to_lowercase()),
@@ -152,7 +158,7 @@ impl<'a> Row<'a> {
                 .cmp(&other.cells[column].to_lowercase()),
         };
         primary
-            .then_with(|| other.game.date.cmp(&self.game.date))
+            .then(date_order.reverse())
             .then_with(|| self.game.id.cmp(&other.game.id))
     }
 }

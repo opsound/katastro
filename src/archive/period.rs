@@ -1,7 +1,11 @@
 //! Calendar periods for statistics on the archive's displayed play dates.
+use super::Server;
 use serde::{Deserialize, Serialize};
 use std::{fmt, ops::RangeInclusive};
-use time::{Date, Duration, OffsetDateTime, macros::format_description};
+use time::{
+    Date, Duration, OffsetDateTime, PlainDateTime, Time, UtcOffset,
+    macros::{format_description, offset, time},
+};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Period {
@@ -109,6 +113,49 @@ pub(super) fn parse_date(text: &str) -> Option<Date> {
         format_description!("[year]-[month]-[day]")
     };
     Date::parse(text, format).ok()
+}
+
+fn wall_time(text: &str) -> Option<PlainDateTime> {
+    let (date, clock) = text.trim().split_once([' ', 'T'])?;
+    let clock = Time::parse(
+        clock,
+        format_description!("[hour]:[minute][optional [:[second]]]"),
+    )
+    .ok()?;
+    Some(parse_date(date)?.with_time(clock))
+}
+
+/// The index retains server time. Convert timed records when loading a library,
+/// using the Mac's offset on the day played. Date-only records have no instant.
+pub(super) fn local_play_time(server: Server, recorded: String) -> (String, Option<i64>) {
+    let Some(wall) = wall_time(&recorded) else {
+        // Place date-only observations at local noon while displaying just the recorded day.
+        let timestamp = parse_date(recorded.trim()).map(|date| {
+            let noon = date.with_time(time!(12:00));
+            noon.assume_offset(local_offset(noon.assume_utc()))
+                .unix_timestamp()
+        });
+        return (recorded, timestamp);
+    };
+    let instant = wall.assume_offset(match server {
+        Server::Pandanet => offset!(+9),
+        Server::Fox => offset!(+8),
+        Server::Ogs => UtcOffset::UTC,
+    });
+    let format = if recorded.matches(':').count() == 2 {
+        format_description!("[year]/[month]/[day] [hour]:[minute]:[second]")
+    } else {
+        format_description!("[year]/[month]/[day] [hour]:[minute]")
+    };
+    let local = instant
+        .checked_to_offset(local_offset(instant))
+        .and_then(|local| local.format(format).ok())
+        .unwrap_or(recorded);
+    (local, Some(instant.unix_timestamp()))
+}
+
+pub(super) fn local_offset(instant: OffsetDateTime) -> UtcOffset {
+    UtcOffset::local_offset_at(instant).unwrap_or(UtcOffset::UTC)
 }
 
 pub fn local_today() -> Date {

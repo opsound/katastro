@@ -70,6 +70,8 @@ pub trait Credentials: Send + Sync {
 pub struct Game {
     pub id: String,
     pub date: String,
+    /// Unix seconds for ordering. Date-only records use a time on the recorded local day.
+    pub timestamp: Option<i64>,
     pub white: String,
     pub black: String,
     pub result: String,

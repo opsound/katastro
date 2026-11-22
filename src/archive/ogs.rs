@@ -8,6 +8,7 @@ use crate::Result;
 use reqwest::Url;
 use serde::{Deserialize, de::DeserializeOwned};
 use std::{collections::HashSet, sync::Arc};
+use time::{OffsetDateTime, format_description::well_known::Rfc3339, macros::format_description};
 
 pub(super) const ENDPOINT: &str = "https://online-go.com/";
 const PAGE_SIZE: usize = 100;
@@ -182,11 +183,14 @@ impl Remote {
             if !record.includes(self.player) {
                 return Err("OGS returned another player's game; sync stopped".into());
             }
-            let date = ended
-                .get(..19)
-                .ok_or("Invalid OGS game date")?
-                .replace('-', "/")
-                .replace('T', " ");
+            // Continue accepting unsuffixed timestamps as UTC.
+            let date = OffsetDateTime::parse(ended, &Rfc3339)
+                .or_else(|_| OffsetDateTime::parse(&format!("{ended}Z"), &Rfc3339))
+                .map_err(|_| "Invalid OGS game date")?
+                .to_utc()
+                .format(format_description!(
+                    "[year]/[month]/[day] [hour]:[minute]:[second]"
+                ))?;
             entries.push(Entry {
                 url: self
                     .endpoint
@@ -194,6 +198,7 @@ impl Remote {
                 game: Game {
                     id: record.id.to_string(),
                     date,
+                    timestamp: None,
                     black: record.players.black.map(|p| p.username).unwrap_or_default(),
                     white: record.players.white.map(|p| p.username).unwrap_or_default(),
                     result: String::new(),

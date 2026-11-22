@@ -1,7 +1,7 @@
 //! Recorded account ranks, aligned to the calendar dates in the archive.
 use crate::archive::{
     Server, Snapshot,
-    rank_history::{date_label, rank_label},
+    rank_history::{rank_label, timestamp_label},
 };
 use eframe::egui::{self, Color32, WidgetInfo, WidgetType};
 use egui_plot::{AxisHints, HoverPosition, Line, Plot, PlotPoint, Points, uniform_grid_spacer};
@@ -17,11 +17,6 @@ fn style(server: Server) -> (Color32, f32, f32) {
         Server::Fox => (Color32::from_rgb(239, 181, 108), 2.6, 3.3),
         Server::Ogs => (Color32::from_rgb(109, 212, 181), 1.5, 2.2),
     }
-}
-
-fn time_label(seconds: i64) -> String {
-    let t = seconds.rem_euclid(DAY as i64);
-    format!("{:02}:{:02}", t / 3600, t / 60 % 60)
 }
 
 pub(super) fn show(ui: &mut egui::Ui, states: &[(&Snapshot, &Path)], filter: Option<Server>) {
@@ -112,15 +107,7 @@ pub(super) fn show(ui: &mut egui::Ui, states: &[(&Snapshot, &Path)], filter: Opt
             AxisHints::new_x()
                 .min_thickness(19.)
                 .tick_label_color(color)
-                .formatter(move |mark, _| {
-                    let t = mark.value.round() as i64;
-                    let date = date_label(t);
-                    if intraday {
-                        format!("{date} {}", time_label(t))
-                    } else {
-                        date
-                    }
-                }),
+                .formatter(move |mark, _| timestamp_label(mark.value.round() as i64, intraday)),
         ])
         .y_grid_spacer(uniform_grid_spacer(|g| {
             // Whole ranks are two half-rank levels apart.
@@ -142,11 +129,10 @@ pub(super) fn show(ui: &mut egui::Ui, states: &[(&Snapshot, &Path)], filter: Opt
             } => {
                 let t = position.x.round() as i64;
                 Some(format!(
-                    "{}  {}\n{} {}",
+                    "{}  {}\n{}",
                     plot_name,
                     rank_label(position.y.round() as i32),
-                    date_label(t),
-                    time_label(t)
+                    timestamp_label(t, true)
                 ))
             }
             HoverPosition::Elsewhere { .. } => None,

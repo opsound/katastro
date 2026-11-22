@@ -3,6 +3,8 @@
 mod archive_ui;
 #[path = "support/pandanet/mod.rs"]
 mod support;
+#[path = "support/timezone.rs"]
+mod timezone;
 
 use archive_ui::{archive_desktop, select_all_time, wait_for};
 use eframe::egui::{self, Color32, Pos2, Shape};
@@ -118,16 +120,17 @@ fn points(h: &Harness<'_, DesktopApp>, color: Color32) -> Vec<Pos2> {
 #[test]
 fn games_overlays_three_rank_histories_and_filters_them_with_the_table() {
     let temp = tempfile::tempdir().unwrap();
+    // All three providers record these observations at 12:00 UTC.
     let games: [&[GameRow<'_>]; 3] = [
         &[
-            ("2026/11/01 12:00", "local player 4k", "a 7k"),
-            ("2026/11/03 12:00", "b 6k", "local player 2k"),
-            ("2026/11/09 12:00", "local player 1d", "c 4k"),
+            ("2026/11/01 21:00", "local player 4k", "a 7k"),
+            ("2026/11/03 21:00", "b 6k", "local player 2k"),
+            ("2026/11/09 21:00", "local player 1d", "c 4k"),
         ],
         &[
-            ("2026/11/01 12:00", "local player 1d", "d 3k"),
-            ("2026/11/03 12:00", "e 5k", "local player 1k"),
-            ("2026/11/09 12:00", "local player 3k", "f 1k"),
+            ("2026/11/01 20:00", "local player 1d", "d 3k"),
+            ("2026/11/03 20:00", "e 5k", "local player 1k"),
+            ("2026/11/09 20:00", "local player 3k", "f 1k"),
         ],
         &[("2026/11/03 12:00", "local player 1k", "g 5k")],
     ];
@@ -226,11 +229,20 @@ fn games_overlays_three_rank_histories_and_filters_them_with_the_table() {
         collapsed_rows > expanded_rows,
         "hiding the chart must reveal more games"
     );
+    let observed = time::macros::datetime!(2026-11-03 12:00 UTC);
+    let local = observed.to_offset(time::UtcOffset::local_offset_at(observed).unwrap());
+    let hovered_time = format!("{} {:02}:{:02}", local.date(), local.hour(), local.minute());
     h.hover_at(a[1]);
     h.run_steps(3);
-    assert!(h.output().shapes.iter().any(|s| matches!(&s.shape, Shape::Text(t) if
-        t.galley.text().contains("Pandanet  2k") && t.galley.text().contains("2026-11-03 12:00")
-    )), "hovering a game rank must reveal the server, recorded rank, and timestamp");
+    assert!(
+        h.output()
+            .shapes
+            .iter()
+            .any(|s| matches!(&s.shape, Shape::Text(t) if
+                t.galley.text().contains("Pandanet  2k") && t.galley.text().contains(&hovered_time)
+            )),
+        "hovering a game rank must reveal the server, recorded rank, and timestamp"
+    );
     toggle_history(&mut h);
     assert!(h.query_by_label("Rank history chart").is_none());
     assert_eq!(visible_game_rows(&h), collapsed_rows);
@@ -245,7 +257,11 @@ fn games_overlays_three_rank_histories_and_filters_them_with_the_table() {
         .shapes
         .iter()
         .filter_map(|s| match &s.shape {
-            Shape::Text(t) if t.galley.text().contains("2026-11-03 ") => Some(t.galley.text()),
+            Shape::Text(t)
+                if t.galley.text().starts_with("2026-11-") && t.galley.text().contains(' ') =>
+            {
+                Some(t.galley.text())
+            }
             _ => None,
         })
         .collect();
@@ -288,7 +304,9 @@ fn close_game_times_have_a_readable_time_scale_at_compact_width() {
         .shapes
         .iter()
         .filter_map(|s| match &s.shape {
-            Shape::Text(t) if t.galley.text().starts_with("2026-11-03 ") => {
+            Shape::Text(t)
+                if t.galley.text().starts_with("2026-11-") && t.galley.text().contains(' ') =>
+            {
                 let rect = t.galley.rect.translate(t.pos.to_vec2());
                 (s.clip_rect.contains_rect(rect) && rect.top() >= plot.bottom() - 1.)
                     .then_some((rect, t.galley.text()))
@@ -304,4 +322,31 @@ fn close_game_times_have_a_readable_time_scale_at_compact_width() {
                 .all(|p| p[0].0.right() < p[1].0.left() && p[0].1 != p[1].1),
         "close game times need distinct, unclipped date/time labels: {times:?}"
     );
+}
+
+// The later game can have an earlier wall-clock reading when daylight saving ends.
+#[test]
+fn the_table_and_rank_history_preserve_play_order_across_a_clock_rollback() {
+    if timezone::rerun_if_needed(
+        "the_table_and_rank_history_preserve_play_order_across_a_clock_rollback",
+        "America/Los_Angeles",
+    ) {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let records = [
+        ("2026/11/01 08:50", "local player 1k", "early 2k"),
+        ("2026/11/01 09:10", "local player 1d", "later 3k"),
+    ];
+    let mut h = desktop(temp.path(), [&[], &[], &records], egui::vec2(1200., 900.));
+    let earlier = h.get_by_label_contains("1k vs early 2k").rect();
+    let later = h.get_by_label_contains("1d vs later 3k").rect();
+    assert!(
+        later.top() < earlier.top(),
+        "the later finished game should be at the top"
+    );
+    toggle_history(&mut h);
+    let positions = points(&h, legend_color(&h, "OGS  1d"));
+    assert_eq!(positions.len(), 2);
+    assert!(positions[0].x < positions[1].x && positions[0].y > positions[1].y);
 }

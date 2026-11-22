@@ -3,6 +3,8 @@
 pub mod archive_ui;
 #[path = "support/pandanet/mod.rs"]
 mod support;
+#[path = "support/timezone.rs"]
+mod timezone;
 #[path = "support/training.rs"]
 mod training_support;
 use archive_ui::{select_all_time, wait_for, wait_for_label};
@@ -69,10 +71,75 @@ fn sync(root: &Path, fixture: &support::Fixture, vault: Arc<support::Vault>) -> 
     service.snapshot()
 }
 
+fn review_row(game: &katastro::archive::Game) -> String {
+    format!("Review {}: {} vs {}", game.date, game.white, game.black)
+}
+
 fn wait(h: &mut Harness<'_, DesktopApp>, done: impl Fn(&DesktopApp) -> bool) {
     wait_for(h, "desktop did not finish the requested operation", |h| {
         done(h.state())
     });
+}
+
+// A game played today can already have tomorrow's date in Japan. It must
+// appear as soon as sync finishes with Last 30 days selected, and after relaunch.
+#[test]
+fn last_30_days_shows_a_new_pandanet_game_across_midnight() {
+    if timezone::rerun_if_needed(
+        "last_30_days_shows_a_new_pandanet_game_across_midnight",
+        "Pacific/Honolulu",
+    ) {
+        return;
+    }
+    let today = time::OffsetDateTime::now_local().unwrap().date();
+    let local_date = today.to_string().replace('-', "/");
+    let server_date = format!("{} 00:15", today.next_day().unwrap()).replace('-', "/");
+    let html = support::page(1, 1, &[1]).replace("2026/11/01 12:00", &server_date);
+    let fixture = support::Fixture::new(move |r| {
+        if r.url.contains("mode=sgf") {
+            (200, support::sgf(1))
+        } else {
+            (200, html.clone())
+        }
+    });
+    let temp = tempfile::tempdir().unwrap();
+    let vault = Arc::new(support::Vault::default());
+    let mut h = desktop(temp.path(), &fixture, vault.clone(), None, 900.);
+    h.get_by_label("Pandanet").click();
+    wait_for_label(&mut h, "Date range");
+    h.get_by_label("Date range").click();
+    wait_for_label(&mut h, "Last 30 days");
+    h.get_by_label("Last 30 days").click();
+    h.run_steps(3);
+    for (label, value) in [
+        ("Pandanet username", "example"),
+        ("Pandanet password", "test-secret"),
+    ] {
+        h.get_by_label(label).focus();
+        h.get_by_label(label).type_text(value);
+        h.run_steps(3);
+    }
+    h.get_by_label("Connect and sync").click();
+    wait_for_label(&mut h, "1 synced games");
+    let row = format!("Review {local_date} 05:15: example 6k+ vs opponent 5k+");
+    h.get_by_label(&row);
+    drop(h);
+
+    // Reopen an archive in the format earlier releases saved, without the server.
+    drop(fixture);
+    let db = rusqlite::Connection::open(temp.path().join("Pandanet/sync.sqlite")).unwrap();
+    db.execute("UPDATE games SET date=?1", [server_date])
+        .unwrap();
+    let offline = support::Fixture::new(|_| (503, String::new()));
+    let mut h = desktop(temp.path(), &offline, vault, None, 900.);
+    h.get_by_label("Games").click();
+    wait_for_label(&mut h, "Date range");
+    wait_for_label(&mut h, &row);
+    h.run_steps(3);
+    h.get_by_label(&row).click();
+    wait(&mut h, |app| app.state.document.is_some());
+    assert_eq!(h.state().state.document.as_ref().unwrap().mainline.len(), 4);
+    assert!(offline.requests.lock().unwrap().is_empty());
 }
 // Benefit: a synced library actually starts preparing in an empty window, and
 // the user can pause it or enter training without competing background work.
@@ -220,17 +287,16 @@ fn desktop_signs_in_remembers_downloads_and_opens_a_game_without_disturbing_a_re
     release.0.send(()).unwrap();
     h.get_by_label("Pandanet").click();
     select_all_time(&mut h);
-    wait_for_label(
-        &mut h,
-        "Review 2026/11/01 12:00: example 6k+ vs opponent 5k+",
-    );
+    let players = "example 6k+ vs opponent 5k+";
+    wait_for(&mut h, "synced game not shown", |h| {
+        h.query_by_label_contains(players).is_some()
+    });
     assert_eq!(
         h.state().state.document.as_ref().unwrap().nodes.len(),
         4,
         "sync must preserve the open review"
     );
-    h.get_by_label("Review 2026/11/01 12:00: example 6k+ vs opponent 5k+")
-        .click();
+    h.get_by_label_contains(players).click();
     wait(&mut h, |app| {
         app.state.document.as_ref().unwrap().mainline.len() == 4
     });
@@ -258,30 +324,30 @@ fn games_library_filters_synced_games_and_opens_the_selected_record_directly() {
     });
     let temp = tempfile::tempdir().unwrap();
     let vault = Arc::new(support::Vault::default());
-    sync(temp.path(), &fixture, vault.clone());
+    let state = sync(temp.path(), &fixture, vault.clone());
     let mut h = desktop(temp.path(), &fixture, vault, None, 860.);
     h.get_by_label("Games").click();
     select_all_time(&mut h);
-    let first = "Review 2026/11/01 12:00: example 6k+ vs opponent 5k+";
-    let second = "Review 2026/11/02 12:00: example 6k+ vs opponent 5k+";
-    wait_for_label(&mut h, second);
+    let first = review_row(&state.games[1]);
+    let second = review_row(&state.games[0]);
+    wait_for_label(&mut h, &second);
     if let Some(path) = std::env::var_os("KATASTRO_PANDANET_UI_PREVIEW") {
         h.render().unwrap().save(path).unwrap();
     }
-    assert!(h.query_by_label(first).is_some());
+    assert!(h.query_by_label(&first).is_some());
     assert!(
         h.query_by_label("Pandanet password").is_none(),
         "browsing games should not require opening account settings"
     );
     h.get_by_label("Search synced games").focus();
     h.get_by_label("Search synced games")
-        .type_text("2026/11/01");
+        .type_text(state.games[1].date.split_whitespace().next().unwrap());
     h.run_steps(3);
     assert!(
-        h.query_by_label(second).is_none(),
+        h.query_by_label(&second).is_none(),
         "search must filter the game list"
     );
-    h.get_by_label(first).click();
+    h.get_by_label(&first).click();
     wait(&mut h, |app| app.state.document.is_some());
     assert_eq!(
         h.state().state.document.as_ref().unwrap().nodes[0].property("DT"),
@@ -337,16 +403,8 @@ fn library_table_sorts_every_column_and_opens_the_correct_game_after_filtering()
     let temp = tempfile::tempdir().unwrap();
     let vault = Arc::new(support::Vault::default());
     let state = sync(temp.path(), &fixture, vault.clone());
-    let labels: Vec<_> = (1..=5)
-        .map(|id| {
-            let g = state
-                .games
-                .iter()
-                .find(|g| g.date == format!("2026/11/{id:02} 12:00"))
-                .unwrap();
-            format!("Review {}: {} vs {}", g.date, g.white, g.black)
-        })
-        .collect();
+    let games: Vec<_> = state.games.iter().rev().collect();
+    let labels: Vec<_> = games.iter().map(|game| review_row(game)).collect();
     let mut h = desktop(temp.path(), &fixture, vault, None, 860.);
     h.get_by_label("Games").click();
     select_all_time(&mut h);
@@ -369,7 +427,7 @@ fn library_table_sorts_every_column_and_opens_the_correct_game_after_filtering()
     );
     for day in [3, 4] {
         let trophy = h
-            .get_by_label(&format!("You won on 2026/11/{day:02} 12:00"))
+            .get_by_label(&format!("You won on {}", games[day - 1].date))
             .rect();
         assert!(h.output().shapes.iter().any(|shape| matches!(&shape.shape,
             eframe::egui::Shape::Path(path) if path.closed && path.fill.r() > 180 && path.fill.g() > 120 && path.fill.b() < 80
@@ -487,16 +545,13 @@ fn library_table_uses_extra_window_height_to_show_and_open_more_games() {
     });
     let temp = tempfile::tempdir().unwrap();
     let vault = Arc::new(support::Vault::default());
-    sync(temp.path(), &fixture, vault.clone());
+    let state = sync(temp.path(), &fixture, vault.clone());
     let mut h = desktop(temp.path(), &fixture, vault, None, 1500.);
     h.get_by_label("Games").click();
     select_all_time(&mut h);
-    wait_for_label(
-        &mut h,
-        "Review 2026/11/20 12:00: example 6k+ vs opponent 5k+",
-    );
+    wait_for_label(&mut h, &review_row(&state.games[0]));
     h.run_steps(3);
-    let before = h.query_all_by_label_contains("Review 2026/11/").count();
+    let before = h.query_all_by_label_contains("Review 2026/").count();
     let window = h.get_by_label("Game library").rect();
     h.run_steps(10);
     assert!(
@@ -515,20 +570,19 @@ fn library_table_uses_extra_window_height_to_show_and_open_more_games() {
     h.drop_at(to);
     h.run_steps(4);
     assert!(
-        h.query_all_by_label_contains("Review 2026/11/").count() >= before + 6,
+        h.query_all_by_label_contains("Review 2026/").count() >= before + 6,
         "a taller window must reveal more games instead of blank space"
     );
     h.get_by_label("Sync settings").click();
     h.run_steps(3);
     assert!(
-        h.query_all_by_label_contains("Review 2026/11/").count() >= 16,
+        h.query_all_by_label_contains("Review 2026/").count() >= 16,
         "settings must not impose a separate short table cap"
     );
     if let Some(path) = std::env::var_os("KATASTRO_PANDANET_TALL_PREVIEW") {
         h.render().unwrap().save(path).unwrap();
     }
-    h.get_by_label("Review 2026/11/05 12:00: example 6k+ vs opponent 5k+")
-        .click();
+    h.get_by_label(&review_row(&state.games[15])).click();
     wait(&mut h, |app| app.state.document.is_some());
     assert_eq!(
         h.state().state.document.as_ref().unwrap().nodes[0].property("DT"),
@@ -547,14 +601,11 @@ fn library_opens_training_setup_with_the_synced_account_and_returns_to_review() 
     });
     let temp = tempfile::tempdir().unwrap();
     let vault = Arc::new(support::Vault::default());
-    sync(temp.path(), &fixture, vault.clone());
+    let state = sync(temp.path(), &fixture, vault.clone());
     let mut h = desktop(temp.path(), &fixture, vault, None, 860.);
     h.get_by_label("Games").click();
     select_all_time(&mut h);
-    wait_for_label(
-        &mut h,
-        "Review 2026/11/01 12:00: example 6k+ vs opponent 5k+",
-    );
+    wait_for_label(&mut h, &review_row(&state.games[0]));
     h.get_by_label("Train from these games").click();
     h.run_steps(3);
     assert!(h.query_by_label("Start training").is_some());

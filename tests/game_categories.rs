@@ -29,6 +29,7 @@ impl Fixture {
         review.import(&path).unwrap();
         let game = Game {
             id: "1".into(),
+            timestamp: None,
             date: "2026-01-01".into(),
             white: "White Player 2k".into(),
             black: "Black Player 1d".into(),

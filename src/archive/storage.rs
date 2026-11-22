@@ -97,7 +97,7 @@ impl Service {
             .query_map([&self.state.username], |r| {
                 Ok(FailedGame {
                     id: r.get(0)?,
-                    date: r.get(1)?,
+                    date: period::local_play_time(self.state.server, r.get(1)?).0,
                     message: r.get(2)?,
                 })
             })?
@@ -107,9 +107,11 @@ impl Service {
         let mut stmt=self.db.prepare("SELECT id,date,white,black,result,filename FROM games WHERE username=?1 ORDER BY date DESC,id")?;
         self.state.games = stmt
             .query_map([&self.state.username], |r| {
+                let (date, timestamp) = period::local_play_time(self.state.server, r.get(1)?);
                 Ok(Game {
                     id: r.get(0)?,
-                    date: r.get(1)?,
+                    date,
+                    timestamp,
                     white: r.get(2)?,
                     black: r.get(3)?,
                     result: r.get(4)?,

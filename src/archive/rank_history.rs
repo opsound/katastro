@@ -1,10 +1,10 @@
 //! The synced player's recorded rank over the dates in one server archive.
-use super::{Server, Snapshot, period::parse_date};
-use time::{Time, UtcDateTime, macros::format_description};
+use super::{Server, Snapshot, period::local_offset};
+use time::OffsetDateTime;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RankPoint {
-    /// Seconds since the Unix epoch using the wall clock displayed by the archive.
+    /// Unix timestamp of the game, or local noon for a date-only record.
     pub timestamp: i64,
     /// Half-rank steps. 1k is zero, 1d is two and the professional band starts at twenty.
     pub level: i32,
@@ -55,22 +55,22 @@ pub fn rank_label(level: i32) -> String {
     }
 }
 
-fn timestamp(value: &str) -> Option<i64> {
-    let value = value.trim();
-    let (date, clock) = value.split_once(' ').unwrap_or((value, "00:00"));
-    let date = parse_date(date)?;
-    let clock = Time::parse(
-        clock,
-        format_description!("[hour]:[minute][optional [:[second]]]"),
-    )
-    .ok()?;
-    Some(date.with_time(clock).as_utc().unix_timestamp())
+pub fn date_label(timestamp: i64) -> String {
+    timestamp_label(timestamp, false)
 }
 
-pub fn date_label(timestamp: i64) -> String {
-    UtcDateTime::from_unix_timestamp(timestamp)
-        .map(|dt| dt.date().to_string())
-        .unwrap_or_default()
+pub(super) fn timestamp_label(timestamp: i64, show_time: bool) -> String {
+    let Some(local) = OffsetDateTime::from_unix_timestamp(timestamp)
+        .ok()
+        .and_then(|t| t.checked_to_offset(local_offset(t)))
+    else {
+        return String::new();
+    };
+    if show_time {
+        format!("{} {:02}:{:02}", local.date(), local.hour(), local.minute())
+    } else {
+        local.date().to_string()
+    }
 }
 
 pub fn series(snapshot: &Snapshot) -> Vec<RankPoint> {
@@ -98,7 +98,7 @@ pub fn series(snapshot: &Snapshot) -> Vec<RankPoint> {
             }
             Some(RankPoint {
                 level: level(rank, snapshot.server)?,
-                timestamp: timestamp(&game.date)?,
+                timestamp: game.timestamp?,
             })
         })
         .collect();

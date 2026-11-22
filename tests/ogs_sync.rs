@@ -117,6 +117,8 @@ fn public_games_are_limited_paginated_ranked_and_reused_after_reopen() {
                     Some("2") => {
                         // New finishes can shift the latest row onto the next page.
                         let mut team_game = game(107);
+                        // Same instant as game 108, across midnight in a different offset.
+                        team_game["ended"] = json!("2026-01-05T02:00:00.123456+13:00");
                         team_game["black"] = json!(55);
                         team_game["players"]["black"] = json!({"id":55,"username":"Captain"});
                         team_game["rengo_white_team"] = json!([77, null, 42]);
@@ -143,8 +145,16 @@ fn public_games_are_limited_paginated_ranked_and_reused_after_reopen() {
     assert_eq!(first.black, "Example 2k");
     assert_eq!(first.white, "Rival 3d");
     assert_eq!(first.result, "W+3.5");
-    assert_eq!(first.date, "2026/01/04 13:00:00");
-    assert!(state.games.iter().any(|g| g.id == "107"));
+    let simultaneous = state.games.iter().find(|g| g.id == "107").unwrap();
+    assert_eq!(
+        first.date, simultaneous.date,
+        "equivalent end times must share a display date and time"
+    );
+    let cached_utc: String = rusqlite::Connection::open(root.path().join("sync.sqlite"))
+        .unwrap()
+        .query_row("SELECT date FROM games WHERE id='107'", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(cached_utc, "2026/01/04 13:00:00");
     drop(archive);
     let mut archive = service(root.path(), &fixture);
     assert_eq!(archive.snapshot().username, "Example");
@@ -176,7 +186,9 @@ fn incremental_sync_passes_filtered_rows_to_find_new_public_games() {
             "/api/v1/players/42/games"
                 if url.query_pairs().any(|(k, v)| k == "page" && v == "2") =>
             {
-                json!({"count":4,"next":null,"results":[game(2),game(1)]}).to_string()
+                let mut unsuffixed = game(2);
+                unsuffixed["ended"] = json!("2026-01-04T13:00:00.123456");
+                json!({"count":4,"next":null,"results":[unsuffixed,game(1)]}).to_string()
             }
             "/api/v1/players/42/games" => {
                 let mut private = game(3);
