@@ -1,23 +1,19 @@
 #![cfg(feature = "desktop")]
+#[path = "support/archive_ui.rs"]
+mod archive_ui;
 #[path = "support/pandanet/mod.rs"]
 mod support;
+use archive_ui::{archive_desktop, wait_for};
+use eframe::egui::vec2;
 use egui_kittest::{Harness, kittest::Queryable};
 use katastro::{
+    archive::{Options, Server},
     desktop::DesktopApp,
-    engine::EngineConfig,
-    pandanet::{Cancellation, Command, Options, Server, Service},
 };
-use std::{
-    sync::Arc,
-    time::{Duration, Instant},
-};
-fn wait(h: &mut Harness<'_, DesktopApp>, label: &str) {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while h.query_by_label(label).is_none() {
-        h.step();
-        assert!(Instant::now() < deadline, "missing {label}");
-        std::thread::yield_now();
-    }
+use std::sync::Arc;
+
+fn wait_for_label(h: &mut Harness<'_, DesktopApp>, label: &str) {
+    wait_for(h, label, |h| h.query_by_label(label).is_some());
 }
 // Benefit: both archives share a sortable library but can be filtered and
 // trained independently, even when the user's server names differ.
@@ -48,67 +44,21 @@ fn server_filter_opens_fox_original_and_training_uses_fox_account() {
     for option in &mut options {
         option.endpoint = fixture.endpoint.clone();
         option.credentials = Arc::new(support::Vault::default());
-        let mut service = Service::open_for(
-            &option.root,
-            &option.endpoint,
-            option.credentials.clone(),
-            option.server,
-        )
-        .unwrap();
-        let username = if option.server == Server::Fox {
-            "foxplayer"
+        let (username, password) = if option.server == Server::Fox {
+            ("foxplayer", "")
         } else {
-            "example"
+            ("example", "test-secret")
         };
-        service
-            .execute(
-                Command::Connect {
-                    username: username.into(),
-                    password: if option.server == Server::Fox {
-                        ""
-                    } else {
-                        "test-secret"
-                    }
-                    .into(),
-                    remember: false,
-                },
-                1,
-                &Cancellation::default(),
-                &mut |_| {},
-            )
-            .unwrap();
-        service
-            .execute(
-                Command::SetAutomatic(false),
-                2,
-                &Cancellation::default(),
-                &mut |_| {},
-            )
-            .unwrap();
+        support::seed_account(option, username, password);
     }
-    let mut h = Harness::builder()
-        .with_size(eframe::egui::vec2(1200., 900.))
-        .build_eframe(|cc| {
-            DesktopApp::with_archives(
-                &cc.egui_ctx,
-                root.join("reviews"),
-                root.join("cache"),
-                EngineConfig {
-                    executable: "missing".into(),
-                    model: "missing".into(),
-                    analysis: Default::default(),
-                },
-                None,
-                options,
-            )
-        });
+    let mut h = archive_desktop(root, options, vec2(1200., 900.));
     h.get_by_label("Games").click();
     h.run_steps(3);
     let panda = "Review 2026/11/01 12:00: example 6k+ vs opponent 5k+";
     let fox = "Review 2026/11/02 12:00:00: rival 2d vs foxplayer 3k";
-    wait(&mut h, panda);
+    wait_for_label(&mut h, panda);
     h.get_by_label("All servers");
-    wait(&mut h, fox);
+    wait_for_label(&mut h, fox);
     h.get_by_label("You won on 2026/11/02 12:00:00");
     h.get_by_label("Sort by Server").click();
     h.run_steps(3);
@@ -146,12 +96,9 @@ fn server_filter_opens_fox_original_and_training_uses_fox_account() {
     h.get_by_label("Games").click();
     h.run_steps(3);
     h.get_by_label(fox).click();
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while h.state().state.document.is_none() {
-        h.step();
-        assert!(Instant::now() < deadline);
-        std::thread::yield_now();
-    }
+    wait_for(&mut h, "the Fox review did not open", |h| {
+        h.state().state.document.is_some()
+    });
     assert_eq!(
         h.state().state.document.as_ref().unwrap().nodes[0].property("PB"),
         Some("foxplayer")
@@ -177,22 +124,7 @@ fn fox_settings_connect_with_only_a_username_and_keep_pandanet_separate() {
     fox.endpoint = fixture.endpoint.clone();
     fox.credentials = vault.clone();
     let panda = Options::new(root.path().join("Pandanet"));
-    let mut h = Harness::builder()
-        .with_size(eframe::egui::vec2(1200., 900.))
-        .build_eframe(|cc| {
-            DesktopApp::with_archives(
-                &cc.egui_ctx,
-                root.path().join("reviews"),
-                root.path().join("cache"),
-                EngineConfig {
-                    executable: "missing".into(),
-                    model: "missing".into(),
-                    analysis: Default::default(),
-                },
-                None,
-                vec![panda, fox],
-            )
-        });
+    let mut h = archive_desktop(root.path(), vec![panda, fox], vec2(1200., 900.));
     h.get_by_label("Games").click();
     h.run_steps(3);
     h.get_by_label("Sync settings").click();
@@ -206,7 +138,7 @@ fn fox_settings_connect_with_only_a_username_and_keep_pandanet_separate() {
     h.get_by_label("Fox username").type_text("foxplayer");
     h.run_steps(3);
     h.get_by_label("Connect and sync").click();
-    wait(&mut h, "Review 2026/11/02 12:00:00: rival vs foxplayer");
+    wait_for_label(&mut h, "Review 2026/11/02 12:00:00: rival vs foxplayer");
     assert!(vault.0.lock().unwrap().is_empty());
     h.get_by_label("Pandanet sync").click();
     h.run_steps(3);

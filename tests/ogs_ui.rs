@@ -1,22 +1,18 @@
 #![cfg(feature = "desktop")]
+#[path = "support/archive_ui.rs"]
+mod archive_ui;
 #[path = "support/pandanet/mod.rs"]
 mod support;
 
+use archive_ui::{archive_desktop, wait_for};
+use eframe::egui::vec2;
 use egui_kittest::{
     Harness,
     kittest::{NodeT, Queryable},
 };
-use katastro::{
-    archive::{Cancellation, Command, Options, Service},
-    desktop::DesktopApp,
-    engine::EngineConfig,
-};
+use katastro::{archive::Options, desktop::DesktopApp};
 use serde_json::json;
-use std::{
-    path::Path,
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{path::Path, sync::Arc};
 
 const OGS_ROW: &str = "vs ogsplayer";
 const FOX_ROW: &str = "vs foxplayer";
@@ -57,60 +53,22 @@ fn desktop(root: &Path) -> (Harness<'static, DesktopApp>, support::Fixture) {
     let mut fox = Options::fox(root.join("Fox"));
     fox.endpoint = http.endpoint.clone();
     fox.credentials = vault.clone();
-    let mut seed = Service::open_for(&fox.root, &fox.endpoint, vault.clone(), fox.server).unwrap();
-    for command in [
-        Command::Connect {
-            username: "foxplayer".into(),
-            password: String::new(),
-            remember: false,
-        },
-        Command::SetAutomatic(false),
-    ] {
-        seed.execute(command, 1, &Cancellation::default(), &mut |_| {})
-            .unwrap();
-    }
-    assert_eq!(seed.snapshot().games[0].id, "100");
-    drop(seed);
+    assert_eq!(
+        support::seed_account(&fox, "foxplayer", "").games[0].id,
+        "100"
+    );
     let mut ogs = Options::ogs(root.join("OGS"));
     ogs.endpoint = http.endpoint.split("/cgi-bin").next().unwrap().to_owned();
     ogs.credentials = vault.clone();
     let mut pandanet = Options::new(root.join("Pandanet"));
     pandanet.endpoint = http.endpoint.clone();
     pandanet.credentials = vault;
-    (with_archives(root, vec![pandanet, fox, ogs]), http)
+    (
+        archive_desktop(root, vec![pandanet, fox, ogs], vec2(1200., 900.)),
+        http,
+    )
 }
 
-fn with_archives(root: &Path, options: Vec<Options>) -> Harness<'static, DesktopApp> {
-    Harness::builder()
-        .with_size(eframe::egui::vec2(1200.0, 900.0))
-        .build_eframe(|cc| {
-            DesktopApp::with_archives(
-                &cc.egui_ctx,
-                root.join("reviews"),
-                root.join("cache"),
-                EngineConfig {
-                    executable: "missing".into(),
-                    model: "missing".into(),
-                    analysis: Default::default(),
-                },
-                None,
-                options,
-            )
-        })
-}
-
-fn wait_for(
-    h: &mut Harness<'_, DesktopApp>,
-    message: &str,
-    ready: impl Fn(&Harness<'_, DesktopApp>) -> bool,
-) {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while !ready(h) {
-        h.step();
-        assert!(Instant::now() < deadline, "{message}");
-        std::thread::yield_now();
-    }
-}
 fn connect(h: &mut Harness<'_, DesktopApp>) {
     h.get_by_label("OGS username").focus();
     h.get_by_label("OGS username").type_text("ogsplayer");
@@ -127,7 +85,7 @@ fn an_ogs_only_desktop_opens_the_game_library_and_its_connection_settings() {
     let mut ogs = Options::ogs(temp.path().join("OGS"));
     ogs.endpoint = "http://127.0.0.1:1/".into();
     ogs.credentials = Arc::new(support::Vault::default());
-    let mut h = with_archives(temp.path(), vec![ogs]);
+    let mut h = archive_desktop(temp.path(), vec![ogs], vec2(1200., 900.));
     h.get_by_label("Games").click();
     h.run();
     h.query_by_label("OGS games")

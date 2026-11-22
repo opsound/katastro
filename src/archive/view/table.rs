@@ -39,7 +39,6 @@ struct Row<'a> {
     game: &'a Game,
     cells: [String; 6],
     account: &'a str,
-    server: Server,
     names: [&'a str; 2],
     condition: u8,
     points: f64,
@@ -52,7 +51,6 @@ impl<'a> Row<'a> {
         Self {
             game,
             account: &state.username,
-            server: state.server,
             cells: [
                 game.date.clone(),
                 game.white.clone(),
@@ -192,8 +190,8 @@ pub(super) fn show(
     let total = states.iter().map(|s| s.games.len()).sum::<usize>();
     let mut rows: Vec<_> = states
         .iter()
+        .filter(|s| filter.is_none_or(|f| s.server == f))
         .flat_map(|s| s.games.iter().map(|g| Row::new(g, s)))
-        .filter(|r| filter.is_none_or(|f| r.server == f))
         .filter(|row| {
             query.is_empty()
                 || row.cells.join(" ").to_lowercase().contains(&query)

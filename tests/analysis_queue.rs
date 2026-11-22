@@ -1,15 +1,19 @@
 use katastro::{
     Analysis, Point, Review,
-    engine::{Engine, EngineConfig},
+    engine::Engine,
     worker::{Client, Command, Snapshot},
 };
 use serde_json::{Value, json};
 use std::{
-    io::{BufRead, BufReader, Write},
+    io::{BufReader, Write},
     net::{TcpListener, TcpStream},
     path::Path,
     time::{Duration, Instant},
 };
+
+#[path = "support/controlled_engine.rs"]
+mod controlled_engine;
+use controlled_engine::{config, connection, query};
 
 fn game(root: &Path) -> std::path::PathBuf {
     let source = root.join("game.sgf");
@@ -25,34 +29,6 @@ fn game(root: &Path) -> std::path::PathBuf {
         .collect();
     std::fs::write(&source, format!("(;SZ[9]{moves})")).unwrap();
     source
-}
-fn config(root: &Path, listener: &TcpListener) -> EngineConfig {
-    let model = root.join("model");
-    std::fs::write(
-        &model,
-        format!("controlled:{}", listener.local_addr().unwrap()),
-    )
-    .unwrap();
-    EngineConfig {
-        analysis: Default::default(),
-        executable: env!("CARGO_BIN_EXE_katastro-test-engine").into(),
-        model,
-    }
-}
-fn control(listener: &TcpListener) -> BufReader<TcpStream> {
-    let (stream, _) = listener.accept().unwrap();
-    stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
-        .unwrap();
-    stream.set_nodelay(true).unwrap();
-    BufReader::new(stream)
-}
-fn query(control: &mut BufReader<TcpStream>) -> Value {
-    let mut line = String::new();
-    control
-        .read_line(&mut line)
-        .expect("the engine needs more work while unfinished positions remain pending");
-    serde_json::from_str(&line).unwrap()
 }
 fn send(control: &mut BufReader<TcpStream>, reply: Value) {
     writeln!(control.get_mut(), "{reply}").unwrap();
@@ -92,7 +68,7 @@ fn worker_refills_while_a_slow_position_is_pending_and_preserves_cached_results(
     client
         .send(Command::OpenAndAnalyze(source.clone()))
         .unwrap();
-    let mut engine = control(&listener);
+    let mut engine = connection(&listener);
     let coverage = query(&mut engine);
     for turn in 0..21 {
         finish(&mut engine, &coverage, turn);
@@ -173,7 +149,7 @@ fn branch_refinement_continues_during_selection_and_stale_replies_are_ignored() 
     client
         .send(Command::OpenAndAnalyze(source.clone()))
         .unwrap();
-    let mut engine = control(&listener);
+    let mut engine = connection(&listener);
     let foreground = query(&mut engine);
     assert_eq!(foreground["priority"], 100);
     let mut held = None;
@@ -307,7 +283,7 @@ fn selecting_one_turn_of_a_batch_keeps_other_results_and_persists_the_replacemen
     client
         .send(Command::OpenAndAnalyze(source.clone()))
         .unwrap();
-    let mut engine = control(&listener);
+    let mut engine = connection(&listener);
     let old_foreground = query(&mut engine);
     let batch = query(&mut engine);
     let turns = batch["analyzeTurns"].as_array().unwrap();
@@ -387,7 +363,7 @@ fn an_unread_review_receives_the_latest_analysis_with_one_pending_repaint() {
     client
         .send(Command::OpenAndAnalyze(source.clone()))
         .unwrap();
-    let mut engine = control(&listener);
+    let mut engine = connection(&listener);
     loop {
         let request = query(&mut engine);
         if request["maxVisits"].as_u64().unwrap() > 64 {

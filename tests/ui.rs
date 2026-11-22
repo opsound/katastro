@@ -1,4 +1,5 @@
 #![cfg(feature = "desktop")]
+use eframe::egui::vec2;
 use egui_kittest::{Harness, kittest::Queryable};
 use katastro::{
     Color, Point, Review,
@@ -16,29 +17,27 @@ struct State {
     snapshot: Snapshot,
 }
 fn state(root: &Path) -> State {
+    imported_state(root, "(;SZ[9];B[cc];W[gg];B[cg])")
+}
+fn imported_state(root: &Path, sgf: &str) -> State {
     let source = root.join("game.sgf");
-    std::fs::write(&source, b"(;SZ[9];B[cc];W[gg];B[cg])").unwrap();
+    std::fs::write(&source, sgf).unwrap();
     let mut review = Review::new(&root.join("reviews"), &root.join("cache")).unwrap();
     review.import(&source).unwrap();
     let mut state = State {
         review,
-        snapshot: Snapshot::empty(EngineConfig {
-            analysis: Default::default(),
-            executable: Default::default(),
-            model: Default::default(),
-        }),
+        snapshot: Snapshot::empty(EngineConfig::default()),
     };
     state.sync();
     state
 }
-fn imported_state(root: &Path, sgf: &str) -> State {
-    let mut result = state(root);
-    std::fs::write(root.join("game.sgf"), sgf).unwrap();
-    result.review.import(&root.join("game.sgf")).unwrap();
-    result.sync();
-    result
-}
 impl State {
+    fn harness(self, size: eframe::egui::Vec2) -> Harness<'static, State> {
+        Harness::builder()
+            .with_size(size)
+            .build_ui_state(|ui, state: &mut State| state.render(ui), self)
+    }
+
     fn sync(&mut self) {
         self.snapshot.source = self.review.source().map(Path::to_path_buf);
         self.snapshot.document = self.review.document().cloned();
@@ -86,16 +85,14 @@ impl State {
 }
 #[test]
 fn variations_header_shows_the_current_move_and_navigation_on_one_row() {
-    use eframe::egui::{pos2, vec2};
+    use eframe::egui::pos2;
     use egui_kittest::kittest::NodeT;
 
     let temp = tempfile::TempDir::new().unwrap();
     let mut state = imported_state(temp.path(), "(;SZ[9];B[cc];C[diagram];W[gg];B[cg])");
     state.review.select(2).unwrap();
     state.sync();
-    let mut h = Harness::builder()
-        .with_size(vec2(900.0, 680.0))
-        .build_ui_state(|ui, state: &mut State| state.render(ui), state);
+    let mut h = state.harness(vec2(900.0, 680.0));
     let viewport = h.get_by_label("Timeline viewport").rect();
     let divider = pos2(viewport.left() - 14.0, viewport.center().y);
     let narrow = divider + vec2(100.0, 0.0);
@@ -113,20 +110,14 @@ fn variations_header_shows_the_current_move_and_navigation_on_one_row() {
         "expected the minimum sidebar width: {viewport:?}"
     );
     let heading = h.get_by_label("VARIATIONS").rect();
-    let previous = h.get_by_label("Previous move").rect();
-    assert!(
-        (heading.center().y - previous.center().y).abs() <= 4.0,
-        "the navigation controls occupy a separate row from Variations"
-    );
     let controls = [
         heading,
         h.get_by_label("Move 1").rect(),
-        previous,
+        h.get_by_label("Previous move").rect(),
         h.get_by_label("Next move").rect(),
         h.get_by_label("More move actions").rect(),
     ];
     for (i, control) in controls.iter().enumerate() {
-        assert!((heading.center().y - control.center().y).abs() <= 4.0);
         assert!(control.bottom() <= viewport.top());
         assert!(
             control.left() >= viewport.left() - 1.0 && control.right() <= viewport.right() + 1.0,
@@ -138,6 +129,12 @@ fn variations_header_shows_the_current_move_and_navigation_on_one_row() {
                 .all(|other| !control.intersects(*other))
         );
     }
+    assert!(
+        controls[1..]
+            .iter()
+            .all(|control| (heading.center().y - control.center().y).abs() <= 4.0),
+        "navigation and move number must stay on the same row as Variations"
+    );
     let header_bottom = controls
         .iter()
         .map(|r| r.bottom())
@@ -237,15 +234,7 @@ fn variations_header_menu_navigates_dismisses_and_saves_a_pass_branch() {
     std::fs::write(&source, "(;SZ[9](;B[cc];W[gg];B[cg])(;B[dd]))").unwrap();
     let reviews = temp.path().join("reviews");
     let cache = temp.path().join("cache");
-    let client = Client::spawn(
-        reviews.clone(),
-        cache.clone(),
-        EngineConfig {
-            analysis: Default::default(),
-            executable: Default::default(),
-            model: Default::default(),
-        },
-    );
+    let client = Client::spawn(reviews.clone(), cache.clone(), EngineConfig::default());
     client.send(Command::Open(source.clone())).unwrap();
     client.send(Command::Select(1)).unwrap();
     let snapshot = until(&client, |s| {
@@ -337,9 +326,7 @@ fn variations_header_menu_navigates_dismisses_and_saves_a_pass_branch() {
 #[test]
 fn actual_board_and_tree_input_creates_and_selects_persistent_variations() {
     let temp = tempfile::TempDir::new().unwrap();
-    let mut h = Harness::builder()
-        .with_size(eframe::egui::vec2(1200.0, 820.0))
-        .build_ui_state(|ui, state: &mut State| state.render(ui), state(temp.path()));
+    let mut h = state(temp.path()).harness(vec2(1200.0, 820.0));
     h.get_by_label("Next move").click();
     h.run();
     assert_eq!(h.state().snapshot.document.as_ref().unwrap().selected, 1);
@@ -554,9 +541,7 @@ fn narrow_sidebar_keeps_long_player_names_compact_and_scrolled_analysis_playable
             suggestions: suggestions(),
         },
     );
-    let mut h = Harness::builder()
-        .with_size(vec2(900.0, 680.0))
-        .build_ui_state(|ui, state: &mut State| state.render(ui), state);
+    let mut h = state.harness(vec2(900.0, 680.0));
     for label in [
         format!("Black player: {black}"),
         format!("White player: {white}"),
@@ -653,15 +638,7 @@ fn reordered_children_keep_the_played_line_preview_navigation_and_top_row() {
     )
     .unwrap();
     drop(db);
-    let client = Client::spawn(
-        reviews.clone(),
-        cache.clone(),
-        EngineConfig {
-            analysis: Default::default(),
-            executable: Default::default(),
-            model: Default::default(),
-        },
-    );
+    let client = Client::spawn(reviews.clone(), cache.clone(), EngineConfig::default());
     client.send(Command::Open(source.clone())).unwrap();
     let snapshot = until(&client, |s| s.document.is_some());
     let mut h = Harness::builder()
@@ -741,9 +718,7 @@ fn reordered_children_keep_the_played_line_preview_navigation_and_top_row() {
 #[test]
 fn keyboard_navigation_and_pass_work_with_loaded_review() {
     let temp = tempfile::TempDir::new().unwrap();
-    let mut h = Harness::builder()
-        .with_size(eframe::egui::vec2(1200.0, 820.0))
-        .build_ui_state(|ui, state: &mut State| state.render(ui), state(temp.path()));
+    let mut h = state(temp.path()).harness(vec2(1200.0, 820.0));
     h.key_press(eframe::egui::Key::ArrowRight);
     h.run();
     assert_eq!(h.state().snapshot.document.as_ref().unwrap().selected, 1);
@@ -766,45 +741,6 @@ fn keyboard_navigation_and_pass_work_with_loaded_review() {
             .is_none()
     );
 }
-#[test]
-fn original_game_chart_keeps_gaps_zero_values_and_its_line_when_a_branch_is_selected() {
-    let temp = tempfile::TempDir::new().unwrap();
-    let mut state = state(temp.path());
-    state.snapshot.values.insert(
-        1,
-        katastro::Analysis {
-            ownership: vec![],
-            ownership_visits: 0,
-            visits: 1,
-            winrate: 0.0,
-            score_lead: 0.0,
-            suggestions: vec![],
-        },
-    );
-    assert_eq!(
-        ui::chart_points(&state.snapshot, true),
-        vec![None, Some([1.0, 0.0]), None, None]
-    );
-    state.review.select(1).unwrap();
-    let branch = state.review.play(Some(Point::new(3, 3))).unwrap();
-    state.sync();
-    state.snapshot.values.insert(
-        branch,
-        katastro::Analysis {
-            ownership: vec![],
-            ownership_visits: 0,
-            visits: 64,
-            winrate: 0.9,
-            score_lead: 99.0,
-            suggestions: vec![],
-        },
-    );
-    assert_eq!(
-        ui::chart_points(&state.snapshot, false),
-        vec![None, Some([1.0, 0.0]), None, None]
-    );
-}
-
 const CHART_VARIATION: eframe::egui::Color32 = eframe::egui::Color32::from_rgb(255, 195, 105);
 
 fn forked_tree(root: &Path) -> Harness<'static, State> {
@@ -1112,12 +1048,7 @@ fn assert_chart_line(
 #[test]
 fn variation_charts_dim_only_the_original_future_and_highlight_the_saved_continuation() {
     let temp = tempfile::TempDir::new().unwrap();
-    let mut h = Harness::builder()
-        .with_size(eframe::egui::vec2(1200.0, 1100.0))
-        .build_ui_state(
-            |ui, state: &mut State| state.render(ui),
-            variation_state(temp.path()),
-        );
+    let mut h = variation_state(temp.path()).harness(vec2(1200.0, 1100.0));
     for score in [true, false] {
         assert_eq!(
             chart_lines(&h, score, game_chart_color(score))[0].len(),
@@ -1194,9 +1125,7 @@ fn variation_charts_follow_nested_selection_and_restore_after_reopen() {
     let mut reopened = imported_state(temp.path(), "(;SZ[9];B[cc];W[gg];B[cg];W[gc])");
     reopened.snapshot.values = values;
     assert_eq!(reopened.review.document().unwrap().selected, 8);
-    let mut h = Harness::builder()
-        .with_size(eframe::egui::vec2(1200.0, 1100.0))
-        .build_ui_state(|ui, state: &mut State| state.render(ui), reopened);
+    let mut h = reopened.harness(vec2(1200.0, 1100.0));
     for score in [true, false] {
         assert_chart_line(
             &h,
@@ -1233,10 +1162,12 @@ fn variation_charts_follow_nested_selection_and_restore_after_reopen() {
 fn variation_chart_gaps_remain_disconnected_and_zero_results_refine_in_place() {
     let temp = tempfile::TempDir::new().unwrap();
     let mut state = variation_state(temp.path());
+    state.snapshot.values.remove(&3);
     state.snapshot.values.remove(&6);
-    let mut h = Harness::builder()
-        .with_size(eframe::egui::vec2(1200.0, 1100.0))
-        .build_ui_state(|ui, state: &mut State| state.render(ui), state);
+    let played_end = state.snapshot.values.get_mut(&4).unwrap();
+    played_end.score_lead = 0.0;
+    played_end.winrate = 0.0;
+    let mut h = state.harness(vec2(1200.0, 1100.0));
     for score in [true, false] {
         assert_chart_line(
             &h,
@@ -1249,6 +1180,24 @@ fn variation_chart_gaps_remain_disconnected_and_zero_results_refine_in_place() {
             },
         );
         let prefix = chart_lines(&h, score, game_chart_color(score));
+        let played = game_chart_color(score).gamma_multiply(0.3);
+        assert_chart_line(
+            &h,
+            score,
+            played,
+            if score {
+                &[[1.0, 1.0], [2.0, 2.0]]
+            } else {
+                &[[1.0, 30.0], [2.0, 40.0]]
+            },
+        );
+        let zero = chart_position(&prefix[0], score, 4.0, 0.0);
+        assert!(
+            has_circle(&h, h.get_by_label(chart_label(score)).rect(), |c| c.fill
+                == played
+                && c.center.distance(zero) < 0.1),
+            "isolated zero on the played game was hidden"
+        );
         let end = chart_position(&prefix[0], score, 4.0, if score { -3.0 } else { 5.0 });
         assert!(
             has_circle(&h, h.get_by_label(chart_label(score)).rect(), |c| c.fill
@@ -1314,12 +1263,7 @@ fn assert_chart_stroke(
 #[test]
 fn thinner_chart_curves_still_select_the_corresponding_position() {
     let temp = tempfile::TempDir::new().unwrap();
-    let mut h = Harness::builder()
-        .with_size(eframe::egui::vec2(1200.0, 1100.0))
-        .build_ui_state(
-            |ui, state: &mut State| state.render(ui),
-            variation_state(temp.path()),
-        );
+    let mut h = variation_state(temp.path()).harness(vec2(1200.0, 1100.0));
     for score in [true, false] {
         h.event(eframe::egui::Event::PointerGone);
         h.run();
@@ -1366,9 +1310,7 @@ fn variation_charts_extend_through_a_branch_longer_than_the_original_game() {
     }
     state.review.select(5).unwrap();
     state.sync();
-    let mut h = Harness::builder()
-        .with_size(eframe::egui::vec2(1200.0, 1100.0))
-        .build_ui_state(|ui, state: &mut State| state.render(ui), state);
+    let mut h = state.harness(vec2(1200.0, 1100.0));
     assert_chart_line(
         &h,
         true,
@@ -1401,12 +1343,7 @@ fn variation_charts_extend_through_a_branch_longer_than_the_original_game() {
 fn horizontal_navigation_keeps_the_selected_timeline_node_in_view() {
     let temp = tempfile::TempDir::new().unwrap();
     let sgf = format!("(;SZ[9]{})", ";B[];W[]".repeat(60));
-    let mut h = Harness::builder()
-        .with_size(eframe::egui::vec2(1200.0, 820.0))
-        .build_ui_state(
-            |ui, state: &mut State| state.render(ui),
-            imported_state(temp.path(), &sgf),
-        );
+    let mut h = imported_state(temp.path(), &sgf).harness(vec2(1200.0, 820.0));
     for _ in 0..80 {
         h.key_press(eframe::egui::Key::ArrowRight);
         h.run();
@@ -1444,9 +1381,7 @@ fn up_down_selects_variations_in_the_same_column_and_survives_reopen() {
     let mut state = imported_state(temp.path(), sgf);
     state.review.select(3).unwrap();
     state.sync();
-    let mut h = Harness::builder()
-        .with_size(eframe::egui::vec2(1200.0, 820.0))
-        .build_ui_state(|ui, state: &mut State| state.render(ui), state);
+    let mut h = state.harness(vec2(1200.0, 820.0));
     h.key_press(eframe::egui::Key::ArrowDown);
     h.run();
     assert_eq!(h.state().snapshot.document.as_ref().unwrap().selected, 6);
@@ -1521,9 +1456,7 @@ fn analysis_column_stays_fixed_when_playing_and_refining_a_variation() {
             suggestions: vec![],
         },
     );
-    let mut h = Harness::builder()
-        .with_size(eframe::egui::vec2(1200.0, 1000.0))
-        .build_ui_state(|ui, state: &mut State| state.render(ui), state);
+    let mut h = state.harness(vec2(1200.0, 1000.0));
     let score = h.get_by_label("SCORE LEAD · POINTS").rect();
     let winrate = h.get_by_label("WINRATE · BLACK %").rect();
     h.get_by_label("Play D6").click();
@@ -1765,9 +1698,7 @@ fn hidden_policy_preview_does_not_hide_the_recorded_moves_point_delta() {
                 suggestions: vec![],
             },
         );
-        let h = Harness::builder()
-            .with_size(eframe::egui::vec2(1200.0, 1100.0))
-            .build_ui_state(|ui, state: &mut State| state.render(ui), state);
+        let h = state.harness(vec2(1200.0, 1100.0));
         let label = if white {
             "Next recorded move: White D6"
         } else {
@@ -1809,9 +1740,7 @@ fn board_ai_toggle_starts_on_and_hides_candidates_without_disabling_review_input
         suggestions: suggestions(),
     };
     state.snapshot.values.insert(0, value.clone());
-    let mut h = Harness::builder()
-        .with_size(eframe::egui::vec2(1200.0, 1100.0))
-        .build_ui_state(|ui, state: &mut State| state.render(ui), state);
+    let mut h = state.harness(vec2(1200.0, 1100.0));
     let best = h.get_by_label("AI suggestion 1: D6").rect();
     assert!(
         has_circle(&h, best, |c| c.fill.b() > c.fill.r()
@@ -1912,9 +1841,7 @@ fn hiding_ai_moves_keeps_an_overlapping_played_moves_hollow_ring_and_point_delta
                 suggestions: moves,
             },
         );
-        let mut h = Harness::builder()
-            .with_size(eframe::egui::vec2(900.0, 680.0))
-            .build_ui_state(|ui, state: &mut State| state.render(ui), state);
+        let mut h = state.harness(vec2(900.0, 680.0));
         let label = if white {
             "Next recorded move: White D6"
         } else {
@@ -2133,9 +2060,7 @@ fn suggestions_are_ranked_blue_clickable_and_specific_to_the_position() {
             suggestions: suggestions(),
         },
     );
-    let mut h = Harness::builder()
-        .with_size(eframe::egui::vec2(1200.0, 1100.0))
-        .build_ui_state(|ui, state: &mut State| state.render(ui), state);
+    let mut h = state.harness(vec2(1200.0, 1100.0));
     if let Some(path) = std::env::var_os("KATASTRO_BOARD_PREVIEW") {
         h.run();
         h.render().unwrap().save(path).unwrap();
@@ -2259,12 +2184,7 @@ fn candidate_button_color(h: &Harness<'_, State>, label: &str) -> eframe::egui::
 #[test]
 fn all_scored_candidates_are_visible_on_board_and_a_later_played_candidate_has_one_delta() {
     let temp = tempfile::TempDir::new().unwrap();
-    let mut h = Harness::builder()
-        .with_size(eframe::egui::vec2(1200.0, 1100.0))
-        .build_ui_state(
-            |ui, state: &mut State| state.render(ui),
-            quality_state(temp.path(), false),
-        );
+    let mut h = quality_state(temp.path(), false).harness(vec2(1200.0, 1100.0));
     for (rank, column) in "ABCDEFGHJ".chars().enumerate() {
         if rank == 7 {
             assert!(
@@ -2325,12 +2245,7 @@ fn all_scored_candidates_are_visible_on_board_and_a_later_played_candidate_has_o
 fn candidate_gradient_uses_mover_relative_loss_not_rank_or_root_delta() {
     for white in [false, true] {
         let temp = tempfile::TempDir::new().unwrap();
-        let mut h = Harness::builder()
-            .with_size(eframe::egui::vec2(1200.0, 1100.0))
-            .build_ui_state(
-                |ui, state: &mut State| state.render(ui),
-                quality_state(temp.path(), white),
-            );
+        let mut h = quality_state(temp.path(), white).harness(vec2(1200.0, 1100.0));
         let best = candidate_fill(&h, "AI suggestion 1: A7");
         assert!(best.b() > best.r() && best.b() > best.g());
         let good = candidate_fill(&h, "AI suggestion 2: B7");
@@ -2471,9 +2386,7 @@ fn scarce_legal_choices_do_not_turn_bad_candidates_green_and_policy_best_is_neut
             ],
         },
     );
-    let mut h = Harness::builder()
-        .with_size(eframe::egui::vec2(1200.0, 1100.0))
-        .build_ui_state(|ui, state: &mut State| state.render(ui), state);
+    let mut h = state.harness(vec2(1200.0, 1100.0));
     let pass = h.get_by_label("2  Pass");
     let bounds = pass.rect();
     let pass_text = h
@@ -2597,9 +2510,7 @@ fn uncapped_candidate_sidebar_scrolls_without_moving_charts_and_creates_persiste
 #[test]
 fn next_move_is_a_hollow_dotted_ring_with_the_recorded_stone_color() {
     let temp = tempfile::TempDir::new().unwrap();
-    let mut h = Harness::builder()
-        .with_size(eframe::egui::vec2(1200.0, 1100.0))
-        .build_ui_state(|ui, state: &mut State| state.render(ui), state(temp.path()));
+    let mut h = state(temp.path()).harness(vec2(1200.0, 1100.0));
     for (label, color) in [
         ("Next recorded move: Black C7", eframe::egui::Color32::BLACK),
         ("Next recorded move: White G3", eframe::egui::Color32::WHITE),
@@ -2640,9 +2551,7 @@ fn player_colors_depth_and_navigation_legend_are_visible_without_arrow_glyphs() 
     let mut state = imported_state(temp.path(), "(;SZ[9]PB[Alice]PW[Bob];B[cc])");
     state.snapshot.running = true;
     state.snapshot.analysis_target = Some(1024);
-    let mut h = Harness::builder()
-        .with_size(eframe::egui::vec2(1200.0, 1100.0))
-        .build_ui_state(|ui, state: &mut State| state.render(ui), state);
+    let mut h = state.harness(vec2(1200.0, 1100.0));
     for (label, white) in [("Black player: Alice", false), ("White player: Bob", true)] {
         let rect = h.get_by_label(label).rect();
         assert!(
@@ -2686,9 +2595,7 @@ fn both_charts_fit_at_the_default_window_size_with_suggestions() {
             suggestions: suggestions(),
         },
     );
-    let h = Harness::builder()
-        .with_size(eframe::egui::vec2(1200.0, 860.0))
-        .build_ui_state(|ui, state: &mut State| state.render(ui), state);
+    let h = state.harness(vec2(1200.0, 860.0));
     let controls = h.get_by_label("Previous move").rect();
     for label in ["Score lead chart", "Winrate chart"] {
         let chart = h
@@ -2748,9 +2655,7 @@ fn ai_and_recorded_markers_keep_equal_circles_when_the_recorded_score_is_pending
             suggestions: suggestions(),
         },
     );
-    let h = Harness::builder()
-        .with_size(eframe::egui::vec2(1200.0, 860.0))
-        .build_ui_state(|ui, state: &mut State| state.render(ui), state);
+    let h = state.harness(vec2(1200.0, 860.0));
     let suggested = h.get_by_label("AI suggestion 1: D6").rect();
     let played = h.get_by_label("Next recorded move: Black C7").rect();
     assert!(
@@ -2805,12 +2710,7 @@ fn evaluated_state(root: &Path, white: bool) -> State {
 fn move_circles_compare_signed_score_changes_for_black_and_white() {
     for white in [false, true] {
         let temp = tempfile::TempDir::new().unwrap();
-        let h = Harness::builder()
-            .with_size(eframe::egui::vec2(1200.0, 860.0))
-            .build_ui_state(
-                |ui, state: &mut State| state.render(ui),
-                evaluated_state(temp.path(), white),
-            );
+        let h = evaluated_state(temp.path(), white).harness(vec2(1200.0, 860.0));
         for (label, expected) in [
             ("AI suggestion 1: D6", if white { "+1.3" } else { "+1.2" }),
             ("AI suggestion 2: E5", "-1.5"),
@@ -2859,9 +2759,7 @@ fn a_played_ai_candidate_has_one_label_and_uses_the_same_search_estimate() {
             suggestions: vec![],
         },
     );
-    let mut h = Harness::builder()
-        .with_size(eframe::egui::vec2(1200.0, 860.0))
-        .build_ui_state(|ui, state: &mut State| state.render(ui), state);
+    let mut h = state.harness(vec2(1200.0, 860.0));
     let suggested = h.get_by_label("AI suggestion 1: D6").rect();
     let played = h.get_by_label("Next recorded move: Black D6").rect();
     assert_eq!(
@@ -2892,9 +2790,7 @@ fn recorded_delta_refines_and_survives_cache_reopen_without_an_engine() {
         let key = state.review.analysis_key(*node, &profile).unwrap();
         state.review.store_analysis(&key, value).unwrap();
     }
-    let mut h = Harness::builder()
-        .with_size(eframe::egui::vec2(1200.0, 860.0))
-        .build_ui_state(|ui, state: &mut State| state.render(ui), state);
+    let mut h = state.harness(vec2(1200.0, 860.0));
     let ring = h.get_by_label("Next recorded move: Black C7").rect();
     assert_eq!(painted_text_in(&h, ring), vec!["-2.5"]);
     h.state_mut()
@@ -2912,9 +2808,7 @@ fn recorded_delta_refines_and_survives_cache_reopen_without_an_engine() {
     drop(h);
     let mut reopened = imported_state(temp.path(), "(;SZ[9];B[cc])");
     reopened.snapshot.values = reopened.review.cached_analysis(&profile).unwrap();
-    let h = Harness::builder()
-        .with_size(eframe::egui::vec2(1200.0, 860.0))
-        .build_ui_state(|ui, state: &mut State| state.render(ui), reopened);
+    let h = reopened.harness(vec2(1200.0, 860.0));
     let ring = h.get_by_label("Next recorded move: Black C7").rect();
     assert_eq!(painted_text_in(&h, ring), vec!["-1.0"]);
     assert_eq!(
@@ -2952,9 +2846,7 @@ fn delta_labels_fit_inside_equal_circles_on_a_19_by_19_board() {
             suggestions: vec![],
         },
     );
-    let h = Harness::builder()
-        .with_size(eframe::egui::vec2(900.0, 680.0))
-        .build_ui_state(|ui, state: &mut State| state.render(ui), state);
+    let h = state.harness(vec2(900.0, 680.0));
     for (label, expected) in [
         ("AI suggestion 1: D16", "+98.0"),
         ("AI suggestion 2: E15", "-110.0"),
@@ -3008,12 +2900,7 @@ fn labeled_tree_coordinates_select_alternatives_and_pass() {
     use egui_kittest::kittest::NodeT;
     let temp = tempfile::TempDir::new().unwrap();
     let sgf = "(;SZ[19];B[pd](;W[dp];B[];W[pp];B[dd])(;W[jj](;B[qn];W[nq])(;B[mk])))";
-    let mut h = Harness::builder()
-        .with_size(eframe::egui::vec2(1200.0, 860.0))
-        .build_ui_state(
-            |ui, state: &mut State| state.render(ui),
-            imported_state(temp.path(), sgf),
-        );
+    let mut h = imported_state(temp.path(), sgf).harness(vec2(1200.0, 860.0));
     for (id, caption, number, point) in [
         (2, "D4", "2", Some(Point::new(3, 15))),
         (6, "K10", "2", Some(Point::new(9, 9))),
@@ -3082,12 +2969,7 @@ fn labeled_tree_distinguishes_start_setup_notes_and_played_root_moves() {
             vec![vec!["1", "H2"], vec!["2", "Pass"]],
         ),
     ] {
-        let h = Harness::builder()
-            .with_size(eframe::egui::vec2(900.0, 680.0))
-            .build_ui_state(
-                |ui, state: &mut State| state.render(ui),
-                imported_state(temp.path(), sgf),
-            );
+        let h = imported_state(temp.path(), sgf).harness(vec2(900.0, 680.0));
         for (id, captions) in expected.into_iter().enumerate() {
             let hit = h.get_by_label(&format!("Tree node {id}")).rect();
             assert_eq!(painted_text_in(&h, hit), captions);
@@ -3102,9 +2984,7 @@ fn labeled_tree_keeps_three_digit_moves_and_edge_coordinates_readable_after_scro
     let mut state = imported_state(temp.path(), &sgf);
     state.review.select(119).unwrap();
     state.sync();
-    let h = Harness::builder()
-        .with_size(eframe::egui::vec2(900.0, 680.0))
-        .build_ui_state(|ui, state: &mut State| state.render(ui), state);
+    let h = state.harness(vec2(900.0, 680.0));
     let caption = tree_caption_bounds(&h, 119, "T19");
     let number = tree_caption_bounds(&h, 119, "120");
     let hit = h.get_by_label("Tree node 119").rect();

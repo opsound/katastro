@@ -31,20 +31,9 @@ fn paint_chart_series(
     color: Color32,
     width: f32,
 ) {
-    let mut segment = Vec::new();
-    for point in points.iter().copied().chain(std::iter::once(None)) {
-        if let Some(point) = point {
-            segment.push(point);
-        } else {
-            if segment.len() >= 2 {
-                plot.line(
-                    Line::new(name, std::mem::take(&mut segment))
-                        .color(color)
-                        .width(width),
-                );
-            }
-            segment.clear();
-        }
+    for segment in points.split(Option::is_none).filter(|run| run.len() >= 2) {
+        let line: Vec<_> = segment.iter().flatten().copied().collect();
+        plot.line(Line::new(name, line).color(color).width(width));
     }
     plot.points(
         Points::new(name, points.iter().flatten().copied().collect::<Vec<_>>())
@@ -58,27 +47,14 @@ pub(super) fn chart(ui: &mut egui::Ui, snapshot: &Snapshot, score: bool, out: &m
         return;
     };
     let all = chart_points(snapshot, score);
-    let mut path = doc.mainline.clone();
-    let fork = if doc.mainline.contains(&doc.selected) {
-        None
-    } else {
-        path = doc.path(doc.selected).unwrap_or_default();
+    let branch = (!doc.mainline.contains(&doc.selected)).then(|| {
+        let mut path = doc.path(doc.selected).unwrap_or_default();
         while let Some(child) = path.last().and_then(|id| doc.continuation(*id)) {
             path.push(child);
         }
-        Some(
-            path.iter()
-                .zip(&doc.mainline)
-                .take_while(|(a, b)| a == b)
-                .count()
-                .saturating_sub(1),
-        )
-    };
-    let variation: Vec<_> = path
-        .iter()
-        .enumerate()
-        .map(|(index, id)| assessment(snapshot, *id, score).map(|value| [index as f64, value]))
-        .collect();
+        path
+    });
+    let path = branch.as_deref().unwrap_or(&doc.mainline);
     let game_color = if score {
         ACCENT
     } else {
@@ -99,7 +75,21 @@ pub(super) fn chart(ui: &mut egui::Ui, snapshot: &Snapshot, score: bool, out: &m
         plot = plot.include_y(-5.0).include_y(5.0);
     }
     let response = plot.show(ui, |plot_ui| {
-        if let Some(fork) = fork {
+        if let Some(branch) = &branch {
+            let fork = branch
+                .iter()
+                .zip(&doc.mainline)
+                .take_while(|(a, b)| a == b)
+                .count()
+                .saturating_sub(1);
+            let variation: Vec<_> = branch
+                .iter()
+                .enumerate()
+                .skip(fork)
+                .map(|(index, id)| {
+                    assessment(snapshot, *id, score).map(|value| [index as f64, value])
+                })
+                .collect();
             paint_chart_series(
                 plot_ui,
                 "Played continuation",
@@ -108,13 +98,7 @@ pub(super) fn chart(ui: &mut egui::Ui, snapshot: &Snapshot, score: bool, out: &m
                 1.0,
             );
             paint_chart_series(plot_ui, "Shared game", &all[..=fork], game_color, 1.5);
-            paint_chart_series(
-                plot_ui,
-                "Variation",
-                &variation[fork..],
-                VARIATION_COLOR,
-                2.0,
-            );
+            paint_chart_series(plot_ui, "Variation", &variation, VARIATION_COLOR, 2.0);
         } else {
             paint_chart_series(plot_ui, "Played game", &all, game_color, 1.5);
         }

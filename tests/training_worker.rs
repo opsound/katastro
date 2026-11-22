@@ -12,6 +12,9 @@ use std::{
     net::{TcpListener, TcpStream},
     time::{Duration, Instant},
 };
+#[path = "support/controlled_engine.rs"]
+mod controlled_engine;
+use controlled_engine::{config, connection, query};
 #[path = "support/training.rs"]
 mod support;
 fn until(client: &Client, done: impl Fn(&Snapshot) -> bool) -> Snapshot {
@@ -33,29 +36,13 @@ fn setup(root: &std::path::Path, listener: &TcpListener) -> (Options, std::path:
         b"(;SZ[9]PB[me]PW[opponent];B[aa];W[ba];B[ca];W[da])",
     )
     .unwrap();
-    let model = root.join("model");
-    std::fs::write(
-        &model,
-        format!("controlled:{}", listener.local_addr().unwrap()),
-    )
-    .unwrap();
-    let config = EngineConfig {
-        analysis: Default::default(),
-        executable: env!("CARGO_BIN_EXE_katastro-test-engine").into(),
-        model,
-    };
+    let config = config(root, listener);
     let mut options = Options::new(root.join("reviews"), root.join("cache"), config);
     options.human_model = root.join("human");
     std::fs::write(&options.human_model, b"human-fixture").unwrap();
     options.model_sha256 = digest(b"human-fixture");
     (options, source)
 }
-fn query(control: &mut BufReader<TcpStream>) -> Value {
-    let mut line = String::new();
-    control.read_line(&mut line).unwrap();
-    serde_json::from_str(&line).unwrap()
-}
-
 // The UI must be notified of startup errors as well as progress, even before
 // an engine exists. This protects the shared background-publishing refactor.
 #[test]
@@ -111,11 +98,7 @@ fn background_training_resumes_before_grading_and_cancels_a_thinking_opponent() 
         None,
     );
     until(&client, |s| s.phase == Phase::Searching);
-    let (stream, _) = listener.accept().unwrap();
-    stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
-        .unwrap();
-    let mut engine = BufReader::new(stream);
+    let mut engine = connection(&listener);
     // Five screening positions, with replies in reverse order.
     let mut queries = Vec::new();
     for _ in 0..5 {
@@ -192,13 +175,9 @@ fn leaving_a_report_cancels_chart_work_before_the_next_attempt() {
             },
             None,
         );
-        let (stream, _) = listener.accept().unwrap();
-        stream
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
+        let mut engine = connection(&listener);
         let (events, received) = std::sync::mpsc::channel();
         let serving = std::thread::spawn(move || {
-            let mut engine = BufReader::new(stream);
             let mut held = vec![];
             let mut hold = true;
             loop {
@@ -493,11 +472,7 @@ fn training_worker_limits_discovery_to_the_configured_parallel_positions() {
         },
         None,
     );
-    let (stream, _) = listener.accept().unwrap();
-    stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
-        .unwrap();
-    let mut engine = BufReader::new(stream);
+    let mut engine = connection(&listener);
     for _ in 0..2 {
         assert_eq!(query(&mut engine)["maxVisits"], 64);
     }

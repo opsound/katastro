@@ -156,35 +156,30 @@ impl Worker {
             discovery: discovery::Discovery::new(reviews, cache),
         })
     }
-    fn publish(&mut self, publish: &impl Fn(Snapshot)) {
-        self.state.document = self.review.document().cloned();
-        self.state.source = self.review.source().map(PathBuf::from);
-        let (board, numbers) = self
-            .review
-            .document()
-            .and_then(|doc| {
-                match self.number_from {
-                    Some(anchor) => doc.numbered_board(doc.selected, anchor),
-                    None => doc.board(doc.selected).map(|board| (board, Vec::new())),
-                }
-                .ok()
-            })
-            .unzip();
-        self.state.board = board;
-        self.state.move_numbers = numbers.unwrap_or_default();
+    fn publish(&self, publish: &impl Fn(Snapshot)) {
+        let mut snapshot = self.state.clone();
+        snapshot.document = self.review.document().cloned();
+        snapshot.source = self.review.source().map(PathBuf::from);
         if let Some(scheduler) = &self.scheduler {
-            self.state.values = scheduler.values.clone();
-            self.state.coverage = scheduler.coverage();
-        } else if let Some(doc) = self.review.document() {
-            self.state.coverage = (
+            snapshot.values = scheduler.values.clone();
+        }
+        if let Some(doc) = &snapshot.document {
+            if let Ok((board, numbers)) = match self.number_from {
+                Some(anchor) => doc.numbered_board(doc.selected, anchor),
+                None => doc.board(doc.selected).map(|board| (board, Vec::new())),
+            } {
+                snapshot.board = Some(board);
+                snapshot.move_numbers = numbers;
+            }
+            snapshot.coverage = (
                 doc.mainline
                     .iter()
-                    .filter(|id| self.state.values.contains_key(id))
+                    .filter(|id| snapshot.values.contains_key(id))
                     .count(),
                 doc.mainline.len(),
             );
         }
-        publish(self.state.clone());
+        publish(snapshot);
     }
     fn pause(&mut self) {
         self.discovery.pause();
@@ -205,7 +200,11 @@ impl Worker {
         let mut values = self.review.cached_analysis(&profile)?;
         self.discovery.started(profile.clone(), &values);
         if self.values_profile.as_ref() == Some(&profile) {
-            for (node, value) in &self.state.values {
+            let previous = self
+                .scheduler
+                .as_ref()
+                .map_or(&self.state.values, |s| &s.values);
+            for (node, value) in previous {
                 let combined = values
                     .get(node)
                     .map_or_else(|| value.clone(), |old| old.merge(value));
@@ -219,6 +218,8 @@ impl Worker {
         let mut scheduler = Scheduler::new(self.generation, doc, profile, values)
             .with_settings(&self.state.config.analysis)?;
         self.unsupported_mainline = scheduler.unsupported();
+        // The scheduler owns the live results until pause moves them back.
+        self.state.values.clear();
         self.scheduler = Some(scheduler);
         self.state.running = true;
         self.state.status = "Analyzing · quick chart first, then refinement".into();

@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 use katastro::{
     Result,
-    pandanet::{Credentials, Service},
+    archive::{Cancellation, Command, Credentials, Options, Service, Snapshot},
 };
 use std::{
     collections::HashMap,
@@ -110,4 +110,27 @@ pub fn page(current: usize, total: usize, games: &[usize]) -> String {
 }
 pub fn sgf(id: usize) -> String {
     format!("(;FF[4]GM[1]SZ[9]KM[6.5]PB[opponent]PW[example]DT[2026-11-{id:02}];B[cc];W[gg];B[cg])")
+}
+
+pub fn seed_account(option: &Options, username: &str, password: &str) -> Snapshot {
+    let mut service = Service::open_for(
+        &option.root,
+        &option.endpoint,
+        option.credentials.clone(),
+        option.server,
+    )
+    .unwrap();
+    for command in [
+        Command::Connect {
+            username: username.into(),
+            password: password.into(),
+            remember: false,
+        },
+        Command::SetAutomatic(false),
+    ] {
+        service
+            .execute(command, 1, &Cancellation::default(), &mut |_| {})
+            .unwrap();
+    }
+    service.snapshot()
 }

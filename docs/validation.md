@@ -908,3 +908,15 @@ All 226 routine workspace tests passed, with 25 opt-in checks excluded. Formatti
 Games starts with the rank chart hidden. The desktop test opens a library with seven games, toggles **Show rank history** on and off, and counts fully visible game rows in each state. Showing the chart leaves at least five complete rows in the test window, and hiding it restores the initial row count. The test then shows the chart again and filters it to OGS.
 
 The original UI failed the hidden-on-open assertion. Inverting the checkbox condition reproduced that failure. After restoration, all 226 routine workspace tests, formatting, strict Clippy, and strict verification of the rebuilt app signature passed.
+
+## Review, archive and training audit
+
+The audit removed 15 production Rust lines and 218 test Rust lines on balance. A rendered score and winrate test now checks gaps and isolated zero values on both the played game and a variation. Dropping zero-valued markers failed this test. The desktop interaction test inside the library crate still checks relative move numbers through clicks, branch navigation and reopening.
+
+A loopback Fox rescan of 6,000 already downloaded synthetic 19×19 games (140 moves each, 100 entries per page) took a median 1,252 ms before and 755 ms after indexing game IDs once per sync. Eight debug-profile sweeps ran per version. Omitting the file check skipped a needed re-download. Bypassing the Games server filter showed a Pandanet row in the Fox view.
+
+Training screening now ranks candidates with the point loss it already computed. On a 193-position 19×19 SGF with fixed engine replies, full-history evaluation lookups fell from 240 to 192. Reversing the sort selected move 0 instead of move 2 and failed the score-selection test.
+
+On a fully cached 201-position 19×19 SGF, median release-build CPU time per scheduler poll fell from 31.2 to 19.4 µs. With an added variation it fell from 36.2 to 19.5 µs. Each of five paired runs took nine samples of 2,000 polls. Publishing a worker snapshot with cached ownership maps allocated 754,621 bytes, down from 1,508,561. Breaking the result handoff failed the ownership and pause/resume integration checks.
+
+The audit suite passed 225 routine tests and five separately invoked real KataGo tests, including HumanSL. Formatting, strict Clippy and the no-GUI library build passed.

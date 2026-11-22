@@ -1,5 +1,6 @@
 //! Bounded archive scanning, concurrent downloads, and retry policy.
 use super::*;
+use std::collections::{HashMap, HashSet};
 impl Service {
     pub(super) fn sync(
         &mut self,
@@ -37,7 +38,13 @@ impl Service {
         let mut page_number = 1;
         let mut scanned = 0usize;
         let mut failed = 0usize;
-        let mut seen = std::collections::HashSet::new();
+        let originals: HashMap<_, _> = self
+            .state
+            .games
+            .iter()
+            .map(|g| (g.id.clone(), g.path.clone()))
+            .collect();
+        let mut seen = HashSet::new();
         loop {
             cancel.check()?;
             let page = self.remote.page(
@@ -68,21 +75,14 @@ impl Service {
                 .state
                 .limit
                 .map_or(usize::MAX, |limit| limit.saturating_sub(scanned));
-            let entries: Vec<_> = page.entries.into_iter().take(remaining).collect();
-            let has_entries = !entries.is_empty();
-            scanned += entries.len();
+            let entries = page.entries.into_iter().take(remaining);
+            let count = entries.len();
+            scanned += count;
             let pending: Vec<_> = entries
-                .into_iter()
-                .filter(|entry| {
-                    !self
-                        .state
-                        .games
-                        .iter()
-                        .any(|game| game.id == entry.game.id && game.path.is_file())
-                })
+                .filter(|entry| !originals.get(&entry.game.id).is_some_and(|p| p.is_file()))
                 .filter(|entry| seen.insert(entry.game.id.clone()))
                 .collect();
-            let all_known = has_entries && pending.is_empty();
+            let all_known = count > 0 && pending.is_empty();
             for batch in pending.chunks(self.parallel_downloads) {
                 cancel.check()?;
                 let results = if self.parallel_downloads == 1 {

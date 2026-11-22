@@ -169,6 +169,14 @@ impl Scheduler {
         {
             return Ok(None);
         }
+        // SGF import normally numbers the entire played line before any variation.
+        let first_possible_variation = self
+            .doc
+            .mainline
+            .iter()
+            .enumerate()
+            .position(|(id, played)| id != *played)
+            .unwrap_or(self.doc.mainline.len());
         for visits in budgets(self.limit()) {
             let ready = |id: &NodeId| {
                 !self.failed.contains(id)
@@ -186,10 +194,7 @@ impl Scheduler {
             if !nodes.is_empty() {
                 return self.request(&nodes, visits, -10).map(Some);
             }
-            if let Some(node) = (0..self.doc.nodes.len())
-                .filter(|id| !self.doc.mainline.contains(id))
-                .find(ready)
-            {
+            if let Some(node) = (first_possible_variation..self.doc.nodes.len()).find(ready) {
                 return self.request(&[node], visits, -10).map(Some);
             }
             // Finish reusable coverage before deeper searches compete with its tail.

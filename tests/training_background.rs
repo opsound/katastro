@@ -1,15 +1,17 @@
 use katastro::{
-    engine::{Engine, EngineConfig},
+    engine::Engine,
     training::{Phase, Settings, Trainer},
     worker::{Client, Command, Snapshot},
 };
 use serde_json::{Value, json};
 use std::{
-    io::{BufRead, BufReader, Write},
-    net::{TcpListener, TcpStream},
-    path::Path,
+    io::{BufRead, Write},
+    net::TcpListener,
     time::{Duration, Instant},
 };
+#[path = "support/controlled_engine.rs"]
+mod controlled_engine;
+use controlled_engine::{config, connection, query};
 #[path = "support/training.rs"]
 mod support;
 
@@ -23,31 +25,6 @@ fn until(c: &Client, done: impl Fn(&Snapshot) -> bool) -> Snapshot {
         if done(&s) {
             return s;
         }
-    }
-}
-fn query(e: &mut BufReader<TcpStream>) -> Value {
-    let mut line = String::new();
-    e.read_line(&mut line).unwrap();
-    serde_json::from_str(&line).unwrap()
-}
-fn connection(listener: &TcpListener) -> BufReader<TcpStream> {
-    let (stream, _) = listener.accept().unwrap();
-    stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
-        .unwrap();
-    BufReader::new(stream)
-}
-fn config(root: &Path, listener: &TcpListener) -> EngineConfig {
-    let model = root.join("model");
-    std::fs::write(
-        &model,
-        format!("controlled:{}", listener.local_addr().unwrap()),
-    )
-    .unwrap();
-    EngineConfig {
-        analysis: Default::default(),
-        executable: env!("CARGO_BIN_EXE_katastro-test-engine").into(),
-        model,
     }
 }
 // Benefit: idle time produces reusable exercises, and opening a game immediately

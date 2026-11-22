@@ -157,7 +157,9 @@ impl Trainer {
         let doc = self.game.as_ref().unwrap().doc.clone();
         let color = player_color(&doc, &self.account).unwrap();
         if let Some(index) = self.confirming.take()
-            && self.qualifies(&doc, index, color, GRADE_VISITS, MAJOR_LOSS)?
+            && self
+                .qualifying_loss(&doc, index, color, GRADE_VISITS, MAJOR_LOSS)?
+                .is_some()
         {
             if let Some(candidate) = self.candidate(&doc, index)? {
                 // Backfill grouping for legacy attempts without changing their grades.
@@ -193,15 +195,12 @@ impl Trainer {
             let mut candidates = Vec::new();
             for index in 0..doc.mainline.len().saturating_sub(1) {
                 if horizon(&doc, index, 2).is_some()
-                    && self.qualifies(&doc, index, color, SCREEN_VISITS, 3.0)?
+                    && let Some(loss) =
+                        self.qualifying_loss(&doc, index, color, SCREEN_VISITS, 3.0)?
                 {
-                    let a = self.value(&doc, doc.mainline[index], SCREEN_VISITS)?;
-                    let b = self.value(&doc, doc.mainline[index + 1], SCREEN_VISITS)?;
-                    candidates.push((
-                        index,
-                        score(a, color) - score(b, color),
-                        legacy.contains(&self.problem_key(&doc, index)?),
-                    ));
+                    let completed =
+                        !legacy.is_empty() && legacy.contains(&self.problem_key(&doc, index)?);
+                    candidates.push((index, loss, completed));
                 }
             }
             // Map old completions first, even if another occurrence has a larger loss.
@@ -244,27 +243,25 @@ impl Trainer {
         }
         Ok(())
     }
-}
-
-impl Trainer {
-    fn qualifies(
+    fn qualifying_loss(
         &self,
         doc: &Document,
         index: usize,
         color: Color,
         visits: u64,
-        loss: f64,
-    ) -> Result<bool> {
+        threshold: f64,
+    ) -> Result<Option<f64>> {
         if doc.nodes[doc.mainline[index + 1]]
             .played
             .is_none_or(|m| m.color != color)
             || doc.board(doc.mainline[index])?.next != color
         {
-            return Ok(false);
+            return Ok(None);
         }
         let a = score(self.value(doc, doc.mainline[index], visits)?, color);
         let b = score(self.value(doc, doc.mainline[index + 1], visits)?, color);
-        Ok(a - b >= loss)
+        let loss = a - b;
+        Ok((loss >= threshold).then_some(loss))
     }
     pub(super) fn problem_key(&self, doc: &Document, index: usize) -> Result<String> {
         Ok(digest(&serde_json::to_vec(&(

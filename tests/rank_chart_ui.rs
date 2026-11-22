@@ -1,20 +1,18 @@
 #![cfg(feature = "desktop")]
+#[path = "support/archive_ui.rs"]
+mod archive_ui;
 #[path = "support/pandanet/mod.rs"]
 mod support;
 
+use archive_ui::{archive_desktop, wait_for};
 use eframe::egui::{self, Color32, Pos2, Shape};
 use egui_kittest::{Harness, kittest::Queryable};
 use katastro::{
     archive::{Options, Service},
     desktop::DesktopApp,
-    engine::EngineConfig,
 };
 use rusqlite::params;
-use std::{
-    path::Path,
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{path::Path, sync::Arc};
 
 // Reopen a pre-existing library so the graph and the rows use the same saved metadata.
 fn seed(option: &Options, names: &[(&str, &str, &str)]) {
@@ -65,29 +63,13 @@ fn desktop(
         option.credentials = Arc::new(support::Vault::default());
         seed(option, rows);
     }
-    let mut h = Harness::builder().with_size(size).build_eframe(|cc| {
-        DesktopApp::with_archives(
-            &cc.egui_ctx,
-            root.join("reviews"),
-            root.join("cache"),
-            EngineConfig {
-                executable: "missing".into(),
-                model: "missing".into(),
-                analysis: Default::default(),
-            },
-            None,
-            options,
-        )
-    });
+    let mut h = archive_desktop(root, options, size);
     h.get_by_label("Games").click();
     let count: usize = games.iter().map(|rows| rows.len()).sum();
     let expected = format!("{count} synced games");
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while h.query_by_label(&expected).is_none() {
-        h.step();
-        assert!(Instant::now() < deadline, "library snapshots never arrived");
-        std::thread::yield_now();
-    }
+    wait_for(&mut h, "library snapshots never arrived", |h| {
+        h.query_by_label(&expected).is_some()
+    });
     h.run_steps(3);
     h
 }
