@@ -190,11 +190,11 @@ fn leaving_a_report_cancels_chart_work_before_the_next_attempt() {
                 }
                 let q: Value = serde_json::from_str(&line).unwrap();
                 if q["action"] == "terminate_all" {
-                    events.send("canceled").unwrap();
                     hold = false;
                     for stale in held.drain(..) {
                         finish(&mut engine, &stale);
                     }
+                    events.send("canceled").unwrap();
                     continue;
                 }
                 let turn = q["moves"].as_array().unwrap().len();
