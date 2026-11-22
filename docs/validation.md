@@ -952,3 +952,11 @@ A desktop test opens an offline library with Pandanet and OGS games either side 
 The new desktop checks first failed when the time view was absent. Counting the current period as its own comparison then removed an expected drop of 100 percentage points. Disabling the hourly toggle hid the expected midnight row. Shifting the six-hour boundaries failed the calendar test. Discarding an unanalyzed game’s outcome failed an offline SGF and SQLite test where the archived result disagreed with the downloaded original.
 
 A separate desktop test holds one SGF read open while a win and a draw are already visible. Before the loading indicator was added, it reported two games without results. The test expects one draw throughout the scan and a win rate that changes from 100% to 50% when the last result arrives.
+
+## Games overview
+
+The desktop tests use a saved date range, scored and unscored SGFs, and a draw. The Overview reports two wins and two losses for a 50% win rate, one comeback in one classified win, and one blunder in two classified losses. Searching for an opponent updates both comparison periods. Raising the blunder threshold above a 22-point gain removes that game from the blunder count while preserving the loss. Counting only classified games dropped the overall rate to 33% and failed the test. Reversing the player colors failed a separate test that uses an original SGF whose colors disagree with its archive index.
+
+Rank history starts collapsed in Overview. A desktop test narrows the dates and searches among games with identical timestamps. Including the previous period added an extra point. Ignoring the search displayed the wrong latest rank. Desktop geometry checks cover chart ticks, all seven weekdays in the default overview, and scrolling down to the last hourly result with the filters and Close button still accessible.
+
+To render the synthetic library with a Metal-capable desktop, run `KATASTRO_PLAY_TIMES_PREVIEW=/tmp/games-overview.png cargo test --test game_categories_ui wins_by_play_time`. For the expanded rank graph, run `KATASTRO_RANK_HISTORY_PREVIEW=/tmp/overview-ranks.png cargo test --test rank_chart_ui games_overlays`.

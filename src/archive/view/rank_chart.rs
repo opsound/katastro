@@ -1,11 +1,11 @@
 //! Recorded account ranks, aligned to the calendar dates in the archive.
 use crate::archive::{
     Server, Snapshot,
+    period::{Bucket, Windows},
     rank_history::{rank_label, timestamp_label},
 };
 use eframe::egui::{self, Color32, WidgetInfo, WidgetType};
 use egui_plot::{AxisHints, HoverPosition, Line, Plot, PlotPoint, Points, uniform_grid_spacer};
-use std::path::Path;
 
 const HOUR: f64 = 3600.;
 const DAY: f64 = 24. * HOUR;
@@ -19,17 +19,32 @@ fn style(server: Server) -> (Color32, f32, f32) {
     }
 }
 
-pub(super) fn show(ui: &mut egui::Ui, states: &[(&Snapshot, &Path)], filter: Option<Server>) {
+pub(super) fn show(
+    ui: &mut egui::Ui,
+    states: &[&Snapshot],
+    filter: Option<Server>,
+    period: Windows,
+    query: &str,
+) {
     let mut series = Vec::new();
     for server in [Server::Pandanet, Server::Fox, Server::Ogs] {
-        if let Some((state, _)) = states.iter().find(|(s, _)| {
-            s.server == server && filter.is_none_or(|f| server == f) && !s.rank_history.is_empty()
-        }) {
-            let points: Vec<_> = state
-                .rank_history
-                .iter()
-                .map(|p| PlotPoint::new(p.timestamp as f64, p.level))
-                .collect();
+        let Some(state) = states
+            .iter()
+            .find(|s| s.server == server && filter.is_none_or(|f| f == server))
+        else {
+            continue;
+        };
+        let points: Vec<_> = state
+            .rank_history
+            .iter()
+            .filter_map(|p| {
+                let game = state.games.get(p.game_index)?;
+                (period.bucket(&game.date) == Some(Bucket::Current)
+                    && super::table::matches_search(game, state, query))
+                .then(|| PlotPoint::new(p.timestamp as f64, p.level))
+            })
+            .collect();
+        if !points.is_empty() {
             series.push((server, points));
         }
     }
@@ -52,22 +67,19 @@ pub(super) fn show(ui: &mut egui::Ui, states: &[(&Snapshot, &Path)], filter: Opt
     }
     let intraday = last - first < 2. * DAY;
     ui.horizontal_wrapped(|ui| {
-        ui.strong("Rank history")
-            .on_hover_text("Each point shows your rank recorded in a synced game on that server.");
-        ui.add_space(6.);
         for (server, points) in &series {
             let level = points.last().unwrap().y as i32;
             ui.colored_label(
                 style(*server).0,
                 format!("{}  {}", server.label(), rank_label(level)),
             )
-            .on_hover_text("Latest recorded rank");
+            .on_hover_text("Your latest recorded rank among the matching games on this server.");
         }
     });
 
     let x_padding = (HOUR - (last - first)).max(0.) * 0.5;
     let y_padding = if lowest == highest { 2. } else { 0.5 };
-    let height = (ui.available_height() * 0.34).clamp(98., if first == last { 114. } else { 160. });
+    let height = if first == last { 114. } else { 160. };
     let color = ui.visuals().text_color();
     let response = Plot::new("library-rank-history")
         .height(height)

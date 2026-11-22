@@ -19,26 +19,25 @@ pub(super) fn show(
     previous: Option<&PlayTimes>,
     by_hour: &mut bool,
 ) {
-    ui.horizontal_wrapped(|ui| {
-        ui.checkbox(by_hour, "By hour")
-            .on_hover_text("Show each local hour separately.");
-        ui.weak("Times are local to your Mac.").on_hover_text(
-            "Fox records the start time, OGS records the finish time, and Pandanet supplies its archived game time.",
-        );
-        for (count, prefix) in [
-            (current.unknown_outcome, ""),
-            (
-                previous.map_or(0, |p| p.unknown_outcome),
-                "Previous period · ",
-            ),
-        ] {
-            if count > 0 {
-                let unit = if count == 1 { "game" } else { "games" };
-                ui.weak(format!("{prefix}{count} {unit} without a win/loss result"));
-            }
-        }
-    });
+    let colors = |ui: &mut egui::Ui| {
+        ui.heading("Record by color");
+        grid(ui, "Record by color", previous.is_some(), |ui| {
+            row(
+                ui,
+                "As Black",
+                current.as_black,
+                previous.map(|p| p.as_black),
+            );
+            row(
+                ui,
+                "As White",
+                current.as_white,
+                previous.map(|p| p.as_white),
+            );
+        });
+    };
     let weekdays = |ui: &mut egui::Ui| {
+        ui.heading("Day of the week");
         grid(ui, "Day of the week", previous.is_some(), |ui| {
             for (i, day) in DAYS.iter().enumerate() {
                 row(
@@ -56,7 +55,15 @@ pub(super) fn show(
             );
         });
     };
-    let times = |ui: &mut egui::Ui| {
+    let mut times = |ui: &mut egui::Ui| {
+        ui.horizontal_wrapped(|ui| {
+            ui.heading("Time of day");
+            ui.checkbox(by_hour, "By hour")
+                .on_hover_text("Show each local hour separately.");
+            ui.weak("Local time").on_hover_text(
+                "Times use your Mac’s time zone. Fox records the start, OGS records the finish, and Pandanet supplies the archived game time.",
+            );
+        });
         grid(ui, "Time of day", previous.is_some(), |ui| {
             if *by_hour {
                 for (i, record) in current.hours.iter().enumerate() {
@@ -81,34 +88,35 @@ pub(super) fn show(
             );
         });
     };
-    let height = ui.available_height()
-        - ui.spacing().interact_size.y
-        - 3. * ui.spacing().item_spacing.y
-        - 6.;
-    egui::ScrollArea::vertical()
-        .id_salt("game-win-loss-scroll")
-        .max_height(height.max(0.))
-        .auto_shrink([false, false])
-        .show(ui, |ui| {
-            if ui.available_width() >= if previous.is_some() { 720. } else { 490. } {
-                ui.columns(2, |columns| {
-                    weekdays(&mut columns[0]);
-                    times(&mut columns[1]);
-                });
-            } else {
-                weekdays(ui);
-                ui.separator();
-                times(ui);
-            }
+    let column_width = if previous.is_some() { 315. } else { 205. };
+    let gap = ui.spacing().item_spacing.x;
+    if ui.available_width() >= 3. * column_width + 2. * gap {
+        ui.columns(3, |columns| {
+            colors(&mut columns[0]);
+            weekdays(&mut columns[1]);
+            times(&mut columns[2]);
         });
+    } else if ui.available_width() >= 2. * column_width + gap {
+        ui.columns(2, |columns| {
+            colors(&mut columns[0]);
+            columns[0].separator();
+            weekdays(&mut columns[0]);
+            times(&mut columns[1]);
+        });
+    } else {
+        colors(ui);
+        ui.separator();
+        weekdays(ui);
+        ui.separator();
+        times(ui);
+    }
 }
 
 fn grid(ui: &mut egui::Ui, title: &str, compare: bool, rows: impl FnOnce(&mut egui::Ui)) {
-    ui.heading(title);
     egui::Grid::new(title)
         .striped(true)
         .min_col_width(16.)
-        .spacing([12., 5.])
+        .spacing([7., 5.])
         .show(ui, |ui| {
             for label in ["", "W–L", "Win rate"] {
                 ui.weak(label);
@@ -142,7 +150,7 @@ fn row(ui: &mut egui::Ui, name: &str, record: Record, previous: Option<Record>) 
     if let Some(value) = rate {
         ui.add(
             egui::ProgressBar::new((value / 100.) as f32)
-                .desired_width(78.)
+                .desired_width(62.)
                 .desired_height(ui.text_style_height(&egui::TextStyle::Body) + 2.)
                 .corner_radius(0)
                 .text(&text),

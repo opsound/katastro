@@ -1,10 +1,10 @@
+use super::overview::{Overview, Stats};
 use crate::{
     Color,
     archive::{
         Game, Server, Snapshot,
         categories::{Category, Evidence, Thresholds, winner_and_reason},
         period::{Bucket, Windows},
-        play_times::PlayTimes,
         rank_history::player,
     },
 };
@@ -75,6 +75,12 @@ impl<'a> Row<'a> {
             category,
         }
     }
+    fn matches_query(&self, query: &str) -> bool {
+        query.is_empty()
+            || self.cells.join(" ").to_lowercase().contains(query)
+            || self.game.result.to_lowercase().contains(query)
+    }
+
     fn show_cell(&self, ui: &mut egui::Ui, column: usize) -> bool {
         let value = &self.cells[column];
         if column == 0 {
@@ -163,6 +169,10 @@ impl<'a> Row<'a> {
             .then_with(|| self.game.id.cmp(&other.game.id))
     }
 }
+pub(super) fn matches_search(game: &Game, state: &Snapshot, query: &str) -> bool {
+    query.is_empty() || Row::new(game, state, Category::Pending).matches_query(query)
+}
+
 fn outcome(value: &str) -> (&str, String, u8, f64) {
     let value = value.trim();
     let Some((color, reason)) = winner_and_reason(value) else {
@@ -191,74 +201,6 @@ fn outcome(value: &str) -> (&str, String, u8, f64) {
     (winner, condition.into(), kind, 0.)
 }
 
-#[derive(Default, Clone, Copy)]
-struct Rate {
-    hits: usize,
-    games: usize,
-}
-
-impl Rate {
-    fn percent(self) -> Option<f64> {
-        (self.games > 0).then(|| 100.0 * self.hits as f64 / self.games as f64)
-    }
-
-    fn label(self, previous: Option<Self>, singular: &str, plural: &str) -> String {
-        let unit = if self.games == 1 { singular } else { plural };
-        let rate = match (self.percent(), previous.and_then(Self::percent)) {
-            (Some(now), Some(then)) => {
-                let delta = (now - then).round() as i32;
-                let sign = if delta > 0 { "+" } else { "" };
-                format!("{now:.0}%, {sign}{delta} pp")
-            }
-            (Some(now), None) => format!("{now:.0}%"),
-            (None, _) => "—".into(),
-        };
-        format!("{}/{} {unit} ({rate})", self.hits, self.games)
-    }
-}
-
-#[derive(Default)]
-struct Stats {
-    wins: Rate,
-    losses: Rate,
-    pending: usize,
-    unavailable: usize,
-}
-
-impl Stats {
-    fn count(&mut self, category: Category, won: Option<bool>) {
-        match category {
-            Category::Pending => self.pending += 1,
-            Category::Unavailable => self.unavailable += 1,
-            Category::Comeback | Category::Blunder | Category::Other => match won {
-                Some(true) => {
-                    self.wins.games += 1;
-                    self.wins.hits += usize::from(category == Category::Comeback);
-                }
-                Some(false) => {
-                    self.losses.games += 1;
-                    self.losses.hits += usize::from(category == Category::Blunder);
-                }
-                None => self.unavailable += 1,
-            },
-        }
-    }
-
-    fn summary(&self, previous: Option<&Self>) -> String {
-        let wins = self.wins.label(previous.map(|p| p.wins), "win", "wins");
-        let losses = self
-            .losses
-            .label(previous.map(|p| p.losses), "loss", "losses");
-        let mut text = format!("Comebacks {wins} · Blunders {losses}");
-        for (count, name) in [(self.pending, "pending"), (self.unavailable, "unavailable")] {
-            if count > 0 {
-                text.push_str(&format!(" · {count} {name}"));
-            }
-        }
-        text
-    }
-}
-
 pub(super) struct Filter<'a> {
     pub server: Option<Server>,
     pub search: &'a str,
@@ -274,7 +216,7 @@ pub(super) fn show(
     states: &[&Snapshot],
     sort: &mut Sort,
     filter: Filter<'_>,
-    by_hour: Option<&mut bool>,
+    overview: Option<&mut Overview>,
 ) -> Option<PathBuf> {
     let query = filter.search.trim().to_lowercase();
     let total = states.iter().map(|s| s.games.len()).sum::<usize>();
@@ -282,8 +224,6 @@ pub(super) fn show(
     let mut current = Stats::default();
     let mut previous = Stats::default();
     let mut reading_results = false;
-    let mut breakdown =
-        by_hour.map(|by_hour| (by_hour, PlayTimes::default(), PlayTimes::default()));
     let previous_period = filter.period.previous.filter(|_| filter.compare);
     for state in states
         .iter()
@@ -298,48 +238,40 @@ pub(super) fn show(
             }
             let evidence = filter.evidence.get(&game.path).copied().unwrap_or_default();
             let category = evidence.category(filter.thresholds);
-            let show_row = breakdown.is_none()
+            let show_row = overview.is_none()
                 && bucket == Bucket::Current
                 && filter.category.is_none_or(|c| c == category);
             if show_row || !query.is_empty() {
                 let row = Row::new(game, state, category);
-                if !query.is_empty()
-                    && !row.cells.join(" ").to_lowercase().contains(&query)
-                    && !game.result.to_lowercase().contains(&query)
-                {
+                if !row.matches_query(&query) {
                     continue;
                 }
                 if show_row {
                     rows.push(row);
                 }
             }
-            if let Some((_, now, before)) = &mut breakdown {
+            let stats = match bucket {
+                Bucket::Current => &mut current,
+                Bucket::Previous => &mut previous,
+            };
+            if overview.is_some() {
                 if matches!(evidence, Evidence::Pending) {
                     reading_results = true;
                     continue;
                 }
-                match bucket {
-                    Bucket::Current => now,
-                    Bucket::Previous => before,
-                }
-                .count(&game.date, evidence.won());
-            } else {
-                match bucket {
-                    Bucket::Current => &mut current,
-                    Bucket::Previous => &mut previous,
-                }
-                .count(category, evidence.won());
+                stats.times.count_game(&game.date, evidence);
             }
+            stats.count(category, evidence.won());
         }
     }
-    if let Some((by_hour, now, before)) = breakdown {
-        if reading_results {
-            ui.weak("Reading game results…");
-        }
-        if let Some(range) = previous_period {
-            ui.weak(format!("Previous period {range}"));
-        }
-        super::play_times::show(ui, &now, previous_period.map(|_| &before), by_hour);
+    if let Some(overview) = overview {
+        overview.show(
+            ui,
+            &current,
+            previous_period.map(|range| (range, &previous)),
+            reading_results,
+            |ui| super::rank_chart::show(ui, states, filter.server, filter.period, &query),
+        );
         return None;
     }
     if total > 0 {

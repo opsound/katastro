@@ -4,6 +4,8 @@ use time::OffsetDateTime;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RankPoint {
+    /// Position of the observation's game in the same archive snapshot.
+    pub game_index: usize,
     /// Unix timestamp of the game, or local noon for a date-only record.
     pub timestamp: i64,
     /// Half-rank steps. 1k is zero, 1d is two and the professional band starts at twenty.
@@ -81,7 +83,8 @@ pub fn series(snapshot: &Snapshot) -> Vec<RankPoint> {
     let mut points: Vec<_> = snapshot
         .games
         .iter()
-        .filter_map(|game| {
+        .enumerate()
+        .filter_map(|(game_index, game)| {
             let mut ranks = [&game.black, &game.white].into_iter().filter_map(|raw| {
                 let (name, rank) = player(raw);
                 if raw.trim().to_lowercase() == account {
@@ -97,6 +100,7 @@ pub fn series(snapshot: &Snapshot) -> Vec<RankPoint> {
                 return None;
             }
             Some(RankPoint {
+                game_index,
                 level: level(rank, snapshot.server)?,
                 timestamp: game.timestamp?,
             })

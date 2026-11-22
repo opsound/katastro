@@ -72,6 +72,49 @@ fn seed_archive(
     paths
 }
 
+#[test]
+fn overview_splits_filtered_results_by_the_players_recorded_color() {
+    let root = tempfile::tempdir().unwrap();
+    let mut review = Review::new(&root.path().join("reviews"), &root.path().join("cache")).unwrap();
+    let mut ogs = Options::ogs(root.path().join("OGS"));
+    ogs.credentials = Arc::new(support::Vault::default());
+    seed_archive(
+        &ogs,
+        &mut review,
+        &profile(),
+        &[
+            (1, "oak", "member", "B+R", &[]),
+            (2, "maple", "member", "W+T", &[]),
+            (3, "member", "oak", "W+1.5", &[]),
+            (4, "member", "elm", "0", &[]),
+        ],
+    );
+    // The original SGF has the authoritative colors even when the index swaps them.
+    rusqlite::Connection::open(ogs.root.join("sync.sqlite"))
+        .unwrap()
+        .execute(
+            "UPDATE games SET black='member', white='oak' WHERE id='3'",
+            [],
+        )
+        .unwrap();
+    drop(review);
+    let mut h = archive_desktop(root.path(), vec![ogs], vec2(1200., 900.));
+    h.get_by_label("Games").click();
+    select_all_time(&mut h);
+    h.get_by_label("Overview").click();
+    wait_for(&mut h, "the existing breakdown did not load", |h| {
+        h.query_by_label("Unknown time · 2 W / 1 L · 67% win rate")
+            .is_some()
+    });
+    h.get_by_label("As Black · 1 W / 1 L · 50% win rate");
+    h.get_by_label("As White · 1 W / 0 L · 100% win rate");
+    h.get_by_label("Search synced games").focus();
+    h.get_by_label("Search synced games").type_text("maple");
+    h.run_steps(3);
+    h.get_by_label("As Black · 0 W / 1 L · 0% win rate");
+    h.get_by_label("As White · 0 W / 0 L · — win rate");
+}
+
 // A player can see how often a classified game changed hands, narrow the library
 // by category, server and search, then open the matching original SGF.
 #[test]
@@ -363,7 +406,7 @@ fn period_and_thresholds_survive_relaunch_and_change_the_matching_games() {
     reopened.run();
     reopened.get_by_label("Comebacks 0/1 win (0%) · Blunders 1/1 loss (100%)");
 
-    reopened.get_by_label("Win/loss by time").click();
+    reopened.get_by_label("Overview").click();
     reopened.run();
     replace_field(&mut reopened, "Search synced games", "oak");
     reopened.run();
@@ -371,6 +414,17 @@ fn period_and_thresholds_survive_relaunch_and_change_the_matching_games() {
     reopened.get_by_label("Compare previous period").click();
     reopened.run();
     reopened.get_by_label("Unknown time · 0 W / 1 L · 0% win rate · Previous 1 W / 0 L · -100 pp");
+    reopened.get_by_label(
+        "Blunders · 100% · 1 of 1 classified loss · Previous 0 of 0 classified losses · —",
+    );
+    reopened.get_by_label("Thresholds").click();
+    reopened.run();
+    replace_field(&mut reopened, "Blunder threshold", "30");
+    reopened.get_by_label("Apply thresholds").click();
+    reopened.run();
+    reopened.get_by_label(
+        "Blunders · 0% · 0 of 1 classified loss · Previous 0 of 0 classified losses · —",
+    );
 }
 
 #[test]
@@ -466,7 +520,7 @@ fn scanning_results_keeps_read_games_visible_without_counting_unread_games_as_un
     let mut h = archive_desktop(temp.path(), vec![ogs], vec2(1200., 900.));
     h.get_by_label("Games").click();
     select_all_time(&mut h);
-    h.get_by_label("Win/loss by time").click();
+    h.get_by_label("Overview").click();
     wait_for(&mut h, "the completed win did not appear", |h| {
         h.query_by_label("Unknown time · 1 W / 0 L · 100% win rate")
             .is_some()
@@ -561,7 +615,7 @@ fn wins_by_play_time_follow_local_dates_and_the_visible_library_scope() {
     archive_ui::wait_for_label(&mut h, "Date range");
     h.get_by_label("Blunders").click();
     h.run_steps(3);
-    h.get_by_label("Win/loss by time").click();
+    h.get_by_label("Overview").click();
     wait_for(
         &mut h,
         "Friday should include one OGS win and one Pandanet loss",
@@ -573,6 +627,28 @@ fn wins_by_play_time_follow_local_dates_and_the_visible_library_scope() {
     if let Some(path) = std::env::var_os("KATASTRO_PLAY_TIMES_PREVIEW") {
         h.render().unwrap().save(path).unwrap();
     }
+    let footer = h.get_by_label("Close library").rect();
+    for label in ["Sunday", "Unknown time"] {
+        let row = h.get_by_label_contains(&format!("{label} ·")).rect();
+        assert!(
+            row.bottom() < footer.top(),
+            "{label} is clipped at the default library size"
+        );
+    }
+    let color = h.get_by_label("Record by color").rect();
+    let day = h.get_by_label("Day of the week").rect();
+    let clock = h.get_by_label("Time of day").rect();
+    assert!(color.right() < day.left() && day.right() < clock.left());
+    h.set_size(vec2(790., 900.)).run_steps(4);
+    let color = h.get_by_label("Record by color").rect();
+    let day = h.get_by_label("Day of the week").rect();
+    let clock = h.get_by_label("Time of day").rect();
+    assert!(day.top() > color.bottom() && clock.left() > color.right());
+    assert!(
+        h.query_all_by_label("Change")
+            .all(|node| node.rect().right() < 790.)
+    );
+    h.set_size(vec2(1200., 900.)).run_steps(4);
     select_all_time(&mut h);
     h.get_by_label("Friday · 1 W / 2 L · 33% win rate");
     for label in [
@@ -593,6 +669,34 @@ fn wins_by_play_time_follow_local_dates_and_the_visible_library_scope() {
         h.query_by_label("00:00–05:59 · 0 W / 1 L · 0% win rate")
             .is_none()
     );
+    // Scrolling over the hourly results should move the whole overview while the
+    // library's filters and close control remain usable.
+    let hour_control = h.get_by_label("By hour").rect();
+    let close = h.get_by_label("Close library").rect();
+    let dates = h.get_by_label("Date range").rect();
+    let table = h.get_by_label("00:00 · 0 W / 1 L · 0% win rate").rect();
+    let scroll = |h: &mut egui_kittest::Harness<'_, katastro::desktop::DesktopApp>, at, dy| {
+        use eframe::egui::{Event, Modifiers, MouseWheelUnit, TouchPhase};
+        h.event(Event::PointerMoved(at));
+        h.event(Event::MouseWheel {
+            unit: MouseWheelUnit::Point,
+            delta: vec2(0., dy),
+            modifiers: Modifiers::NONE,
+            phase: TouchPhase::Move,
+        });
+        h.run_steps(8);
+    };
+    scroll(&mut h, table.center(), -2_000.);
+    let last_hour = h.get_by_label("23:00 · 1 W / 2 L · 33% win rate").rect();
+    assert!(last_hour.top() > dates.bottom() && last_hour.bottom() < close.top());
+    assert!(
+        h.query_by_label("By hour")
+            .is_none_or(|node| node.rect().top() < hour_control.top() - 1.),
+        "the time controls stayed stuck above a separately scrolling table"
+    );
+    assert_eq!(h.get_by_label("Date range").rect(), dates);
+    assert_eq!(h.get_by_label("Close library").rect(), close);
+    scroll(&mut h, last_hour.center(), 2_000.);
     h.get_by_label("OGS games").click();
     h.run_steps(3);
     h.get_by_label("Friday · 1 W / 1 L · 50% win rate");
@@ -610,4 +714,75 @@ fn wins_by_play_time_follow_local_dates_and_the_visible_library_scope() {
     wait_for(&mut h, "the filtered game did not open", |h| {
         h.state().state.document.is_some()
     });
+}
+
+// A decided game without scores counts toward the overall record while category
+// rates use only games with sufficient analysis for those classifications.
+#[test]
+fn overview_compares_overall_and_classified_rates_for_the_same_games() {
+    use katastro::archive::{
+        StatisticsSettings,
+        period::{Interval, Period},
+    };
+    use time::macros::date;
+
+    let temp = tempfile::tempdir().unwrap();
+    let mut review = Review::new(&temp.path().join("reviews"), &temp.path().join("cache")).unwrap();
+    review.save_profile(&profile()).unwrap();
+    let mut ogs = Options::ogs(temp.path().join("OGS"));
+    ogs.credentials = Arc::new(support::Vault::default());
+    seed_archive(
+        &ogs,
+        &mut review,
+        &profile(),
+        &[
+            (1, "maple", "member", "W+R", &[0., 3., -2., -1.]),
+            (3, "maple", "member", "B+R", &[0., -25., 3., 2.]),
+            (4, "maple", "member", "W+R", &[0., 26., -1., -2.]),
+            (5, "member", "elm", "B+R", &[0., -3., 1., 2.]),
+            (6, "elm", "member", "B+R", &[]),
+            (7, "elm", "member", "Draw", &[]),
+        ],
+    );
+    drop(review);
+    let saved = StatisticsSettings {
+        period: Period::Custom(
+            Interval::new(date!(2026 - 11 - 03), date!(2026 - 11 - 07)).unwrap(),
+        ),
+        ..Default::default()
+    };
+    rusqlite::Connection::open(temp.path().join("reviews"))
+        .unwrap()
+        .execute(
+            "INSERT INTO settings(key,value) VALUES ('game_statistics',?1)",
+            [serde_json::to_string(&saved).unwrap()],
+        )
+        .unwrap();
+    let mut h = archive_desktop(temp.path(), vec![ogs], vec2(1200., 900.));
+    h.get_by_label("Games").click();
+    archive_ui::wait_for_label(&mut h, "Date range");
+    h.get_by_label("Overview").click();
+    wait_for(
+        &mut h,
+        "the overall record omitted an unanalyzed win or included a draw",
+        |h| {
+            h.query_by_label("Win rate · 50% · 2 W / 2 L · Previous 0 W / 1 L · +50 pp")
+                .is_some()
+        },
+    );
+    h.get_by_label(
+        "Comebacks · 100% · 1 of 1 classified win · Previous 0 of 0 classified wins · —",
+    );
+    h.get_by_label(
+        "Blunders · 50% · 1 of 2 classified losses · Previous 0 of 1 classified loss · +50 pp",
+    );
+    h.get_by_label("1 game without a win/loss result");
+    h.get_by_label("Search synced games").focus();
+    h.get_by_label("Search synced games").type_text("elm");
+    h.run_steps(3);
+    h.get_by_label("Win rate · 50% · 1 W / 1 L · Previous 0 W / 0 L · —");
+    h.get_by_label("Comebacks · — · 0 of 0 classified wins · Previous 0 of 0 classified wins · —");
+    h.get_by_label(
+        "Blunders · 0% · 0 of 1 classified loss · Previous 0 of 0 classified losses · —",
+    );
 }

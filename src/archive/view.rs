@@ -8,6 +8,7 @@ use std::{
     path::{Path, PathBuf},
 };
 use zeroize::{Zeroize, Zeroizing};
+mod overview;
 mod period;
 mod play_times;
 mod rank_chart;
@@ -24,9 +25,8 @@ pub struct View {
     threshold_editor: Option<thresholds::Editor>,
     server: Server,
     settings_open: bool,
-    show_rank_history: bool,
-    show_play_times: bool,
-    by_hour: bool,
+    show_overview: bool,
+    overview: overview::Overview,
     username: String,
     password: Zeroizing<String>,
     remember: bool,
@@ -64,8 +64,8 @@ impl View {
         has_games: bool,
         thresholds: Thresholds,
     ) {
-        ui.selectable_value(&mut self.show_play_times, false, "Game list");
-        ui.selectable_value(&mut self.show_play_times, true, "Win/loss by time");
+        ui.selectable_value(&mut self.show_overview, false, "Game list");
+        ui.selectable_value(&mut self.show_overview, true, "Overview");
         ui.separator();
         let filters =
             std::iter::once(None).chain(states.iter().map(|(snapshot, _)| Some(snapshot.server)));
@@ -92,7 +92,7 @@ impl View {
                 }
             }
         }
-        if has_games && !self.show_play_times {
+        if has_games && !self.show_overview {
             ui.separator();
             ui.selectable_value(&mut self.category, None, "All categories");
             for (category, name, who, gain) in [
@@ -175,9 +175,6 @@ impl View {
                         .clicked()
                     {
                         actions.command = Some((state.server, Command::SyncNow));
-                    }
-                    if !self.settings_open && has_games && !self.show_play_times {
-                        ui.checkbox(&mut self.show_rank_history, "Show rank history");
                     }
                 });
                 ui.horizontal(|ui| {
@@ -317,13 +314,6 @@ impl View {
                     );
                 }
                 ui.separator();
-                if !self.settings_open
-                    && has_games
-                    && self.show_rank_history
-                    && !self.show_play_times
-                {
-                    rank_chart::show(ui, states, self.filter);
-                }
                 let today = super::period::local_today();
                 let mut statistics = self.statistics.unwrap_or_default();
                 ui.horizontal_wrapped(|ui| {
@@ -337,13 +327,11 @@ impl View {
                             &mut statistics.compare,
                             today,
                         );
-                        if !self.show_play_times {
-                            thresholds::show(
-                                ui,
-                                &mut self.threshold_editor,
-                                &mut statistics.thresholds,
-                            );
-                        }
+                        thresholds::show(
+                            ui,
+                            &mut self.threshold_editor,
+                            &mut statistics.thresholds,
+                        );
                         self.statistics = Some(statistics);
                     }
                     let label = ui.label("Search synced games");
@@ -354,21 +342,37 @@ impl View {
                     )
                     .labelled_by(label.id);
                 });
-                if let Some(path) = table::show(
-                    ui,
-                    &states.iter().map(|(s, _)| *s).collect::<Vec<_>>(),
-                    &mut self.sort,
-                    table::Filter {
-                        server: self.filter,
-                        search: &self.search,
-                        category: self.category,
-                        evidence: &self.categories,
-                        thresholds: statistics.thresholds,
-                        period: statistics.period.windows(today),
-                        compare: statistics.compare,
-                    },
-                    self.show_play_times.then_some(&mut self.by_hour),
-                ) {
+                let snapshots: Vec<_> = states.iter().map(|(s, _)| *s).collect();
+                let filter = table::Filter {
+                    server: self.filter,
+                    search: &self.search,
+                    category: self.category,
+                    evidence: &self.categories,
+                    thresholds: statistics.thresholds,
+                    period: statistics.period.windows(today),
+                    compare: statistics.compare,
+                };
+                if self.show_overview {
+                    let button_height = (ui.text_style_height(&egui::TextStyle::Body)
+                        + 2. * ui.spacing().button_padding.y)
+                        .max(ui.spacing().interact_size.y);
+                    let footer = button_height + 3. * ui.spacing().item_spacing.y + 6.;
+                    egui::ScrollArea::vertical()
+                        .id_salt("games-overview")
+                        .max_height((ui.available_height() - footer).max(0.))
+                        .content_margin(0.)
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            table::show(
+                                ui,
+                                &snapshots,
+                                &mut self.sort,
+                                filter,
+                                Some(&mut self.overview),
+                            );
+                        });
+                } else if let Some(path) = table::show(ui, &snapshots, &mut self.sort, filter, None)
+                {
                     actions.review = Some(path);
                     close = true;
                 }

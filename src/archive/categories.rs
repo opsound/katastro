@@ -33,9 +33,11 @@ pub enum Evidence {
     Pending,
     Unavailable,
     Unscored {
+        player: Color,
         won: bool,
     },
     Scored {
+        player: Color,
         won: bool,
         largest_gain: f64,
         complete: bool,
@@ -60,8 +62,14 @@ impl Evidence {
         }
     }
     pub fn won(self) -> Option<bool> {
+        self.outcome().map(|(_, won)| won)
+    }
+
+    pub(super) fn outcome(self) -> Option<(Color, bool)> {
         match self {
-            Self::Unscored { won } | Self::Scored { won, .. } => Some(won),
+            Self::Unscored { player, won } | Self::Scored { player, won, .. } => {
+                Some((player, won))
+            }
             _ => None,
         }
     }
@@ -126,7 +134,7 @@ pub fn evidence(
     };
     let won = winner == owner;
     let Some(profile) = profile else {
-        return Ok(Evidence::Unscored { won });
+        return Ok(Evidence::Unscored { player: owner, won });
     };
     // One read transaction keeps the starting score and the rest of the recorded
     // line consistent when a worker refines positions during the scan.
@@ -146,7 +154,7 @@ pub fn evidence(
             .optional()?)
     };
     let Some(start) = score(doc.mainline[0])? else {
-        return Ok(Evidence::Unscored { won });
+        return Ok(Evidence::Unscored { player: owner, won });
     };
     let mut complete = true;
     let mut largest_gain: f64 = 0.0;
@@ -159,6 +167,7 @@ pub fn evidence(
         }
     }
     Ok(Evidence::Scored {
+        player: owner,
         won,
         largest_gain,
         complete,

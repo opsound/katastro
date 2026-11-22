@@ -18,6 +18,12 @@ use std::{path::Path, sync::Arc};
 
 // Reopen a pre-existing library so the graph and the rows use the same saved metadata.
 fn seed(option: &Options, names: &[(&str, &str, &str)]) {
+    fn recorded_name(field: &str) -> &str {
+        field
+            .rsplit_once(' ')
+            .filter(|(_, rank)| rank.starts_with(|c: char| c.is_ascii_digit()))
+            .map_or(field, |(name, _)| name)
+    }
     let user = "local player";
     drop(
         Service::open_for(
@@ -38,7 +44,11 @@ fn seed(option: &Options, names: &[(&str, &str, &str)]) {
         let file = format!("{index}.sgf");
         std::fs::write(
             option.root.join(&file),
-            format!("(;SZ[9]PB[{black}]PW[{white}];B[aa])"),
+            format!(
+                "(;SZ[9]PB[{}]PW[{}]RE[B+R];B[aa])",
+                recorded_name(black),
+                recorded_name(white)
+            ),
         )
         .unwrap();
         db.execute(
@@ -94,9 +104,9 @@ fn toggle_history(h: &mut Harness<'_, DesktopApp>) {
     h.run_steps(3);
 }
 
-fn visible_game_rows(h: &Harness<'_, DesktopApp>) -> usize {
-    h.output().shapes.iter().filter(|s| matches!(&s.shape, Shape::Text(t)
-        if t.galley.text().starts_with("2026/11/") && s.clip_rect.contains_rect(t.galley.rect.translate(t.pos.to_vec2())))).count()
+fn show_overview(h: &mut Harness<'_, DesktopApp>) {
+    h.get_by_label("Overview").click();
+    h.run_steps(3);
 }
 
 fn points(h: &Harness<'_, DesktopApp>, color: Color32) -> Vec<Pos2> {
@@ -118,7 +128,7 @@ fn points(h: &Harness<'_, DesktopApp>, color: Color32) -> Vec<Pos2> {
 // Wrong-axis plots, inter-server joins, hidden single observations and unreadable ticks
 // would otherwise make comparisons unreliable.
 #[test]
-fn games_overlays_three_rank_histories_and_filters_them_with_the_table() {
+fn games_overlays_three_rank_histories_in_the_overview_and_keeps_the_list_available() {
     let temp = tempfile::tempdir().unwrap();
     // All three providers record these observations at 12:00 UTC.
     let games: [&[GameRow<'_>]; 3] = [
@@ -136,10 +146,16 @@ fn games_overlays_three_rank_histories_and_filters_them_with_the_table() {
     ];
     let mut h = desktop(temp.path(), games, egui::vec2(1200., 900.));
     assert!(
-        h.query_by_label("Rank history chart").is_none(),
-        "Games should give the space to the game list until rank history is expanded"
+        h.query_by_label("Show rank history").is_none(),
+        "the game list should contain only the browser"
     );
-    let collapsed_rows = visible_game_rows(&h);
+    let rows = h.query_all_by_label_contains("Review 2026/11/").count();
+    assert_eq!(rows, 7);
+    show_overview(&mut h);
+    assert!(
+        h.query_by_label("Rank history chart").is_none(),
+        "the overview starts with the chart collapsed"
+    );
     toggle_history(&mut h);
     let plot = h.get_by_label("Rank history chart").rect();
     let panda = legend_color(&h, "Pandanet  1d");
@@ -188,6 +204,9 @@ fn games_overlays_three_rank_histories_and_filters_them_with_the_table() {
             && overlapping[0].1 > overlapping[1].1,
         "both servers need to remain visible at their coincident point"
     );
+    if let Some(path) = std::env::var_os("KATASTRO_RANK_HISTORY_PREVIEW") {
+        h.render().unwrap().save(path).unwrap();
+    }
     for (expected, y) in [("1d", a[2].y), ("1k", b[1].y), ("3k", b[2].y)] {
         assert!(h.output().shapes.iter().any(|s| matches!(&s.shape, Shape::Text(t) if {
             let r = t.galley.rect.translate(t.pos.to_vec2());
@@ -217,18 +236,6 @@ fn games_overlays_three_rank_histories_and_filters_them_with_the_table() {
                 .all(|pair| pair[0].right() < pair[1].left()),
         "calendar labels must be visible and legible"
     );
-    if let Some(path) = std::env::var_os("KATASTRO_RANK_HISTORY_PREVIEW") {
-        h.render().unwrap().save(path).unwrap();
-    }
-    let expanded_rows = visible_game_rows(&h);
-    assert!(
-        expanded_rows >= 5,
-        "five complete rows must fit beneath the plot, saw {expanded_rows}"
-    );
-    assert!(
-        collapsed_rows > expanded_rows,
-        "hiding the chart must reveal more games"
-    );
     let observed = time::macros::datetime!(2026-11-03 12:00 UTC);
     let local = observed.to_offset(time::UtcOffset::local_offset_at(observed).unwrap());
     let hovered_time = format!("{} {:02}:{:02}", local.date(), local.hour(), local.minute());
@@ -245,13 +252,11 @@ fn games_overlays_three_rank_histories_and_filters_them_with_the_table() {
     );
     toggle_history(&mut h);
     assert!(h.query_by_label("Rank history chart").is_none());
-    assert_eq!(visible_game_rows(&h), collapsed_rows);
     toggle_history(&mut h);
     h.get_by_label("OGS games").click();
     h.run_steps(3);
     assert_eq!(points(&h, ogs).len(), 1);
     assert!(points(&h, fox).is_empty() && points(&h, panda).is_empty());
-    assert_eq!(h.query_all_by_label_contains("Review 2026/11/").count(), 1);
     let intraday: std::collections::HashSet<_> = h
         .output()
         .shapes
@@ -269,6 +274,16 @@ fn games_overlays_three_rank_histories_and_filters_them_with_the_table() {
         intraday.len() >= 2,
         "intraday ticks must distinguish the time of day"
     );
+    h.get_by_label("Game list").click();
+    h.run_steps(3);
+    assert!(h.query_by_label("Rank history chart").is_none());
+    assert_eq!(h.query_all_by_label_contains("Review 2026/11/").count(), 1);
+    h.get_by_label("All servers").click();
+    h.run_steps(3);
+    assert_eq!(
+        h.query_all_by_label_contains("Review 2026/11/").count(),
+        rows
+    );
     h.get_by_label("Sync settings").click();
     h.run_steps(3);
     assert!(h.query_by_label("Rank history chart").is_none());
@@ -283,9 +298,12 @@ fn missing_account_ranks_leave_the_game_list_available() {
         h.query_by_label("No recorded player ranks in these games.")
             .is_none()
     );
+    show_overview(&mut h);
     toggle_history(&mut h);
     h.get_by_label("No recorded player ranks in these games.");
     assert!(h.query_by_label("Rank history chart").is_none());
+    h.get_by_label("Game list").click();
+    h.run_steps(3);
     assert_eq!(h.query_all_by_label_contains("Review 2026/11/").count(), 3);
 }
 
@@ -297,7 +315,10 @@ fn close_game_times_have_a_readable_time_scale_at_compact_width() {
         ("2026/11/03 12:15:08", "local player 3k", "b 4k"),
     ];
     let mut h = desktop(temp.path(), [&[], &[], &records], egui::vec2(900., 680.));
+    show_overview(&mut h);
     toggle_history(&mut h);
+    h.get_by_label("Day of the week").scroll_to_me();
+    h.run_steps(8);
     let plot = h.get_by_label("Rank history chart").rect();
     let mut times: Vec<_> = h
         .output()
@@ -345,8 +366,45 @@ fn the_table_and_rank_history_preserve_play_order_across_a_clock_rollback() {
         later.top() < earlier.top(),
         "the later finished game should be at the top"
     );
+    show_overview(&mut h);
     toggle_history(&mut h);
     let positions = points(&h, legend_color(&h, "OGS  1d"));
     assert_eq!(positions.len(), 2);
     assert!(positions[0].x < positions[1].x && positions[0].y > positions[1].y);
+}
+
+// Two simultaneous games have different opponents. A matching timestamp alone
+// cannot identify which rank belongs in the searched, current-period chart.
+#[test]
+fn rank_history_tracks_the_current_date_window_and_search_down_to_the_game() {
+    use katastro::archive::period::local_today;
+    let today = local_today();
+    let old = (today - time::Duration::days(40)).to_string();
+    let today = today.to_string();
+    let games = [
+        (old.as_str(), "rival ash 6k", "local player 9k"),
+        (&today, "rival ash 6k", "local player 1d"),
+        (&today, "rival elm 2k", "local player 2d"),
+    ];
+    let temp = tempfile::tempdir().unwrap();
+    let mut h = desktop(temp.path(), [&[], &[], &games], egui::vec2(1200., 900.));
+    show_overview(&mut h);
+    toggle_history(&mut h);
+    h.get_by_label("Date range").click();
+    h.run_steps(2);
+    h.get_by_label("Last 30 days").click();
+    h.run_steps(3);
+    let color = legend_color(&h, "OGS  2d");
+    assert_eq!(
+        points(&h, color).len(),
+        2,
+        "the previous period should be outside the chart"
+    );
+    h.get_by_label("Search synced games").focus();
+    h.get_by_label("Search synced games").type_text("rival ASH");
+    h.run_steps(3);
+    assert_eq!(points(&h, legend_color(&h, "OGS  1d")).len(), 1);
+    h.get_by_label("Search synced games").type_text(" absent");
+    h.run_steps(3);
+    h.get_by_label("No recorded player ranks in these games.");
 }
