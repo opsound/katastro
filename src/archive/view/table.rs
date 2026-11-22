@@ -1,7 +1,14 @@
-use crate::archive::{Game, Server, Snapshot, rank_history::player};
+use crate::{
+    Color,
+    archive::{
+        Game, Server, Snapshot,
+        categories::{Category, winner_and_reason},
+        rank_history::player,
+    },
+};
 use eframe::egui::{self, Color32, RichText, WidgetInfo, WidgetType};
 use egui_extras::{Column, TableBuilder};
-use std::{cmp::Ordering, path::PathBuf};
+use std::{cmp::Ordering, collections::HashMap, path::PathBuf};
 
 const HEADINGS: [&str; 6] = [
     "Date",
@@ -42,9 +49,10 @@ struct Row<'a> {
     names: [&'a str; 2],
     condition: u8,
     points: f64,
+    category: Category,
 }
 impl<'a> Row<'a> {
-    fn new(game: &'a Game, state: &'a Snapshot) -> Self {
+    fn new(game: &'a Game, state: &'a Snapshot, categories: &HashMap<PathBuf, Category>) -> Self {
         let (white, _) = player(&game.white);
         let (black, _) = player(&game.black);
         let (winner, condition, kind, points) = outcome(&game.result);
@@ -62,6 +70,10 @@ impl<'a> Row<'a> {
             names: [white, black],
             condition: kind,
             points,
+            category: categories
+                .get(&game.path)
+                .copied()
+                .unwrap_or(Category::Pending),
         }
     }
     fn show_cell(&self, ui: &mut egui::Ui, column: usize) -> bool {
@@ -82,7 +94,15 @@ impl<'a> Row<'a> {
                     ),
                 )
             });
-            return response.clicked();
+            return response
+                .on_hover_text(match self.category {
+                    Category::Comeback => "Comeback win",
+                    Category::Blunder => "Blunder loss",
+                    Category::Other => "Classified game without a 20-point reversal",
+                    Category::Pending => "Category pending analysis",
+                    Category::Unavailable => "Game category unavailable",
+                })
+                .clicked();
         }
         if matches!(column, 1 | 2) {
             let (name, rating) = player(value);
@@ -140,30 +160,17 @@ impl<'a> Row<'a> {
 }
 fn outcome(value: &str) -> (&str, String, u8, f64) {
     let value = value.trim();
-    let lower = value.to_lowercase();
-    let (winner, reason) = if lower.starts_with("black won by ") {
-        ("Black", &value[13..])
-    } else if lower.starts_with("white won by ") {
-        ("White", &value[13..])
-    } else if lower.starts_with("b+") {
-        ("Black", &value[2..])
-    } else if lower.starts_with("w+") {
-        ("White", &value[2..])
-    } else if matches!(lower.as_str(), "draw" | "jigo" | "0") {
-        return ("Draw", "Draw".into(), 4, 0.);
-    } else {
-        return (
-            "—",
-            if value.is_empty() {
-                "—".into()
-            } else {
-                value.into()
-            },
-            5,
-            0.,
-        );
+    let Some((color, reason)) = winner_and_reason(value) else {
+        return match value.to_ascii_lowercase().as_str() {
+            "draw" | "jigo" | "0" => ("Draw", "Draw".into(), 4, 0.),
+            "" => ("—", "—".into(), 5, 0.),
+            _ => ("—", value.into(), 5, 0.),
+        };
     };
-    let reason = reason.trim();
+    let winner = match color {
+        Color::Black => "Black",
+        Color::White => "White",
+    };
     if let Ok(points) = reason.parse::<f64>()
         && points.is_finite()
         && points >= 0.
@@ -179,11 +186,49 @@ fn outcome(value: &str) -> (&str, String, u8, f64) {
     (winner, condition.into(), kind, 0.)
 }
 
+fn category_summary(rows: &[Row<'_>]) -> String {
+    let (mut comebacks, mut blunders, mut pending, mut unavailable) = (0, 0, 0, 0);
+    for row in rows {
+        match row.category {
+            Category::Comeback => comebacks += 1,
+            Category::Blunder => blunders += 1,
+            Category::Pending => pending += 1,
+            Category::Unavailable => unavailable += 1,
+            Category::Other => {}
+        }
+    }
+    let classified = rows.len() - pending - unavailable;
+    let rate = |count: usize, singular| {
+        let plural = if count == 1 { "" } else { "s" };
+        let mut text = format!("{count} {singular}{plural}");
+        if classified > 0 {
+            text.push_str(&format!(
+                " ({:.0}%)",
+                100. * count as f64 / classified as f64
+            ));
+        }
+        text
+    };
+    let mut summary = format!(
+        "{classified} classified · {} · {}",
+        rate(comebacks, "comeback"),
+        rate(blunders, "blunder")
+    );
+    for (count, name) in [(pending, "pending"), (unavailable, "unavailable")] {
+        if count > 0 {
+            summary.push_str(&format!(" · {count} {name}"));
+        }
+    }
+    summary
+}
+
 pub(super) fn show(
     ui: &mut egui::Ui,
     states: &[&Snapshot],
     filter: Option<Server>,
     query: &str,
+    category: Option<Category>,
+    categories: &HashMap<PathBuf, Category>,
     sort: &mut Sort,
 ) -> Option<PathBuf> {
     let query = query.trim().to_lowercase();
@@ -191,13 +236,17 @@ pub(super) fn show(
     let mut rows: Vec<_> = states
         .iter()
         .filter(|s| filter.is_none_or(|f| s.server == f))
-        .flat_map(|s| s.games.iter().map(|g| Row::new(g, s)))
+        .flat_map(|s| s.games.iter().map(|g| Row::new(g, s, categories)))
         .filter(|row| {
             query.is_empty()
                 || row.cells.join(" ").to_lowercase().contains(&query)
                 || row.game.result.to_lowercase().contains(&query)
         })
         .collect();
+    let summary = category_summary(&rows);
+    if let Some(category) = category {
+        rows.retain(|r| r.category == category);
+    }
     let mut open = None;
     if rows.is_empty() {
         ui.label(if total == 0 {
@@ -211,7 +260,7 @@ pub(super) fn show(
     // consumes the remaining height instead of imposing a fixed pixel cap.
     let body_height = (ui.available_height()
         - 32.
-        - ui.text_style_height(&egui::TextStyle::Small)
+        - ui.text_style_height(&egui::TextStyle::Body)
         - (ui.text_style_height(&egui::TextStyle::Body) + 2. * ui.spacing().button_padding.y)
             .max(ui.spacing().interact_size.y)
         - 6.
@@ -307,11 +356,18 @@ pub(super) fn show(
                     });
                 });
         });
-    ui.small(format!(
-        "{} of {} games · Click a row to review",
-        rows.len(),
-        total
-    ));
+    ui.horizontal_wrapped(|ui| {
+        ui.small(format!(
+            "{} of {} games · Click a row to review",
+            rows.len(),
+            total
+        ));
+        if total > 0 {
+            ui.separator();
+            ui.label(summary)
+                .on_hover_text("Percentages use classified games matching your server and search.");
+        }
+    });
     open
 }
 

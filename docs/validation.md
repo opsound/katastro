@@ -920,3 +920,13 @@ Training screening now ranks candidates with the point loss it already computed.
 On a fully cached 201-position 19×19 SGF, median release-build CPU time per scheduler poll fell from 31.2 to 19.4 µs. With an added variation it fell from 36.2 to 19.5 µs. Each of five paired runs took nine samples of 2,000 polls. Publishing a worker snapshot with cached ownership maps allocated 754,621 bytes, down from 1,508,561. Breaking the result handoff failed the ownership and pause/resume integration checks.
 
 The audit suite passed 225 routine tests and five separately invoked real KataGo tests, including HumanSL. Formatting, strict Clippy and the no-GUI library build passed.
+
+## Comeback and blunder statistics in Games
+
+Tests seed real SGFs and temporary SQLite caches with Black-perspective point estimates. They cover a 20.00-point gain by the eventual loser, a 19.99-point gain, both player colors, a nonzero opening, and a swing confined to a variation. A recorded winner and identifiable account are required. A witnessed swing qualifies with partial coverage. Ruling a swing out requires coverage of the whole played line.
+
+The initial classifier returned Pending for known wins and losses. Changing the cutoff to strictly greater than 20 reproduced the boundary failure. Desktop tests open existing archives with the engine offline, combine server, search and category filters, and click the matching original. Reversing the category filter hid a qualifying game. A foreground review then replaced a 20-point gain with a three-point gain. Disabling SQLite change detection left the old game in the Blunders filter. Replacing the model at the same path returned the game to Pending.
+
+An OGS loopback sync recognized scores saved before the game joined the library. Deleting the downloaded original and syncing again exposed a stale unavailable category because the archive row itself had stayed the same. Including repaired downloads in the refresh restored the comeback using the existing scores.
+
+All 230 routine tests passed. The five separate real KataGo checks passed, along with formatting, strict Clippy, a no-GUI build, a GPU Games render and strict verification of the signed Apple Silicon app.

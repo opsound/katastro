@@ -7,6 +7,7 @@ use std::{
     time::Duration,
 };
 use zeroize::Zeroizing;
+pub mod categories;
 mod fox;
 mod http;
 mod ogs;

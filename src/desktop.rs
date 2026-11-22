@@ -157,7 +157,7 @@ impl DesktopApp {
             settings: Default::default(),
             opponent: None,
             dialogs: services.dialogs,
-            library: library::Library::new(services.sync, ctx),
+            library: library::Library::new(services.sync, ctx, training_databases.clone()),
             pending_dialog: None,
             training_view: Default::default(),
             training_state: Default::default(),
@@ -255,13 +255,18 @@ impl DesktopApp {
 }
 impl eframe::App for DesktopApp {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        let mut config_changed = false;
         while let Ok(state) = self.client.snapshots.try_recv() {
+            config_changed |= state.config.executable != self.state.config.executable
+                || state.config.model != self.state.config.model;
             self.state = state;
         }
-        if self.library.poll() && !self.training_view.open && self.opponent.is_none() {
+        let library_changed = self.library.poll();
+        if library_changed && !self.training_view.open && self.opponent.is_none() {
             self.prepare_libraries();
         }
         if let Some(view) = &mut self.opponent {
+            self.library.categories(&self.state, config_changed, false);
             if let Some(action) = view.render(
                 ui,
                 &self.state.config,
@@ -311,6 +316,7 @@ impl eframe::App for DesktopApp {
         if self.settings.open {
             self.settings(ui, frame);
         }
+        self.library.categories(&self.state, config_changed, true);
         if self.library.view.open {
             for action in self.library.render(ui.ctx()) {
                 self.action(action, frame);

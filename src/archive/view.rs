@@ -1,6 +1,9 @@
-use super::{Command, Server, Snapshot};
+use super::{Command, Server, Snapshot, categories::Category};
 use eframe::egui;
-use std::path::{Path, PathBuf};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+};
 use zeroize::{Zeroize, Zeroizing};
 mod rank_chart;
 mod table;
@@ -8,6 +11,8 @@ mod table;
 pub struct View {
     pub open: bool,
     filter: Option<Server>,
+    category: Option<Category>,
+    pub(crate) categories: HashMap<PathBuf, Category>,
     server: Server,
     settings_open: bool,
     show_rank_history: bool,
@@ -271,6 +276,17 @@ impl View {
                                 }
                             }
                         }
+                        if has_games {
+                            ui.separator();
+                            for (category, name, description) in [
+                                (None, "All categories", "Show every matching game."),
+                                (Some(Category::Comeback), "Comebacks", "Games you won after your opponent gained at least 20 points from the opening estimate."),
+                                (Some(Category::Blunder), "Blunders", "Games you lost after you gained at least 20 points from the opening estimate."),
+                            ] {
+                                ui.selectable_value(&mut self.category, category, name)
+                                    .on_hover_text(description);
+                            }
+                        }
                         label
                     })
                     .inner;
@@ -285,6 +301,8 @@ impl View {
                     &states.iter().map(|(s, _)| *s).collect::<Vec<_>>(),
                     self.filter,
                     &self.search,
+                    self.category,
+                    &self.categories,
                     &mut self.sort,
                 ) {
                     actions.review = Some(path);

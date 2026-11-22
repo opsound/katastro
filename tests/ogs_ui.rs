@@ -4,6 +4,9 @@ mod archive_ui;
 #[path = "support/pandanet/mod.rs"]
 mod support;
 
+#[path = "support/category_scores.rs"]
+mod category_scores;
+
 use archive_ui::{archive_desktop, wait_for};
 use eframe::egui::vec2;
 use egui_kittest::{
@@ -14,6 +17,7 @@ use katastro::{archive::Options, desktop::DesktopApp};
 use serde_json::json;
 use std::{path::Path, sync::Arc};
 
+const OGS_SGF: &str = "(;FF[4]GM[1]SZ[9]PB[ogsplayer]PW[rival]RE[B+R];B[hh];W[gg])";
 const OGS_ROW: &str = "vs ogsplayer";
 const FOX_ROW: &str = "vs foxplayer";
 
@@ -31,10 +35,7 @@ fn desktop(root: &Path) -> (Harness<'static, DesktopApp>, support::Fixture) {
                 "black_lost":false,"white_lost":true,"outcome":"Resignation"
             }]}),
             "/api/v1/games/100/sgf" => {
-                return (
-                    200,
-                    "(;FF[4]GM[1]SZ[9]PB[ogsplayer]PW[rival]RE[B+R];B[hh];W[gg])".into(),
-                );
+                return (200, OGS_SGF.into());
             }
             "/cgi/QueryUserInfoPanel" => {
                 json!({"result":0,"uid":"11","username":"foxplayer","hide_game_record":0})
@@ -183,6 +184,15 @@ fn ogs_settings_connect_using_only_a_username_and_preserve_the_other_accounts() 
 #[test]
 fn ogs_filter_trains_the_selected_account_and_opens_its_original_when_game_ids_match() {
     let temp = tempfile::tempdir().unwrap();
+    // A review made before syncing must be recognized when its original arrives.
+    let source = temp.path().join("before-sync.sgf");
+    std::fs::write(&source, OGS_SGF).unwrap();
+    let mut review =
+        katastro::Review::new(&temp.path().join("reviews"), &temp.path().join("cache")).unwrap();
+    let profile = category_scores::profile();
+    review.save_profile(&profile).unwrap();
+    category_scores::cache_scores(&mut review, &source, &profile, &[5.0, -15.0, 3.0]);
+    drop(review);
     let (mut h, _http) = desktop(temp.path());
     h.get_by_label("Games").click();
     h.run();
@@ -199,6 +209,14 @@ fn ogs_filter_trains_the_selected_account_and_opens_its_original_when_game_ids_m
     connect(&mut h);
     h.get_by_label("Sync settings").click();
     h.run();
+    wait_for(
+        &mut h,
+        "the newly synced OGS game did not inherit its review analysis",
+        |h| {
+            h.query_by_label("1 classified · 1 comeback (100%) · 0 blunders (0%)")
+                .is_some()
+        },
+    );
     h.get_by_label("All servers").click();
     h.run();
     h.get_by_label_contains(OGS_ROW);
@@ -226,7 +244,7 @@ fn ogs_filter_trains_the_selected_account_and_opens_its_original_when_game_ids_m
         loaded.document.as_ref().unwrap().nodes[0].property("PB"),
         Some("ogsplayer")
     );
-    let source = loaded.source.as_ref().unwrap();
+    let source = loaded.source.clone().unwrap();
     assert!(source.starts_with(temp.path().join("OGS").canonicalize().unwrap()));
     h.get_by_label("Next move").click();
     wait_for(&mut h, "OGS opening move did not reach the board", |h| {
@@ -234,4 +252,21 @@ fn ogs_filter_trains_the_selected_account_and_opens_its_original_when_game_ids_m
             board.stone(katastro::Point::new(7, 7)) == Some(katastro::Color::Black)
         })
     });
+
+    // Repairing a missing original keeps the same archive row and analysis keys.
+    std::fs::remove_file(&source).unwrap();
+    h.get_by_label("Games").click();
+    wait_for(&mut h, "the missing original was still classified", |h| {
+        h.query_by_label("0 classified · 0 comebacks · 0 blunders · 1 unavailable")
+            .is_some()
+    });
+    h.get_by_label("Sync OGS now").click();
+    wait_for(
+        &mut h,
+        "the repaired original did not regain its comeback classification",
+        |h| {
+            h.query_by_label("1 classified · 1 comeback (100%) · 0 blunders (0%)")
+                .is_some()
+        },
+    );
 }
