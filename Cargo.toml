@@ -7,7 +7,7 @@ default-run = "katastro"
 
 [features]
 default = ["desktop"]
-desktop = ["dep:eframe", "dep:egui_plot", "dep:egui_extras", "dep:rfd", "dep:objc2"]
+desktop = ["dep:eframe", "dep:egui_plot", "dep:egui_extras", "dep:rfd", "dep:objc2", "dep:objc2-app-kit", "dep:objc2-foundation"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -31,9 +31,12 @@ egui_extras = { version = "=0.36.2", default-features = false, optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = { version = "0.6", optional = true }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["NSSound"], optional = true }
+objc2-foundation = { version = "0.3", default-features = false, features = ["NSData"], optional = true }
 security-framework = "3"
 
 [dev-dependencies]
+hound = "3.5"
 egui_kittest = { version = "=0.36.2", features = ["eframe", "wgpu"] }
 tiny_http = "0.12"
 

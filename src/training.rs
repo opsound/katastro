@@ -58,6 +58,8 @@ pub struct Snapshot {
     pub status: String,
     pub error: Option<String>,
     pub played: usize,
+    /// Stones played by either side during this attempt, excluding the exercise prefix.
+    pub stones_placed: usize,
     pub target: usize,
     pub report: Option<Report>,
     pub reveal: Option<(PathBuf, usize)>,
@@ -296,6 +298,7 @@ impl Trainer {
                 let doc = self.state.document.as_mut().ok_or("No exercise")?;
                 let point = sample_policy(doc, &reply["humanPolicy"], sample)?;
                 doc.append_move(point)?;
+                self.state.stones_placed += usize::from(point.is_some());
                 let doc = doc.clone();
                 if self.state.played < self.settings.moves && !two_passes(&doc) {
                     self.need_attempt(&doc)?;
@@ -351,6 +354,7 @@ impl Trainer {
         }
         let doc = self.state.document.as_mut().unwrap();
         doc.append_move(point)?;
+        self.state.stones_placed += usize::from(point.is_some());
         let doc = doc.clone();
         self.state.played += 1;
         self.state.phase = Phase::Opponent;

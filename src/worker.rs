@@ -22,6 +22,9 @@ pub enum Command {
     Select(NodeId),
     NumberFrom(Option<NodeId>),
     Play(Option<Point>),
+    /// Apply a move while navigating a suggested training line.
+    Replay(Option<Point>),
+    SetSoundMuted(bool),
     Step(bool),
     First,
     Last,
@@ -48,6 +51,9 @@ pub struct Snapshot {
     pub values: BTreeMap<NodeId, Analysis>,
     pub source: Option<PathBuf>,
     pub config: EngineConfig,
+    pub sound_muted: bool,
+    /// Cumulative so coalescing snapshots preserves accepted placement cues.
+    pub audible_placements: usize,
     pub game_statistics: Option<crate::archive::StatisticsSettings>,
     pub status: String,
     pub error: Option<String>,
@@ -158,6 +164,7 @@ impl Worker {
             Err(error) => return Err(error),
         };
         let state = Snapshot {
+            sound_muted: review.setting("sound_muted")?.unwrap_or(false),
             game_statistics: Some(stats.filter(|s| s.is_valid()).unwrap_or_default()),
             ..Snapshot::empty(config)
         };
@@ -332,8 +339,11 @@ impl Worker {
                 }
                 self.number_from = anchor;
             }
-            Command::Play(point) => {
+            Command::Play(point) | Command::Replay(point) => {
                 self.review.play(point)?;
+                if matches!(command, Command::Play(Some(_))) && !self.state.sound_muted {
+                    self.state.audible_placements += 1;
+                }
                 self.changed_selection()?;
             }
             Command::Step(forward) => {
@@ -393,6 +403,10 @@ impl Worker {
                         }
                     }
                 }
+            }
+            Command::SetSoundMuted(muted) => {
+                self.review.save_setting("sound_muted", &muted)?;
+                self.state.sound_muted = muted;
             }
             Command::SaveGameStatistics(settings) => {
                 if !settings.is_valid() {

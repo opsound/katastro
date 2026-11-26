@@ -65,6 +65,12 @@ impl DesktopApp {
                     self.training_selection = Some((path.clone(), *index, Vec::new()));
                     let _ = self.client.send(Command::OpenAndAnalyze(path.clone()));
                 }
+                self.sound.play(
+                    state
+                        .stones_placed
+                        .saturating_sub(self.training_state.stones_placed),
+                    self.state.sound_muted,
+                );
                 self.training_state = state;
             }
         }
@@ -80,7 +86,7 @@ impl DesktopApp {
             let _ = self.client.send(Command::NumberFrom(Some(node)));
             let _ = self.client.send(Command::Select(node));
             for point in line {
-                let _ = self.client.send(Command::Play(*point));
+                let _ = self.client.send(Command::Replay(*point));
             }
             self.training_selection = None;
         }

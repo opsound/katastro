@@ -51,6 +51,8 @@ fn explored_lines_number_stones_from_the_exercise_and_follow_navigation() {
     let sgf = b"(;SZ[9];B[aa];W[ii];B[bb])";
     std::fs::write(&source, sgf).unwrap();
     let source = source.canonicalize().unwrap();
+    let clicks = std::rc::Rc::new(std::cell::Cell::new(0));
+    let output = clicks.clone();
     let mut h = Harness::builder()
         .with_size(egui::vec2(1200., 820.))
         .build_eframe(|cc| {
@@ -64,7 +66,8 @@ fn explored_lines_number_stones_from_the_exercise_and_follow_navigation() {
                     model: Default::default(),
                 },
                 Some(source.clone()),
-            );
+            )
+            .with_stone_sound(move || output.set(output.get() + 1));
             app.training_view.open = true;
             app.training_state = training::Snapshot {
                 phase: training::Phase::Revealed,
@@ -84,6 +87,11 @@ fn explored_lines_number_stones_from_the_exercise_and_follow_navigation() {
     h.run();
     h.get_by_label("Explore line 1").click();
     wait(&mut h, |s| s.board.as_ref().unwrap().move_number == 5);
+    assert_eq!(
+        clicks.get(),
+        0,
+        "exploring a suggested line should be silent"
+    );
     for (coordinate, number) in [("D6", "1"), ("E6", "2"), ("F6", "3")] {
         assert_eq!(
             labels(&h, coordinate),
@@ -136,6 +144,11 @@ fn explored_lines_number_stones_from_the_exercise_and_follow_navigation() {
     assert_eq!(labels(&h, "E6"), vec!["2"]);
     h.get_by_label("Play G6").click();
     wait(&mut h, |s| s.board.as_ref().unwrap().move_number == 5);
+    assert_eq!(
+        clicks.get(),
+        1,
+        "placing a stone in the revealed review should click"
+    );
     assert_eq!(labels(&h, "G6"), vec!["3"]);
     assert!(labels(&h, "F6").is_empty());
     h.get_by_label("Exercise position").click();
@@ -160,4 +173,117 @@ fn explored_lines_number_stones_from_the_exercise_and_follow_navigation() {
         "numbering leaked into ordinary review"
     );
     assert_eq!(std::fs::read(&source).unwrap(), sgf);
+}
+
+// Capture the same WAV that a real board click sends to AppKit. Restoring the
+// old synthesized knock should fail on its dominant low-mid resonance.
+#[test]
+fn stone_placements_shuffle_three_dry_tabletop_strikes_without_repeating() {
+    let first = heard_strikes(17);
+    let second = heard_strikes(91);
+    for played in [&first, &second] {
+        assert_eq!(played.len(), 18, "each placement should play one strike");
+        let (groups, _) = played.as_chunks::<3>();
+        for group in groups {
+            let distinct = group.iter().collect::<std::collections::HashSet<_>>();
+            assert_eq!(
+                distinct.len(),
+                3,
+                "each shuffle should play all three takes"
+            );
+        }
+        assert!(
+            played.windows(2).all(|pair| pair[0] != pair[1]),
+            "a take repeated across shuffles"
+        );
+        assert!(
+            groups.iter().any(|group| group != &groups[0]),
+            "successive shuffles always used the same order"
+        );
+    }
+    assert!(
+        first != second,
+        "a different shuffle seed should change the audible sequence"
+    );
+    for &wav in &first[..3] {
+        assert_dry_contact(wav);
+    }
+}
+
+fn heard_strikes(seed: u64) -> Vec<&'static [u8]> {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("board.sgf");
+    std::fs::write(&source, b"(;SZ[9])").unwrap();
+    let recorded = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let output = recorded.clone();
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(1200., 820.))
+        .build_eframe(|cc| {
+            let mut app = DesktopApp::with_archives(
+                &cc.egui_ctx,
+                temp.path().join("reviews"),
+                temp.path().join("cache"),
+                Default::default(),
+                Some(source),
+                vec![],
+            );
+            app.sound = sound::StoneSound::seeded(move |wav| output.borrow_mut().push(wav), seed);
+            app
+        });
+    wait(&mut h, |s| s.board.is_some());
+    let mut move_number = 0;
+    for row in [3, 6] {
+        for col in "ABCDEFGHJ".chars() {
+            move_number += 1;
+            h.get_by_label(&format!("Play {col}{row}")).click();
+            wait(&mut h, |s| {
+                s.board
+                    .as_ref()
+                    .is_some_and(|b| b.move_number == move_number)
+            });
+        }
+    }
+    recorded.take()
+}
+
+fn assert_dry_contact(bytes: &[u8]) {
+    let mut wav = hound::WavReader::new(bytes).unwrap();
+    let rate = wav.spec().sample_rate as usize;
+    let samples: Vec<f64> = wav
+        .samples::<i16>()
+        .map(|s| f64::from(s.unwrap()) / 32768.)
+        .collect();
+    let attack = &samples[..rate * 12 / 1000];
+    let energy = |s: &[f64]| s.iter().map(|x| x * x).sum::<f64>();
+    assert!(
+        energy(attack) / attack.len() as f64 > 0.003,
+        "the stone should sound immediately"
+    );
+    // Compare the presence of the hard contact to the low-mid wooden knock.
+    let band_energy = |low_hz: usize, high_hz: usize| {
+        let bin_hz = rate as f64 / attack.len() as f64;
+        let bins =
+            (low_hz as f64 / bin_hz).ceil() as usize..(high_hz as f64 / bin_hz).ceil() as usize;
+        bins.map(|bin| {
+            let angle = std::f64::consts::TAU * bin as f64 / attack.len() as f64;
+            let (mut re, mut im) = (0., 0.);
+            for (i, sample) in attack.iter().enumerate() {
+                let (sin, cos) = (angle * i as f64).sin_cos();
+                re += sample * cos;
+                im += sample * sin;
+            }
+            re * re + im * im
+        })
+        .sum::<f64>()
+    };
+    let ratio = band_energy(1500, 5500) / band_energy(150, 1000);
+    assert!(
+        ratio > 1.,
+        "wooden contact should lead the low knock, energy ratio {ratio:.2}"
+    );
+    let tail = &samples[(rate * 30 / 1000).min(samples.len())..];
+    assert!(
+        energy(tail) < 0.05 * energy(&samples),
+        "room resonance lingers after the strike"
+    );
 }

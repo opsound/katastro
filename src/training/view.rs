@@ -4,6 +4,7 @@ use std::path::PathBuf;
 mod charts;
 pub struct View {
     pub open: bool,
+    pub(crate) sound_muted: bool,
     account: String,
     server: crate::archive::Server,
     moves: usize,
@@ -15,6 +16,7 @@ impl Default for View {
     fn default() -> Self {
         Self {
             open: false,
+            sound_muted: false,
             account: String::new(),
             server: Default::default(),
             moves: 5,
@@ -81,6 +83,9 @@ impl View {
                     out.push(Action::Back);
                 }
                 ui.heading("Learn from mistakes");
+                if state.phase != Phase::Revealed {
+                    crate::ui::mute_stones(ui, &mut self.sound_muted);
+                }
                 if state.phase == Phase::Revealed {
                     ui.label(&state.status);
                     if ui.button("Exercise position").clicked() {

@@ -968,3 +968,23 @@ A controlled KataGo subprocess screens three original lines from two server acco
 Worker and desktop tests hold requests open during pause, review, sync and training transitions. A new game interrupts a deep confirmation. Its late reply leaves the cached score at 64 visits. Games can show a newly classified loss over a paused review while preserving the selected move. Disabling browser visibility, ignoring manual pause or dropping the repair notification each failed their regression checks.
 
 The separate real-KataGo library check uses a synthetic 9×9 SGF and temporary SQLite databases. Background screening completed with no review open. The saved profile, classification and all three played-line evaluations were available on reopen. Run the explicit engine checks with the model prerequisites in [the training instructions](training.md).
+
+## Stone placement sound
+
+The desktop interaction test plays into an existing SGF continuation, creates a variation, mutes playback, and reopens the same review from a temporary SQLite database. A playback recorder counts one click per accepted stone. Illegal moves, passes, navigation, and exploring a suggested line stay quiet. Unmuting in training restores playback in review. The controlled KataGo game covers both player and opponent placements, and the trainer test covers both sides of an exercise that starts with stones on the board.
+
+Before implementation, the review, AI game, and training tests each reported zero placement cues for a legal move. Five temporary mutations suppressed review cues, bypassed mute, skipped saving the setting, omitted the training opponent’s cue, and played sounds during line exploration. Each failed its corresponding test and was restored.
+
+On macOS with an audio output device, run `cargo test --lib native_stone_playback -- --ignored` to exercise playback of the embedded stone audio through AppKit. This check passed on the development Mac. The real KataGo opening-move test also passed. Formatting, strict workspace Clippy, the library build without desktop features, and the routine tests passed. The rebuilt release app passed strict code-signature verification.
+
+### Recorded tabletop strikes
+
+The placement effect uses the first three hits from a recording of a Yunzi stone on a wooden-legged tabletop board. Each excerpt retains the recorded attack, with a short fade on the room sound and matched impact levels. [Original recording by billhails2](https://freesound.org/people/billhails2/sounds/588317/) · [CC0 dedication](https://creativecommons.org/publicdomain/zero/1.0/)
+
+A desktop test places 18 legal stones in each of two seeded sessions and captures the WAVs handed to playback. Every group of three contains all three takes, consecutive strikes differ, and the order varies both within and between sessions. It also measures attack level, the balance between hard contact and low resonance, and energy remaining after 30 ms. The former synthesized sound failed with a contact-to-low-band energy ratio of 0.14. Initially, four moves produced only one distinct sound. Fixed rotation then failed because every group had the same order.
+
+Restoring the synthesized knock for the second move failed the contact check. Freezing playback on the first take failed the rotation check. Reusing an idle AppKit voice loaded with a different recording failed the native playback check. All three mutations were restored.
+
+The shuffle test also caught two temporary changes to the draw order. Keeping the same order after the first group made every group identical. Shuffling the full set without excluding the preceding strike allowed a back-to-back repeat. Both changes were restored.
+
+Formatting, strict workspace Clippy, and the workspace test suite passed with the shuffle enabled. The separate AppKit playback check passed on macOS. All three recordings were present in the rebuilt app and its code signature verified.

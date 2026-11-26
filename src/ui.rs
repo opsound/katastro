@@ -42,6 +42,11 @@ fn command(out: &mut Vec<Action>, value: Command) {
     out.push(Action::Review(value));
 }
 
+pub(crate) fn mute_stones(ui: &mut egui::Ui, muted: &mut bool) {
+    ui.checkbox(muted, "Mute stones")
+        .on_hover_text("Mute stone placement sounds in review, training, and games.");
+}
+
 pub fn render(ui: &mut egui::Ui, snapshot: &Snapshot) -> Vec<Action> {
     let mut out = Vec::new();
     if !ui.ctx().text_edit_focused() && !egui::Popup::is_id_open(ui.ctx(), tree::move_menu_id()) {

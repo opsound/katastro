@@ -24,6 +24,8 @@ fn chosen_human_ranks_drive_legal_responses_and_a_reviewable_game() {
             executable: env!("CARGO_BIN_EXE_katastro-test-engine").into(),
             ..Default::default()
         };
+        let clicks = std::rc::Rc::new(std::cell::Cell::new(0));
+        let output = clicks.clone();
         let mut ui = Harness::builder()
             .with_size(eframe::egui::vec2(1200., 820.))
             .build_eframe(|cc| {
@@ -35,6 +37,7 @@ fn chosen_human_ranks_drive_legal_responses_and_a_reviewable_game() {
                     None,
                     vec![],
                 )
+                .with_stone_sound(move || output.set(output.get() + 1))
             });
         ui.get_by_label("Play AI").click();
         ui.run();
@@ -56,6 +59,12 @@ fn chosen_human_ranks_drive_legal_responses_and_a_reviewable_game() {
             }
         };
         until(&mut ui, "Your turn");
+        assert_eq!(clicks.get(), 0);
+        // This rank starts muted and unmutes before its AI reply.
+        if rank == "5d" {
+            ui.get_by_label("Mute stones").click();
+            ui.run();
+        }
         ui.get_by_label("Play D4").click();
         ui.run();
         listener.set_nonblocking(true).unwrap();
@@ -76,6 +85,13 @@ fn chosen_human_ranks_drive_legal_responses_and_a_reviewable_game() {
         let mut io = BufReader::new(stream);
         for turn in [1, 3] {
             until(&mut ui, &format!("KataGo ({rank}) is thinking"));
+            if turn == 1 {
+                assert_eq!(clicks.get(), usize::from(rank == "20k"), "human placement");
+                if rank == "5d" {
+                    ui.get_by_label("Mute stones").click();
+                    ui.run();
+                }
+            }
             let mut line = String::new();
             io.read_line(&mut line).unwrap();
             let query: Value = serde_json::from_str(&line).unwrap();
@@ -114,6 +130,11 @@ fn chosen_human_ranks_drive_legal_responses_and_a_reviewable_game() {
             }
         }
         until(&mut ui, "Both players passed");
+        assert_eq!(
+            clicks.get(),
+            1 + usize::from(rank == "20k"),
+            "AI placement and two silent passes"
+        );
         ui.get_by_label("Review game").click();
         let end = Instant::now() + Duration::from_secs(10);
         while ui.state().state.source.is_none() {

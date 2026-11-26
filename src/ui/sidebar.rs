@@ -15,6 +15,7 @@ pub(super) fn review_controls(
     show_ai_moves: &mut bool,
     out: &mut Vec<Action>,
 ) {
+    let mut muted = snapshot.sound_muted;
     ui.scope(|ui| {
         ui.spacing_mut().button_padding = Vec2::new(7.0, 5.0);
         ui.horizontal_wrapped(|ui| {
@@ -35,6 +36,9 @@ pub(super) fn review_controls(
                 if response.on_hover_text(label).clicked() {
                     out.push(action);
                 }
+            }
+            if snapshot.document.is_none() {
+                super::mute_stones(ui, &mut muted);
             }
         });
     });
@@ -84,6 +88,7 @@ pub(super) fn review_controls(
             ui.checkbox(show_ai_moves, "AI moves").on_hover_text("Show AI move suggestions on the board.");
             ui.checkbox(group_strength, "Group strength")
                 .on_hover_text("Connected chains: green = likely to live, orange = unsettled, red = likely to die. Solid outlines indicate decisive expected ownership. This is KataGo's estimate under continued play, not a life-and-death proof; ko and seki can appear unsettled. Move-circle colors still show point loss.");
+            super::mute_stones(ui, &mut muted);
         });
         // Keep controls fixed when ownership or a different move arrives.
         ui.allocate_ui_with_layout(Vec2::new(ui.available_width(), 34.0), egui::Layout::top_down(egui::Align::Min), |ui| {
@@ -109,6 +114,9 @@ pub(super) fn review_controls(
                 ui.label(caption(format!("Move labels: point change for {}", board.next)));
             }
         });
+    }
+    if muted != snapshot.sound_muted {
+        command(out, Command::SetSoundMuted(muted));
     }
 }
 

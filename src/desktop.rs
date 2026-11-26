@@ -15,6 +15,7 @@ use std::{
 mod library;
 mod opponent;
 mod settings;
+mod sound;
 mod training;
 struct PendingDialog {
     request: DialogRequest,
@@ -45,6 +46,8 @@ pub struct DesktopApp {
     pub state: Snapshot,
     pub client: Client,
     library: library::Library,
+    sound: sound::StoneSound,
+    mute_override: Option<bool>,
     browsing_games: bool,
     settings: settings::Settings,
     opponent: Option<opponent::OpponentView>,
@@ -57,6 +60,12 @@ pub struct DesktopApp {
     training_selection: Option<(PathBuf, usize, Vec<Option<crate::Point>>)>,
 }
 impl DesktopApp {
+    /// Replace native playback, for example to capture cues in a headless UI.
+    pub fn with_stone_sound(mut self, mut play: impl FnMut() + 'static) -> Self {
+        self.sound = sound::StoneSound::new(move |_| play());
+        self
+    }
+
     pub fn with_archives(
         ctx: &egui::Context,
         reviews: PathBuf,
@@ -155,6 +164,8 @@ impl DesktopApp {
         Self {
             state: Snapshot::empty(config),
             client,
+            sound: Default::default(),
+            mute_override: None,
             settings: Default::default(),
             opponent: None,
             dialogs: services.dialogs,
@@ -170,6 +181,10 @@ impl DesktopApp {
     }
     fn action(&mut self, action: Action, frame: &eframe::Frame) {
         let command = match action {
+            Action::Review(Command::SetSoundMuted(muted)) => {
+                self.set_sound_muted(muted);
+                None
+            }
             Action::Review(command) => Some(command),
             Action::Open => {
                 self.begin_dialog(DialogRequest::OpenGame, frame);
@@ -216,6 +231,13 @@ impl DesktopApp {
             && let Err(error) = self.client.send(command)
         {
             self.state.error = Some(error.to_string());
+        }
+    }
+    fn set_sound_muted(&mut self, muted: bool) {
+        self.state.sound_muted = muted;
+        self.mute_override = Some(muted);
+        if let Err(e) = self.client.send(Command::SetSoundMuted(muted)) {
+            self.state.error = Some(e.to_string());
         }
     }
     fn prepare_libraries(&self) {
@@ -266,7 +288,16 @@ impl DesktopApp {
 impl eframe::App for DesktopApp {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let mut config_changed = false;
-        while let Ok(state) = self.client.snapshots.try_recv() {
+        while let Ok(mut state) = self.client.snapshots.try_recv() {
+            if let Some(muted) = self.mute_override {
+                state.sound_muted = muted;
+            }
+            self.sound.play(
+                state
+                    .audible_placements
+                    .saturating_sub(self.state.audible_placements),
+                state.sound_muted,
+            );
             if self.library.view.statistics.is_none() {
                 self.library.view.statistics = state.game_statistics;
             }
@@ -280,14 +311,21 @@ impl eframe::App for DesktopApp {
         }
         if let Some(view) = &mut self.opponent {
             self.library.categories(&self.state, config_changed, false);
-            if let Some(action) = view.render(
+            let mut muted = self.state.sound_muted;
+            let action = view.render(
                 ui,
                 &self.state.config,
                 self.training_databases
                     .0
                     .parent()
                     .unwrap_or(std::path::Path::new(".")),
-            ) {
+                &mut self.sound,
+                &mut muted,
+            );
+            if muted != self.state.sound_muted {
+                self.set_sound_muted(muted);
+            }
+            if let Some(action) = action {
                 self.opponent = None;
                 if let opponent::Action::Review(path) = action {
                     let _ = self.client.send(Command::OpenAndAnalyze(path));
@@ -313,12 +351,16 @@ impl eframe::App for DesktopApp {
             self.action(Action::Review(Command::OpenAndAnalyze(path)), frame);
         }
         if self.training_view.open {
+            self.training_view.sound_muted = self.state.sound_muted;
             for action in self.training_view.render_libraries(
                 ui,
                 &self.training_state,
                 &self.library.states(),
             ) {
                 self.training_action(action, ui.ctx());
+            }
+            if self.training_view.sound_muted != self.state.sound_muted {
+                self.set_sound_muted(self.training_view.sound_muted);
             }
         }
         if !self.training_view.open || self.training_state.phase == crate::training::Phase::Revealed

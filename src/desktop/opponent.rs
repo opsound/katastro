@@ -27,11 +27,14 @@ impl OpponentView {
         ui: &mut egui::Ui,
         config: &EngineConfig,
         data: &Path,
+        sound: &mut super::sound::StoneSound,
+        muted: &mut bool,
     ) -> Option<Action> {
         if self.client.is_none() {
             let mut action = None;
             egui::CentralPanel::default().show(ui, |ui| {
                 ui.heading("Play against AI");
+                crate::ui::mute_stones(ui, muted);
                 ui.label("KataGo imitates moves played by humans of the chosen rank.");
                 ui.horizontal(|ui| {
                     let label = ui.label("Opponent rank");
@@ -92,7 +95,19 @@ impl OpponentView {
         let client = self.client.as_ref().unwrap();
         while let Ok(update) = client.states.try_recv() {
             match update {
-                Ok(s) => self.state = Some(s),
+                Ok(s) => {
+                    if self
+                        .state
+                        .as_ref()
+                        .is_none_or(|prev| prev.doc.selected != s.doc.selected)
+                        && s.doc.nodes[s.doc.selected]
+                            .played
+                            .is_some_and(|m| m.point.is_some())
+                    {
+                        sound.play(1, *muted);
+                    }
+                    self.state = Some(s);
+                }
                 Err(e) => self.error = Some(e),
             }
         }
@@ -102,6 +117,7 @@ impl OpponentView {
             .show(ui, |ui| {
                 ui.heading(format!("KataGo · {}", self.settings.rank));
                 ui.label(format!("You play {}", self.settings.player));
+                crate::ui::mute_stones(ui, muted);
                 if let Some(e) = &self.error {
                     ui.label(e);
                 }

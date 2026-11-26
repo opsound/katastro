@@ -710,3 +710,39 @@ fn good_player_moves_do_not_cancel_earlier_point_losses() {
         "positive score changes do not cancel earlier losses; a score loss also counts when winrate is flat"
     );
 }
+
+// The sound consumer must distinguish new live moves from a problem's played prefix,
+// even when the player and opponent move between two screen updates.
+#[test]
+fn training_reports_only_actual_stone_placements_for_playback() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut t = trainer(temp.path());
+    t.begin(
+        vec![fixture(temp.path(), true)],
+        "me".into(),
+        Settings::default(),
+    )
+    .unwrap();
+    settle(&mut t, true, true);
+    assert_eq!(t.snapshot().stones_placed, 0);
+    t.play(Some(Point::new(3, 4))).unwrap();
+    assert_eq!(t.snapshot().stones_placed, 1, "player's stone");
+    assert!(t.play(Some(Point::new(5, 4))).is_err());
+    settle_with(&mut t, |q| {
+        let mut r = reply(q, true, true);
+        if q["includePolicy"] == true {
+            let mut policy = vec![-1.; 82];
+            policy[40] = 1.;
+            r["humanPolicy"] = json!(policy);
+        }
+        r
+    });
+    assert_eq!(t.snapshot().stones_placed, 2, "opponent's stone");
+    t.play(None).unwrap();
+    settle(&mut t, true, true); // The opponent also passes.
+    assert_eq!(
+        t.snapshot().stones_placed,
+        2,
+        "passes and grading should be quiet"
+    );
+}
